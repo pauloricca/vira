@@ -278,7 +278,7 @@ impl EngineHandle {
                 #[cfg(target_os = "macos")]
                 std::thread::spawn(move || {
                     if let Err(e) = native_output(shared.clone(), rx, wake) {
-                        shared.fail(format!("Native output failed: {e:#}. Restart VIRA after checking the output device."));
+                        shared.fail(format!("Native output failed: {e:#}"));
                     }
                 });
                 #[cfg(not(target_os = "macos"))]
@@ -649,24 +649,17 @@ fn native_output(
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::{thread, time::Duration};
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or_else(|| anyhow::anyhow!("No default output device"))?;
-    let initial_device = device.name()?;
-    *shared.device.lock().unwrap() = Some(initial_device.clone());
-    ensure!(
-        device.supported_output_configs()?.any(|c| c.channels() == 2
-            && c.sample_format() == cpal::SampleFormat::F32
-            && c.min_sample_rate().0 <= 48000
-            && c.max_sample_rate().0 >= 48000),
-        "Output must support stereo float32 48 kHz"
-    );
-    let config = cpal::StreamConfig {
-        channels: 2,
-        sample_rate: cpal::SampleRate(48000),
-        buffer_size: cpal::BufferSize::Fixed(256),
-    };
-    let (mut producer, mut consumer) = rtrb::RingBuffer::<Frame>::new(QUEUE_FRAMES);
+    let (mut producer, consumer) = rtrb::RingBuffer::<Frame>::new(QUEUE_FRAMES);
+    struct OutputState {
+        consumer: rtrb::Consumer<Frame>,
+        previous: Option<Instant>,
+        last: Frame,
+    }
+    let output = Arc::new(Mutex::new(OutputState {
+        consumer,
+        previous: None,
+        last: Frame::default(),
+    }));
     let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<Box<Voice>>::new(64);
     let finished = Arc::new(AtomicBool::new(false));
     let retired_finished = finished.clone();
@@ -768,37 +761,59 @@ fn native_output(
         worker_finished.store(true, Release);
         outcome
     });
-    let setup = (|| -> Result<_> {
-        ready_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| anyhow::anyhow!("Audio producer failed to prebuffer"))?
-            .map_err(anyhow::Error::msg)?;
+    let setup = ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| anyhow::anyhow!("Audio producer failed to prebuffer"))
+        .and_then(|result| result.map_err(anyhow::Error::msg));
+    let build_stream = || -> Result<(cpal::Stream, String)> {
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| anyhow::anyhow!("No default output device"))?;
+        let name = device.name()?;
+        ensure!(
+            device.supported_output_configs()?.any(|c| c.channels() == 2
+                && c.sample_format() == cpal::SampleFormat::F32
+                && c.min_sample_rate().0 <= 48000
+                && c.max_sample_rate().0 >= 48000),
+            "Output must support stereo float32 48 kHz"
+        );
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: cpal::SampleRate(48000),
+            buffer_size: cpal::BufferSize::Fixed(256),
+        };
         let cb = shared.clone();
         let error = shared.clone();
         let cb_wake = wake.clone();
-        let mut previous: Option<Instant> = None;
-        let mut last = Frame::default();
+        let callback_output = output.clone();
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let began = Instant::now();
-                if let Some(previous) = previous.replace(began) {
+                // A replaced stream is dropped before its successor starts, so
+                // this lock is uncontended during normal playback.
+                let Ok(mut state) = callback_output.try_lock() else {
+                    data.fill(0.);
+                    return;
+                };
+                if let Some(previous) = state.previous.replace(began) {
                     cb.max_callback_interval_us
                         .fetch_max(began.duration_since(previous).as_micros() as u64, Relaxed);
                 }
                 let mut missing = 0;
-                for output in data.chunks_exact_mut(2) {
-                    match consumer.pop() {
+                for samples in data.chunks_exact_mut(2) {
+                    match state.consumer.pop() {
                         Ok(frame) => {
-                            output.copy_from_slice(&frame.samples);
-                            last = frame;
+                            samples.copy_from_slice(&frame.samples);
+                            state.last = frame;
                         }
                         Err(_) => {
-                            output.fill(0.);
+                            samples.fill(0.);
                             missing += 1;
                         }
                     }
                 }
+                let last = state.last;
                 cb.sequence
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 for d in 0..2 {
@@ -840,39 +855,61 @@ fn native_output(
             None,
         )?;
         stream.play()?;
+        *shared.device.lock().unwrap() = Some(name.clone());
         shared.running.store(true, Release);
-        Ok(stream)
-    })();
+        Ok((stream, name))
+    };
     let mut error = None;
-    if let Ok(stream) = setup {
+    if let Ok(()) = setup {
         let mut sample_at = Instant::now();
         let mut progress_at = Instant::now();
         let mut previous_frames = 0;
+        let mut previous_errors = 0;
+        let mut stream: Option<cpal::Stream> = None;
+        let mut device_name: Option<String> = None;
         while !shared.cancel.load(Acquire) {
             let frames = shared.stats.frames.load(Relaxed);
             if frames != previous_frames {
                 previous_frames = frames;
                 progress_at = Instant::now();
             }
-            if shared.stats.device_errors.load(Relaxed) > 0
-                || progress_at.elapsed() > Duration::from_secs(1)
-                || worker.is_finished()
-            {
-                error = Some("Output stream/producer stopped; restart VIRA".to_string());
+            if worker.is_finished() {
+                error = Some("Audio producer stopped".to_string());
                 break;
+            }
+            let device_errors = shared.stats.device_errors.load(Relaxed);
+            let current_device = host.default_output_device().and_then(|d| d.name().ok());
+            let needs_stream = stream.is_none()
+                || device_errors != previous_errors
+                || progress_at.elapsed() > Duration::from_secs(1)
+                || current_device != device_name;
+            if needs_stream {
+                // Keep the producer, decks, commands and buffered frames alive.
+                // During sleep the full queue naturally pauses their timeline.
+                drop(stream.take());
+                output.lock().unwrap().previous = None;
+                shared.running.store(false, Release);
+                *shared.device.lock().unwrap() = None;
+                previous_errors = device_errors;
+                match build_stream() {
+                    Ok((new_stream, name)) => {
+                        stream = Some(new_stream);
+                        device_name = Some(name);
+                        progress_at = Instant::now();
+                    }
+                    Err(e) => {
+                        *shared.error.lock().unwrap() =
+                            Some(format!("Waiting for audio output: {e:#}"));
+                        device_name = current_device;
+                        thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                }
+                *shared.error.lock().unwrap() = None;
             }
             if sample_at.elapsed() >= Duration::from_secs(1) {
                 *shared.resources.lock().unwrap() = metrics::resources();
                 sample_at = Instant::now();
-                if host
-                    .default_output_device()
-                    .and_then(|d| d.name().ok())
-                    .as_deref()
-                    != Some(initial_device.as_str())
-                {
-                    error = Some("Default output device changed; restart VIRA".to_string());
-                    break;
-                }
             }
             thread::sleep(Duration::from_millis(20));
         }
