@@ -14,6 +14,12 @@ Use `app/scripts/build-app.sh` when the preparation service and app launch are
 needed; for code-only changes, the Docker `builder` service can rebuild the app.
 Do not treat a frontend-only build as an updated `.app`.
 
+# Keyboard shortcuts
+
+Whenever a shortcut is added, removed, or modified, update the in-app Shortcuts
+page (`app/frontend/Shortcuts.tsx`) in the same change. Keep its table complete
+and accurate, including each shortcut's action and availability conditions.
+
 # Deployment
 
 When Paulo requests a web-app deployment, default to Faffless and follow

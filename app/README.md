@@ -11,8 +11,19 @@ the center bypasses the filter. Double-click any dial to reset. Dial changes
 ramp over 10 ms, and settings carry over when replacing a loaded track.
 Expand **Timing & tempo** for grid editing,
 tempo presets and click volume. Future controls are disabled;
-deck/master meters are inactive placeholders (one per deck, stereo master) until
-the engine supplies level telemetry. Master gain and crossfading remain deferred.
+**Approve analysis** marks a completed analysis as Approved
+in the library. The timing grid's reviewed flag remains a separate assertion.
+The last deck touched, including its top rolling waveform, receives ⌘B to set a
+reference beat, ⌘⇧← / ⌘⇧→ to shift the bar start by one beat, and ⌘⇧A to
+approve analysis. These shortcuts work with the timing panel closed. Beat and bar
+edits require a stopped deck; analysis approval also works during playback. The
+active deck's A/B squares are filled in the deck and rolling
+waveform; the other deck's squares are outlined.
+the deck meters show post-fader peaks, and the stereo master meters show the
+clamped output peaks. A dedicated 30 Hz feed accumulates native output samples
+between meter requests, independently of transport polling. The display rises
+immediately on each peak and falls at 24 dB/sec on the shared animation loop,
+from −48 to 0 dBFS. Master gain and crossfading remain deferred.
 Use each library row's **•••** menu for timing, analysis and Load A / Load B;
 dragging rows onto decks remains available.
 Collection rows show number, cover tile, title, artist, BPM, key, length and
@@ -123,7 +134,9 @@ Completed results preserve raw detected beats, fitted BPM/offset, residual/tempo
 diagnostics, key candidates, per-window candidates and ambiguity flags separately
 in generated analysis records. The collection shows the BPM, key and status.
 **Analysed · draft** means completion, not musical verification; specific fit/key
-warnings select **Needs review**. The baseline's general half/double-tempo/phase
+warnings select **Needs review**. Explicit approval changes the status to
+**Approved** and survives service restarts for the same source. Reanalysis resets it.
+The baseline's general half/double-tempo/phase
 advisory is retained in the result data for every non-silent result.
 
 Click **Reanalyse** for a fresh job or **Retry** after a failure. Queued, analysing,
@@ -173,7 +186,15 @@ separate R3/transport states.
 
 - **Play / Pause** resumes or holds position. Playing after a natural end restarts
   the song from the beginning. Reaching the end itself stops without looping.
-- **Stop** pauses and returns to the beginning.
+- **Cue** uses Pioneer-style transport behavior. While paused away from Cue,
+  press to set it at the current position. During playback, press to return to Cue
+  and pause. While paused at Cue, hold to audition; release returns and pauses.
+  Press Play while holding Cue to continue playing after release. Pointer and
+  Space/Enter holds are supported, and cancellation/window focus loss ends audition.
+  The amber overview marker shows Cue. Each newly loaded deck starts with Cue at
+  zero; Cue is temporary for that load. Cue actions are exact and immediate,
+  including on a deck locked to the master tempo.
+- **Stop** pauses and returns to the beginning, preserving Cue.
 - On paused/stopped decks, drag the full-track overview playhead to seek silently.
   Drag the top rolling waveform beneath its fixed center playhead to scrub audibly,
   forwards or backwards. Audio goes silent when the pointer stops. Clicking the
@@ -186,8 +207,12 @@ separate R3/transport states.
   five-second jumps, or Home/End for the track boundaries; playing keyboard seeks
   preserve phase too. Exact seeks to the end stop playback.
 - **Volume** sets per-deck gain from zero to one. The mix applies 0.45 headroom per
-  deck and a final sample clamp; the default deck gain is 0.8. No crossfader or sync
-  is included. The two decks remain unsynchronised.
+  deck and a final sample clamp; the default deck gain is 0.8.
+- **Crossfader** blends A and B with an equal-power curve: full A at the left,
+  full B at the right, and −3 dB per deck at centre. Gain changes ramp over 5 ms.
+  Double-click to centre. Settings → Mixer → Show crossfader saves visibility;
+  hiding it bypasses attenuation on both decks, and showing it restores its position.
+  Channel meters remain before the crossfader; master meters show the resulting mix.
 
 The output is one in-process CPAL/Core Audio stereo stream. A persistent producer
 owns the two native Rubber Band 4.0 R3 voices at unity speed/pitch. It renders
@@ -337,7 +362,11 @@ changing BPM; the earliest grid beat in the track becomes bar 1, beat 1.
 The second flag fits BPM so both flags fall on beats. A third flag replaces the
 oldest. Flags appear on the rolling and full-track waveforms while the panel is
 open. The adjusted source grid, BPM, and flags are saved with the track and
-restored after restarting VIRA. Target BPM remains a deck playback control.
+restored after restarting VIRA. The panel's **Detected BPM**, **Set BPM**, **Half BPM**,
+**Double BPM**, and **Original BPM** controls save and apply source-grid corrections
+while stopped. Original BPM restores the analysis suggestion's BPM, preserving
+the downbeat and reference flags. Corrections clear timing review and deck sync.
+Playback BPM remains controlled by the deck header.
 
 The top A/B rows retain a fixed central playhead and use a shared output-time
 window: eight beats at master tempo. Shared zoom offers 4/8/16/32
@@ -383,8 +412,8 @@ speaker timing. Retain `--native-check` for milestone-1 lifecycle regression che
 
 ## Rendering/tempo optimisation follow-up
 
-The tempo range is now **0.5–2.0×**, with Half speed, Original tempo and Double
-speed shortcuts. This is 15–600 target BPM across the supported source-grid range,
+The playback tempo range is **0.5–2.0×**, controlled from the deck header.
+This is 15–600 target BPM across the supported source-grid range,
 bounded to half/double each track's actual source BPM. Source timing remains
 30–300 BPM; sync rejects targets outside the follower range.
 
@@ -433,3 +462,22 @@ and are reused across loads and service restarts. Version and checksum checks
 reject stale or damaged shading. Feature repair reuses valid PCM without decoding.
 Cache checks still validate source/PCM integrity and amplitude peaks, but skip
 FFT analysis when frequency features are valid.
+
+
+### Master and headphone outputs
+
+Open **AUDIO** in the header, select **Master out** and **Cue headphones**, then
+click **Apply outputs**. Master defaults to the system output; cue starts off.
+Selections are saved in `~/Library/Application Support/uk.ricca.vira/audio.json`.
+Each output must support stereo float32 at 48 kHz. Devices with more channels use
+the first stereo pair. Use separate devices for master and headphones.
+
+The headphone buttons above the channel faders select deck A, B, or both for
+cue. Cue follows trim, EQ and filter, and bypasses channel volume and crossfader.
+The transport CUE button continues to set/return to the deck's cue point.
+Changing outputs preserves loaded tracks and transport. Disconnected explicit
+outputs wait for reconnection instead of falling back to another device; cue
+failure leaves master playback running. The Audio page refreshes the device list
+and displays output errors. A bounded stereo queue with interpolation compensates
+for small clock differences between devices; physical headphone latency remains
+device dependent. Dual-device listening still needs verification on macOS hardware.

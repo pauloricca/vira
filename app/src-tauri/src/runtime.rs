@@ -21,6 +21,13 @@ use std::{
 };
 
 struct Shared {
+    routes: Mutex<crate::audio_devices::Routes>,
+    cue_running: AtomicBool,
+    cue_error: Mutex<Option<String>>,
+    cue_device_errors: AtomicU64,
+    headphone_cue: [AtomicBool; 2],
+    crossfader: AtomicU64,
+    crossfader_enabled: AtomicBool,
     cancel: AtomicBool,
     worker_cancel: AtomicBool,
     requested: [AtomicU64; 2],
@@ -29,7 +36,11 @@ struct Shared {
     position_epochs: [AtomicU64; 2],
     generations: [AtomicU64; 2],
     playing: [AtomicBool; 2],
+    cue_positions: [AtomicU64; 2],
+    cue_preview: [AtomicBool; 2],
     gains: [AtomicU64; 2],
+    meter_decks: [AtomicU64; 2],
+    meter_master: [AtomicU64; 2],
     mixer: [[AtomicU64; 5]; 2],
     grid_bpm: [AtomicU64; 2],
     grid_anchor: [AtomicU64; 2],
@@ -59,10 +70,25 @@ struct Shared {
     device: Mutex<Option<String>>,
     resources: Mutex<Value>,
 }
+
+#[derive(Serialize)]
+pub struct AudioLevels {
+    pub decks: [f32; 2],
+    pub master: [f32; 2],
+    pub running: bool,
+}
+
 impl Shared {
     fn new() -> Self {
         Self {
             cancel: false.into(),
+            routes: Mutex::new(crate::audio_devices::Routes::load()),
+            cue_running: false.into(),
+            cue_error: Mutex::new(None),
+            cue_device_errors: 0.into(),
+            headphone_cue: std::array::from_fn(|_| false.into()),
+            crossfader: (0_f32.to_bits() as u64).into(),
+            crossfader_enabled: true.into(),
             worker_cancel: false.into(),
             requested: std::array::from_fn(|_| 0.into()),
             sequence: 0.into(),
@@ -70,7 +96,11 @@ impl Shared {
             position_epochs: std::array::from_fn(|_| 0.into()),
             generations: std::array::from_fn(|_| 0.into()),
             playing: std::array::from_fn(|_| false.into()),
+            cue_positions: std::array::from_fn(|_| 0.into()),
+            cue_preview: std::array::from_fn(|_| false.into()),
             gains: std::array::from_fn(|_| (0.8_f32.to_bits() as u64).into()),
+            meter_decks: std::array::from_fn(|_| 0.into()),
+            meter_master: std::array::from_fn(|_| 0.into()),
             mixer: std::array::from_fn(|_| {
                 [0., 0.5_f32, 0.5, 0.5, 0.].map(|v| (v.to_bits() as u64).into())
             }),
@@ -115,10 +145,15 @@ impl Shared {
             let playing = std::array::from_fn(|d| self.playing[d].load(Relaxed));
             let gain = std::array::from_fn(|d| f32::from_bits(self.gains[d].load(Relaxed) as u32));
             let frame = Frame {
+                crossfader: f32::from_bits(self.crossfader.load(Relaxed) as u32),
+                crossfader_enabled: self.crossfader_enabled.load(Relaxed),
                 position_epochs: std::array::from_fn(|d| self.position_epochs[d].load(Relaxed)),
                 positions: position,
                 generations: generation,
                 playing,
+                cue_positions: std::array::from_fn(|d| self.cue_positions[d].load(Relaxed)),
+                headphone_cue: std::array::from_fn(|d| self.headphone_cue[d].load(Relaxed)),
+                cue_preview: std::array::from_fn(|d| self.cue_preview[d].load(Relaxed)),
                 gains: gain,
                 mixer: std::array::from_fn(|d| {
                     let values = std::array::from_fn::<_, 5, _>(|i| {
@@ -168,6 +203,20 @@ impl Shared {
             }
         }
     }
+    fn take_levels(&self) -> AudioLevels {
+        // Only the fast meter request drains these maxima. Transport polling
+        // must not steal transients from the meter feed.
+        let decks =
+            std::array::from_fn(|d| f32::from_bits(self.meter_decks[d].swap(0, Relaxed) as u32));
+        let master =
+            std::array::from_fn(|d| f32::from_bits(self.meter_master[d].swap(0, Relaxed) as u32));
+        let running = self.running.load(Acquire);
+        AudioLevels {
+            decks: if running { decks } else { [0.; 2] },
+            master: if running { master } else { [0.; 2] },
+            running,
+        }
+    }
     fn fail(&self, error: String) {
         *self.error.lock().unwrap() = Some(error);
         self.running.store(false, Release);
@@ -177,6 +226,25 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn meter_feed_retains_transients_independently_of_transport_snapshots() {
+        let shared = Shared::new();
+        shared.running.store(true, Release);
+        for peaks in [[0.8_f32, 0.2], [0.1, 0.4], [0., 0.]] {
+            for (d, peak) in peaks.into_iter().enumerate() {
+                shared.meter_decks[d].fetch_max(peak.to_bits() as u64, Relaxed);
+                shared.meter_master[d].fetch_max((peak * 0.45).to_bits() as u64, Relaxed);
+            }
+        }
+        let _ = shared.audible();
+        let levels = shared.take_levels();
+        assert_eq!(levels.decks, [0.8, 0.4]);
+        assert_eq!(levels.master, [0.8 * 0.45, 0.4 * 0.45]);
+        assert_eq!(shared.take_levels().decks, [0.; 2]);
+        shared.meter_decks[0].store(1_f32.to_bits() as u64, Relaxed);
+        shared.running.store(false, Release);
+        assert_eq!(shared.take_levels().decks, [0.; 2]);
+    }
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn compact_telemetry_sends_metadata_only_for_a_new_generation() {
@@ -251,6 +319,9 @@ pub struct DeckState {
     pub position_epoch: u64,
     pub track_unchanged: bool,
     pub playing: bool,
+    pub cue_seconds: f64,
+    pub cue_preview: bool,
+    pub headphone_cue: bool,
     pub gain: f32,
     pub trim_db: f32,
     pub eq: [f32; 3],
@@ -306,6 +377,29 @@ impl EngineHandle {
         }
         handle
     }
+    #[cfg(target_os = "macos")]
+    pub fn audio_devices(&self) -> Result<Value> {
+        let mut inventory = crate::audio_devices::inventory()?;
+        inventory["routes"] = serde_json::to_value(self.shared.routes.lock().unwrap().clone())?;
+        Ok(inventory)
+    }
+    #[cfg(target_os = "macos")]
+    pub fn set_audio_devices(&self, routes: crate::audio_devices::Routes) -> Result<()> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        let default = host.default_output_device().and_then(|d| d.name().ok());
+        routes.validate(default.as_deref())?;
+        for name in [routes.master.as_deref(), routes.cue.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            crate::audio_devices::config(&crate::audio_devices::resolve(&host, Some(name))?)?;
+        }
+        let mut current = self.shared.routes.lock().unwrap();
+        routes.save()?;
+        *current = routes;
+        Ok(())
+    }
     fn send(&self, command: Command) -> Result<()> {
         ensure!(
             self.shared.running.load(Acquire),
@@ -330,8 +424,16 @@ impl EngineHandle {
         meta[deck].error = None;
         Ok(generation)
     }
-    pub fn load(&self, deck: usize, generation: u64, track_id: &str) -> Result<()> {
-        let outcome = self.prepare_and_install(deck, generation, track_id);
+    pub fn load(
+        &self,
+        deck: usize,
+        generation: u64,
+        track_id: &str,
+        preserve_lock: bool,
+        reset_mixer: bool,
+    ) -> Result<()> {
+        let outcome =
+            self.prepare_and_install(deck, generation, track_id, preserve_lock, reset_mixer);
         if let Err(error) = &outcome {
             if self.shared.requested[deck].load(Acquire) == generation {
                 let mut meta = self.metadata.lock().unwrap();
@@ -341,7 +443,14 @@ impl EngineHandle {
         }
         outcome
     }
-    fn prepare_and_install(&self, deck: usize, generation: u64, track_id: &str) -> Result<()> {
+    fn prepare_and_install(
+        &self,
+        deck: usize,
+        generation: u64,
+        track_id: &str,
+        preserve_lock: bool,
+        reset_mixer: bool,
+    ) -> Result<()> {
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
@@ -353,8 +462,10 @@ impl EngineHandle {
         );
         let source = {
             let _download = self.download.lock().unwrap();
-            ensure!(self.shared.requested[deck].load(Acquire) == generation,
-                "Load superseded by a newer selection");
+            ensure!(
+                self.shared.requested[deck].load(Acquire) == generation,
+                "Load superseded by a newer selection"
+            );
             let cached = {
                 let mut cache = self.sources.lock().unwrap();
                 cache.retain(|_, value| value.strong_count() > 0);
@@ -363,7 +474,8 @@ impl EngineHandle {
             if let Some(source) = cached {
                 source
             } else {
-                let source = prepared.download(|| self.shared.requested[deck].load(Acquire) == generation)?;
+                let source = prepared
+                    .download(|| self.shared.requested[deck].load(Acquire) == generation)?;
                 self.sources
                     .lock()
                     .unwrap()
@@ -406,6 +518,8 @@ impl EngineHandle {
             deck,
             generation,
             voice,
+            preserve_lock,
+            reset_mixer,
         })
     }
     pub fn control(&self, deck: usize, action: &str, value: Option<f64>) -> Result<()> {
@@ -421,7 +535,10 @@ impl EngineHandle {
         ensure!(deck < 2, "Deck must be A or B");
         let snapshot = self.shared.audible();
         ensure!(
-            expected.is_none_or(|g| g == snapshot.generations[deck]),
+            matches!(
+                action,
+                "crossfader" | "crossfader_enabled" | "headphone_cue"
+            ) || expected.is_none_or(|g| g == snapshot.generations[deck]),
             "Source replaced; retry this control on the current deck"
         );
         let generations = snapshot.generations;
@@ -431,10 +548,42 @@ impl EngineHandle {
             .map(|t| t.frames)
             .unwrap_or(0);
         ensure!(
-            frames > 0 || matches!(action, "master_tempo" | "drift_rate" | "sync_quantum"),
+            frames > 0
+                || matches!(
+                    action,
+                    "master_tempo"
+                        | "drift_rate"
+                        | "sync_quantum"
+                        | "crossfader"
+                        | "crossfader_enabled"
+                        | "headphone_cue"
+                ),
             "Load a track before using transport"
         );
         let command = match action {
+            "headphone_cue" => {
+                ensure!(
+                    matches!(value, Some(0.) | Some(1.)),
+                    "Headphone cue must be 0 or 1"
+                );
+                Command::HeadphoneCue(deck, value == Some(1.))
+            }
+            "crossfader" => {
+                let position =
+                    value.ok_or_else(|| anyhow::anyhow!("Crossfader requires a position"))?;
+                ensure!(
+                    position.is_finite() && (-1.0..=1.0).contains(&position),
+                    "Crossfader must be −1–1"
+                );
+                Command::Crossfader(position as f32)
+            }
+            "crossfader_enabled" => {
+                ensure!(
+                    matches!(value, Some(0.) | Some(1.)),
+                    "Crossfader enabled must be 0 or 1"
+                );
+                Command::CrossfaderEnabled(value == Some(1.))
+            }
             "clear" => {
                 // Cancel already requested preparations; a later selection has a
                 // higher generation and cannot be removed by this command.
@@ -446,6 +595,9 @@ impl EngineHandle {
                 Command::Remove(deck, through)
             }
             "play" => Command::Play(deck, generations[deck]),
+            "play_pause" => Command::PlayPause(deck, generations[deck]),
+            "cue_press" => Command::CuePress(deck, generations[deck]),
+            "cue_release" => Command::CueRelease(deck, generations[deck]),
             "pause" => Command::Pause(deck, generations[deck]),
             "stop" => Command::Stop(deck, generations[deck]),
             "seek" | "scrub_start" | "scrub" | "scrub_pause" => {
@@ -591,6 +743,9 @@ impl EngineHandle {
     pub fn state(&self) -> Value {
         self.state_for_frontend(None)
     }
+    pub fn audio_levels(&self) -> AudioLevels {
+        self.shared.take_levels()
+    }
     pub fn state_for_frontend(&self, known: Option<[u64; 2]>) -> Value {
         let snapshot = self.shared.audible();
         let Frame {
@@ -628,6 +783,9 @@ impl EngineHandle {
                     position_epoch: snapshot.position_epochs[d],
                     position_seconds: positions[d] as f64 / RATE as f64,
                     playing: playing[d] && self.shared.running.load(Acquire),
+                    cue_seconds: snapshot.cue_positions[d] as f64 / RATE as f64,
+                    cue_preview: snapshot.cue_preview[d],
+                    headphone_cue: snapshot.headphone_cue[d],
                     gain: gains[d],
                     trim_db: snapshot.mixer[d].trim,
                     eq: snapshot.mixer[d].eq,
@@ -658,7 +816,9 @@ impl EngineHandle {
             .filter_map(Weak::upgrade)
             .map(|source| source.bytes())
             .sum();
-        json!({"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        let routes = self.shared.routes.lock().unwrap().clone();
+        json!({"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+            "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":0.0,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
                 "queue_capacity_ms":QUEUE_FRAMES as f64/48.,"realtime_policy_verified":self.shared.realtime.load(Acquire),
@@ -690,7 +850,7 @@ fn native_output(
     wake: Arc<Wake>,
 ) -> Result<()> {
     use crate::scheduling::Realtime;
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::traits::{DeviceTrait, StreamTrait};
     use std::{thread, time::Duration};
     let host = cpal::default_host();
     let (mut producer, consumer) = rtrb::RingBuffer::<Frame>::new(QUEUE_FRAMES);
@@ -704,6 +864,9 @@ fn native_output(
         previous: None,
         last: Frame::default(),
     }));
+    let (cue_tx, cue_rx) = rtrb::RingBuffer::<[f32; 2]>::new(8192);
+    let cue_tx = Arc::new(Mutex::new(cue_tx));
+    let cue_output = Arc::new(Mutex::new(crate::cue_output::CueOutput::new(cue_rx)));
     let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<Box<Voice>>::new(64);
     let finished = Arc::new(AtomicBool::new(false));
     let retired_finished = finished.clone();
@@ -810,22 +973,13 @@ fn native_output(
         .map_err(|_| anyhow::anyhow!("Audio producer failed to prebuffer"))
         .and_then(|result| result.map_err(anyhow::Error::msg));
     let build_stream = || -> Result<(cpal::Stream, String)> {
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| anyhow::anyhow!("No default output device"))?;
+        let routes = shared.routes.lock().unwrap().clone();
+        let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
         let name = device.name()?;
-        ensure!(
-            device.supported_output_configs()?.any(|c| c.channels() == 2
-                && c.sample_format() == cpal::SampleFormat::F32
-                && c.min_sample_rate().0 <= 48000
-                && c.max_sample_rate().0 >= 48000),
-            "Output must support stereo float32 48 kHz"
-        );
-        let config = cpal::StreamConfig {
-            channels: 2,
-            sample_rate: cpal::SampleRate(48000),
-            buffer_size: cpal::BufferSize::Fixed(256),
-        };
+        let mut config = crate::audio_devices::config(&device)?;
+        config.buffer_size = cpal::BufferSize::Fixed(256);
+        let channels = config.channels as usize;
+        let callback_cue = cue_tx.clone();
         let cb = shared.clone();
         let error = shared.clone();
         let cb_wake = wake.clone();
@@ -845,17 +999,40 @@ fn native_output(
                         .fetch_max(began.duration_since(previous).as_micros() as u64, Relaxed);
                 }
                 let mut missing = 0;
-                for samples in data.chunks_exact_mut(2) {
+                let mut deck_peaks = [0_f32; 2];
+                let mut master_peaks = [0_f32; 2];
+                let mut cue = callback_cue.try_lock().ok();
+                data.fill(0.);
+                for samples in data.chunks_exact_mut(channels) {
                     match state.consumer.pop() {
                         Ok(frame) => {
-                            samples.copy_from_slice(&frame.samples);
+                            samples[..2].copy_from_slice(&frame.samples);
+                            if let Some(cue) = cue.as_mut() {
+                                let _ = cue.push(frame.cue_samples);
+                            }
+                            for d in 0..2 {
+                                deck_peaks[d] = deck_peaks[d]
+                                    .max(frame.deck_samples[d][0].abs())
+                                    .max(frame.deck_samples[d][1].abs());
+                            }
+                            for channel in 0..2 {
+                                master_peaks[channel] =
+                                    master_peaks[channel].max(frame.samples[channel].abs());
+                            }
                             state.last = frame;
                         }
                         Err(_) => {
                             samples.fill(0.);
+                            if let Some(cue) = cue.as_mut() {
+                                let _ = cue.push([0.; 2]);
+                            }
                             missing += 1;
                         }
                     }
+                }
+                for d in 0..2 {
+                    cb.meter_decks[d].fetch_max(deck_peaks[d].to_bits() as u64, Relaxed);
+                    cb.meter_master[d].fetch_max(master_peaks[d].to_bits() as u64, Relaxed);
                 }
                 let last = state.last;
                 cb.sequence
@@ -865,6 +1042,9 @@ fn native_output(
                     cb.position_epochs[d].store(last.position_epochs[d], Relaxed);
                     cb.generations[d].store(last.generations[d], Relaxed);
                     cb.playing[d].store(last.playing[d], Relaxed);
+                    cb.cue_positions[d].store(last.cue_positions[d], Relaxed);
+                    cb.cue_preview[d].store(last.cue_preview[d], Relaxed);
+                    cb.headphone_cue[d].store(last.headphone_cue[d], Relaxed);
                     cb.gains[d].store(last.gains[d].to_bits() as u64, Relaxed);
                     let settings = last.mixer[d];
                     for (i, value) in [
@@ -894,17 +1074,25 @@ fn native_output(
                 }
                 cb.master_bpm.store(last.master_bpm.to_bits(), Relaxed);
                 cb.drift_rate.store(last.drift_rate.to_bits(), Relaxed);
+                cb.crossfader
+                    .store(last.crossfader.to_bits() as u64, Relaxed);
+                cb.crossfader_enabled
+                    .store(last.crossfader_enabled, Relaxed);
                 cb.sync_quantum.store(last.sync_quantum as u64, Relaxed);
                 cb.drift_target
                     .store(last.drift_target.unwrap_or(2) as u64, Relaxed);
                 cb.output_frame.store(last.output_frame, Relaxed);
                 cb.global_beat.store(last.global_beat.to_bits(), Relaxed);
                 cb.sequence.fetch_add(1, Release);
-                cb.stats.frames.fetch_add((data.len() / 2) as u64, Relaxed);
+                cb.stats
+                    .frames
+                    .fetch_add((data.len() / channels) as u64, Relaxed);
                 cb.stats.starved_frames.fetch_add(missing, Relaxed);
                 cb_wake.notify();
-                cb.stats
-                    .record(began.elapsed().as_nanos() as u64, (data.len() / 2) as u64);
+                cb.stats.record(
+                    began.elapsed().as_nanos() as u64,
+                    (data.len() / channels) as u64,
+                );
             },
             move |_| {
                 error.stats.device_errors.fetch_add(1, Relaxed);
@@ -916,6 +1104,34 @@ fn native_output(
         shared.running.store(true, Release);
         Ok((stream, name))
     };
+    let build_cue = |name: &str| -> Result<cpal::Stream> {
+        let device = crate::audio_devices::resolve(&host, Some(name))?;
+        let config = crate::audio_devices::config(&device)?;
+        let channels = config.channels as usize;
+        cue_output.lock().unwrap().reset();
+        let callback = cue_output.clone();
+        let cb = shared.clone();
+        let errors = shared.clone();
+        let stream = device.build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                data.fill(0.);
+                if let Ok(mut cue) = callback.try_lock() {
+                    if cb.running.load(Acquire) {
+                        cue.render(data, channels);
+                    } else {
+                        cue.reset();
+                    }
+                }
+            },
+            move |_| {
+                errors.cue_device_errors.fetch_add(1, Relaxed);
+            },
+            None,
+        )?;
+        stream.play()?;
+        Ok(stream)
+    };
     let mut error = None;
     if let Ok(()) = setup {
         let mut sample_at = Instant::now();
@@ -924,6 +1140,13 @@ fn native_output(
         let mut previous_errors = 0;
         let mut stream: Option<cpal::Stream> = None;
         let mut device_name: Option<String> = None;
+        let mut master_route: Option<String> = None;
+        let mut cue_stream: Option<cpal::Stream> = None;
+        let mut cue_name: Option<String> = None;
+        let mut cue_errors = 0;
+        let mut cue_available_before = false;
+        let mut cue_valid_before = false;
+        let mut cue_retry = Instant::now() - Duration::from_secs(2);
         while !shared.cancel.load(Acquire) {
             let frames = shared.stats.frames.load(Relaxed);
             if frames != previous_frames {
@@ -935,15 +1158,58 @@ fn native_output(
                 break;
             }
             let device_errors = shared.stats.device_errors.load(Relaxed);
-            let current_device = host.default_output_device().and_then(|d| d.name().ok());
+            let routes = shared.routes.lock().unwrap().clone();
+            let current_device = crate::audio_devices::resolve(&host, routes.master.as_deref())
+                .ok()
+                .and_then(|d| d.name().ok());
+            let next_cue_errors = shared.cue_device_errors.load(Relaxed);
+            let cue_valid = routes.cue.is_some() && routes.cue != current_device;
+            let cue_available = routes
+                .cue
+                .as_deref()
+                .and_then(|name| crate::audio_devices::resolve(&host, Some(name)).ok())
+                .is_some();
+            if cue_name != routes.cue
+                || next_cue_errors != cue_errors
+                || cue_valid != cue_valid_before
+                || cue_available != cue_available_before
+            {
+                drop(cue_stream.take());
+                shared.cue_running.store(false, Release);
+                cue_name = routes.cue.clone();
+                cue_available_before = cue_available;
+                cue_valid_before = cue_valid;
+                cue_errors = next_cue_errors;
+                cue_retry = Instant::now() - Duration::from_secs(2);
+            }
+            if routes.cue.is_none() {
+                *shared.cue_error.lock().unwrap() = None;
+            } else if !cue_valid {
+                *shared.cue_error.lock().unwrap() = Some("Cue suspended: master and cue resolve to the same device. Choose separate outputs.".into());
+            } else if cue_stream.is_none() && cue_retry.elapsed() >= Duration::from_secs(2) {
+                cue_retry = Instant::now();
+                match build_cue(routes.cue.as_deref().unwrap()) {
+                    Ok(stream) => {
+                        cue_stream = Some(stream);
+                        shared.cue_running.store(true, Release);
+                        *shared.cue_error.lock().unwrap() = None;
+                    }
+                    Err(e) => {
+                        *shared.cue_error.lock().unwrap() =
+                            Some(format!("Cue output unavailable: {e:#}"))
+                    }
+                }
+            }
             let needs_stream = stream.is_none()
                 || device_errors != previous_errors
                 || progress_at.elapsed() > Duration::from_secs(1)
-                || current_device != device_name;
+                || current_device != device_name
+                || master_route != routes.master;
             if needs_stream {
                 // Keep the producer, decks, commands and buffered frames alive.
                 // During sleep the full queue naturally pauses their timeline.
                 drop(stream.take());
+                master_route = routes.master.clone();
                 output.lock().unwrap().previous = None;
                 shared.running.store(false, Release);
                 *shared.device.lock().unwrap() = None;
@@ -970,6 +1236,8 @@ fn native_output(
             }
             thread::sleep(Duration::from_millis(20));
         }
+        drop(cue_stream);
+        shared.cue_running.store(false, Release);
         drop(stream);
     } else if let Err(e) = setup {
         error = Some(format!("{e:#}"));

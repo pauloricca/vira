@@ -4,7 +4,7 @@ import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
 import { WaveTiles, gridGeometry } from './waveform';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
-export function RollingRow({ state, running, window, control, timingOpen = false }: { state: DeckState; running: boolean; window: number; timingOpen?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function RollingRow({ state, running, window, control, timingOpen = false, onInteract, active = false }: { state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const latest = useRef({ state, running, window, timingOpen });
   const firstClick = useRef<{ anchor: number; at: number } | null>(null);
@@ -67,11 +67,11 @@ export function RollingRow({ state, running, window, control, timingOpen = false
     paint.current(performance.now());
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
-  return <div className={`rolling-row deck-${state.deck}`}><span className="deck-badge" title={state.grid ? state.grid.reviewed ? 'Reviewed grid' : 'Draft grid' : 'No grid'}>{state.deck===0 ? 'A' : 'B'}</span>
+  return <div className={`rolling-row deck-${state.deck}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}><span className={`deck-badge${active ? ' active' : ''}`} title={`Deck ${state.deck===0 ? 'A' : 'B'}${active ? ' · active' : ''}`}>{state.deck===0 ? 'A' : 'B'}</span>
     <canvas {...handlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
       onPointerDownCapture={event => { if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
       onDoubleClick={event => {
-        if (!timingOpen || !running || !state.track || !state.grid || !control) return;
+        if (!timingOpen || !running || state.playing || !state.track || !state.grid || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());
         const seconds = Math.min(Math.max(0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));

@@ -86,6 +86,22 @@ class JobTests(unittest.TestCase):
         reopened.reconcile([self.row()])
         self.assertEqual(self.track(reopened)["analysis"], self.track(manager)["analysis"])
 
+    def test_approval_changes_and_persists_analysis_status(self):
+        manager = self.manager(lambda *_: result(["ambiguous_key"]))
+        manager.reconcile([self.row()])
+        track_id = self.track(manager)["id"]
+        with self.assertRaisesRegex(ValueError, "Analyse this track"):
+            manager.approve(track_id)
+        manager.request(track_id)
+        manager.pending.join()
+        before = self.track(manager)["analysis"]["result"]
+        approved = manager.approve(track_id)
+        self.assertEqual(approved["tracks"][0]["analysis"]["state"], "approved")
+        self.assertEqual(approved["tracks"][0]["analysis"]["result"], before)
+        reopened = self.manager(lambda *_: self.fail("Restoring must not run analysis"))
+        reopened.reconcile([self.row()])
+        self.assertEqual(self.track(reopened)["analysis"]["state"], "approved")
+
     def test_changed_content_even_with_same_size_mtime_is_stale(self):
         manager = self.manager()
         manager.reconcile([self.row()])

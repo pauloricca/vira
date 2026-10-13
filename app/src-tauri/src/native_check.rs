@@ -27,7 +27,7 @@ fn wait(engine: &EngineHandle, deck: usize, generation: u64) -> Result<()> {
 }
 fn load(engine: &EngineHandle, deck: usize, id: &str) -> Result<u64> {
     let generation = engine.begin_load(deck)?;
-    engine.load(deck, generation, id)?;
+    engine.load(deck, generation, id, true, true)?;
     wait(engine, deck, generation)?;
     Ok(generation)
 }
@@ -167,7 +167,7 @@ fn session(
                 let before = engine.state();
                 let gen = engine.begin_load(0)?;
                 ensure!(
-                    engine.load(0, gen, &"0".repeat(64)).is_err(),
+                    engine.load(0, gen, &"0".repeat(64), true, true).is_err(),
                     "Invalid loading unexpectedly succeeded"
                 );
                 let after = engine.state();
@@ -205,7 +205,7 @@ fn session(
                 let old = engine.begin_load(0)?;
                 let older = engine.clone();
                 let id = b.to_owned();
-                let pending = thread::spawn(move || older.load(0, old, &id));
+                let pending = thread::spawn(move || older.load(0, old, &id, true, true));
                 thread::sleep(Duration::from_millis(30));
                 let latest = load(&engine, 0, a)?;
                 let _ = pending.join();

@@ -132,7 +132,7 @@ class LibraryJobs:
             analysis = envelope["analysis"]
             if analysis["state"] in ("queued", "analysing"):
                 return blank("failed", "Analysis was interrupted by a service restart. Retry this file.")
-            if analysis["state"] in ("analysed", "needs_review"):
+            if analysis["state"] in ("analysed", "needs_review", "approved"):
                 validate_result(analysis["result"])
             elif analysis["state"] != "failed":
                 raise ValueError("Invalid cached state")
@@ -206,6 +206,28 @@ class LibraryJobs:
             token = self.tokens.get(track_id, 0) + 1
             self.tokens[track_id] = token
             self.pending.put_nowait((copy.deepcopy(row), token))
+            self.revision += 1
+            return self.state()
+
+    def approve(self, track_id):
+        with self.lock:
+            row = self.rows.get(track_id)
+            if not row or row["status"] != "ready":
+                raise ValueError("Track is unavailable or has changed. Refresh the library.")
+            if row["analysis"]["state"] == "approved":
+                return self.state()
+            if row["analysis"]["state"] not in ("analysed", "needs_review") or row["analysis"]["result"] is None:
+                raise ValueError("Analyse this track before approving its analysis.")
+            digest, stat = source_hash(self.music / row["filename"])
+            if digest != row["source_hash"] or (stat.st_size, str(stat.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
+                raise ValueError("Source changed. Refresh and reanalyse before approving.")
+            previous = row["analysis"]
+            row["analysis"] = {**previous, "state": "approved"}
+            try:
+                self.persist(row)
+            except OSError:
+                row["analysis"] = previous
+                raise ValueError("Cannot save analysis approval. Check the generated-data mount.")
             self.revision += 1
             return self.state()
 

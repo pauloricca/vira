@@ -11,6 +11,20 @@ pub const PRODUCER_FRAMES: usize = 128;
 pub const QUEUE_FRAMES: usize = 1024;
 pub const MIX_GAIN: f32 = 0.45;
 
+fn crossfader_gains(position: f32, enabled: bool) -> [f32; 2] {
+    if !enabled {
+        return [1., 1.];
+    }
+    if position <= -1. {
+        return [1., 0.];
+    }
+    if position >= 1. {
+        return [0., 1.];
+    }
+    let angle = (position + 1.) * std::f32::consts::FRAC_PI_4;
+    [angle.cos(), angle.sin()]
+}
+
 pub struct Voice {
     dsp: Dsp,
     pub mixer: crate::mixer::MixerDsp,
@@ -28,10 +42,13 @@ pub struct Voice {
     transition: usize,
     transition_from: [f32; 2],
     last_sample: [f32; 2],
+    pre_fader: [f32; 2],
     pub source: Arc<Source>,
     input: usize,
     pub position: usize,
     pub playing: bool,
+    pub cue_position: usize,
+    pub cue_preview: bool,
     pub gain: f32,
     pub generation: u64,
     pub position_epoch: u64,
@@ -70,10 +87,13 @@ impl Voice {
             transition: 0,
             transition_from: [0.; 2],
             last_sample: [0.; 2],
+            pre_fader: [0.; 2],
             source,
             input: 0,
             position: 0,
             playing: false,
+            cue_position: 0,
+            cue_preview: false,
             gain: 0.8,
             generation,
             position_epoch: 0,
@@ -89,6 +109,7 @@ impl Voice {
     pub fn seek(&mut self, position: usize) {
         // Retain the accepted reset path; no replacement-stretcher shortcut.
         self.scrub = None;
+        self.cue_preview = false;
         self.dsp.reset();
         self.mixer.reset();
         self.launch_beat = None;
@@ -158,6 +179,7 @@ impl Voice {
         self.seek(0);
     }
     pub fn next(&mut self) -> Result<[f32; 2]> {
+        self.pre_fader = [0.; 2];
         if let Some((from, target, remaining)) = self.scrub {
             if remaining == 0 || (target - from).abs() < 0.001 {
                 return Ok([0.; 2]);
@@ -171,9 +193,7 @@ impl Voice {
             let fraction = (position - position.floor()) as f32;
             let envelope = ((1920 - remaining).min(remaining) as f32 / 96.).min(1.);
             let sample = [&self.source.left, &self.source.right].map(|channel| {
-                (channel[index] + (channel[next] - channel[index]) * fraction)
-                    * self.gain
-                    * envelope
+                (channel[index] + (channel[next] - channel[index]) * fraction) * envelope
             });
             self.position = position.round() as usize;
             self.clock.source = position;
@@ -181,17 +201,15 @@ impl Voice {
             self.scrub = Some((from, target, remaining - 1));
             let sample = self.mixer.process(sample);
             self.last_sample = sample;
-            return Ok(sample);
+            self.pre_fader = sample;
+            return Ok(sample.map(|v| v * self.gain));
         }
         if !self.playing || self.launch_beat.is_some() {
             return Ok([0.; 2]);
         }
         for _ in 0..4096 {
             if self.read < self.available {
-                let mut value = [
-                    self.left[self.read] * self.gain,
-                    self.right[self.read] * self.gain,
-                ];
+                let mut value = [self.left[self.read], self.right[self.read]];
                 self.read += 1;
                 if self.skip > 0 {
                     self.skip -= 1;
@@ -199,6 +217,7 @@ impl Voice {
                 }
                 value = self.mixer.process(value);
                 let seconds = self.seconds();
+                let mut click = 0.;
                 if let Some(grid) = self
                     .grid
                     .filter(|_| self.click_panel_open && self.click_gain > 0.)
@@ -209,13 +228,10 @@ impl Voice {
                     if age < 0.025 {
                         let downbeat = (beat.floor() as i64).rem_euclid(4) == 0;
                         let frequency = if downbeat { 1600. } else { 1000. };
-                        let click = (std::f64::consts::TAU * frequency * age).sin() as f32
+                        click = (std::f64::consts::TAU * frequency * age).sin() as f32
                             * (1. - age / 0.025) as f32
                             * self.click_gain
                             * if downbeat { 0.7 } else { 0.4 };
-                        for sample in &mut value {
-                            *sample += click;
-                        }
                     }
                 }
                 if self.transition > 0 {
@@ -235,7 +251,9 @@ impl Voice {
                 if self.position >= self.source.len() {
                     self.playing = false;
                 }
-                return Ok(value);
+                self.pre_fader = value.map(|v| v + click);
+                // The timing reference click retains its independent volume.
+                return Ok(value.map(|v| v * self.gain + click));
             }
             if self.dsp.available() > 0 {
                 self.available = self.dsp.retrieve(&mut self.left, &mut self.right);
@@ -271,9 +289,14 @@ pub enum Command {
         deck: usize,
         generation: u64,
         voice: Box<Voice>,
+        preserve_lock: bool,
+        reset_mixer: bool,
     },
     Play(usize, u64),
     Pause(usize, u64),
+    PlayPause(usize, u64),
+    CuePress(usize, u64),
+    CueRelease(usize, u64),
     Stop(usize, u64),
     Seek(usize, u64, usize),
     ScrubStart(usize, u64, usize),
@@ -289,16 +312,26 @@ pub enum Command {
     Drift(usize, [u64; 2]),
     DriftRate(f64),
     SyncQuantum(u8),
+    Crossfader(f32),
+    CrossfaderEnabled(bool),
+    HeadphoneCue(usize, bool),
     Sync(usize, [u64; 2], bool),
 }
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Frame {
+    pub crossfader: f32,
+    pub crossfader_enabled: bool,
     pub samples: [f32; 2],
+    pub cue_samples: [f32; 2],
+    pub headphone_cue: [bool; 2],
+    pub deck_samples: [[f32; 2]; 2],
     pub positions: [u64; 2],
     pub generations: [u64; 2],
     pub position_epochs: [u64; 2],
     pub playing: [bool; 2],
+    pub cue_positions: [u64; 2],
+    pub cue_preview: [bool; 2],
     pub gains: [f32; 2],
     pub mixer: [crate::mixer::Settings; 2],
     pub grids: [Option<Grid>; 2],
@@ -317,6 +350,13 @@ pub struct Frame {
 }
 
 pub struct Decks {
+    headphone_cue: [bool; 2],
+    cue_current: [f32; 2],
+    crossfader: f32,
+    crossfader_enabled: bool,
+    crossfader_current: [f32; 2],
+    crossfader_target: [f32; 2],
+    crossfader_ramp: u32,
     pub voices: [Option<Box<Voice>>; 2],
     pub master_bpm: f64,
     pub drift_rate: f64,
@@ -328,6 +368,13 @@ pub struct Decks {
 impl Decks {
     pub fn new() -> Self {
         Self {
+            headphone_cue: [false; 2],
+            cue_current: [0.; 2],
+            crossfader: 0.,
+            crossfader_enabled: true,
+            crossfader_current: crossfader_gains(0., true),
+            crossfader_target: crossfader_gains(0., true),
+            crossfader_ramp: 0,
             voices: [None, None],
             master_bpm: 120.,
             drift_rate: 1.,
@@ -406,22 +453,97 @@ impl Decks {
     // Retired ownership is returned to the caller to dispose on a normal thread.
     pub fn command(&mut self, command: Command, latest: [u64; 2]) -> Option<Box<Voice>> {
         match command {
+            Command::HeadphoneCue(deck, enabled) => self.headphone_cue[deck] = enabled,
+            Command::Crossfader(position) => {
+                self.crossfader = position;
+                self.crossfader_target = crossfader_gains(position, self.crossfader_enabled);
+                self.crossfader_ramp = 240; // 5 ms at 48 kHz; avoid gain discontinuities.
+            }
+            Command::CrossfaderEnabled(enabled) => {
+                self.crossfader_enabled = enabled;
+                self.crossfader_target = crossfader_gains(self.crossfader, enabled);
+                self.crossfader_ramp = 240;
+            }
             Command::Install {
                 deck,
                 generation,
                 mut voice,
+                preserve_lock,
+                reset_mixer,
             } => {
                 if generation != latest[deck] {
                     return Some(voice);
                 }
                 if let Some(old) = &self.voices[deck] {
-                    voice.gain = old.gain;
-                    voice.mixer.set(old.mixer.settings);
+                    if !reset_mixer {
+                        voice.gain = old.gain;
+                        voice.mixer.set(old.mixer.settings);
+                    }
+                    if preserve_lock && old.synced {
+                        if voice
+                            .grid
+                            .is_some_and(|grid| grid.speed(self.master_bpm).is_ok())
+                        {
+                            if voice.tempo(self.master_bpm).is_ok() {
+                                voice.synced = true;
+                            }
+                        }
+                    }
                 }
-                self.clear_sync(deck);
+                if self.drift_target == Some(deck) {
+                    self.drift_target = None;
+                }
                 return self.voices[deck].replace(voice);
             }
+            Command::PlayPause(d, g) => {
+                if let Some(v) = &self.voices[d] {
+                    if v.generation == g {
+                        let command = if v.playing && !v.cue_preview {
+                            Command::Pause(d, g)
+                        } else {
+                            Command::Play(d, g)
+                        };
+                        return self.command(command, latest);
+                    }
+                }
+            }
+            Command::CuePress(d, g) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && !v.cue_preview {
+                        if v.playing {
+                            v.playing = false;
+                            v.seek(v.cue_position);
+                        } else {
+                            // Cue is sample-accurate and independent of the beat grid.
+                            let position = (v.seconds() * 48000.).round() as usize;
+                            if position.abs_diff(v.cue_position) > 1 {
+                                v.cue_position = position.min(v.source.len().saturating_sub(1));
+                                v.seek(v.cue_position);
+                            } else {
+                                v.seek(v.cue_position);
+                                v.play();
+                                v.cue_preview = true;
+                            }
+                        }
+                    }
+                }
+            }
+            Command::CueRelease(d, g) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && v.cue_preview {
+                        v.playing = false;
+                        v.seek(v.cue_position);
+                    }
+                }
+            }
             Command::Play(d, g) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && v.cue_preview {
+                        // Latch the audition without restarting or scheduling a launch.
+                        v.cue_preview = false;
+                        return None;
+                    }
+                }
                 let first = !self
                     .voices
                     .iter()
@@ -450,6 +572,7 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
                         v.playing = false;
+                        v.cue_preview = false;
                         v.launch_beat = None;
                     }
                 }
@@ -619,6 +742,9 @@ impl Decks {
     }
     pub fn next(&mut self) -> Result<Frame> {
         let mut frame = Frame {
+            headphone_cue: self.headphone_cue,
+            crossfader: self.crossfader,
+            crossfader_enabled: self.crossfader_enabled,
             output_frame: self.output_frame,
             ..Frame::default()
         };
@@ -677,7 +803,17 @@ impl Decks {
         frame.sync_quantum = self.sync_quantum;
         frame.drift_target = self.drift_target;
         self.output_frame += 1;
+        if self.crossfader_ramp > 0 {
+            for d in 0..2 {
+                self.crossfader_current[d] += (self.crossfader_target[d]
+                    - self.crossfader_current[d])
+                    / self.crossfader_ramp as f32;
+            }
+            self.crossfader_ramp -= 1;
+        }
         for (d, voice) in self.voices.iter_mut().enumerate() {
+            let target = if self.headphone_cue[d] { 1. } else { 0. };
+            self.cue_current[d] += (target - self.cue_current[d]).clamp(-1. / 240., 1. / 240.);
             if let Some(voice) = voice {
                 if voice
                     .launch_beat
@@ -699,13 +835,20 @@ impl Decks {
                     }
                 }
                 let sample = voice.next()?;
+                frame.deck_samples[d] = sample;
+                for channel in 0..2 {
+                    frame.cue_samples[channel] +=
+                        voice.pre_fader[channel] * MIX_GAIN * self.cue_current[d];
+                }
                 for (target, value) in frame.samples.iter_mut().zip(sample) {
-                    *target += value * MIX_GAIN;
+                    *target += value * MIX_GAIN * self.crossfader_current[d];
                 }
                 frame.positions[d] = voice.position as u64;
                 frame.generations[d] = voice.generation;
                 frame.position_epochs[d] = voice.position_epoch;
                 frame.playing[d] = voice.playing;
+                frame.cue_positions[d] = voice.cue_position as u64;
+                frame.cue_preview[d] = voice.cue_preview;
                 frame.gains[d] = voice.gain;
                 frame.mixer[d] = voice.mixer.settings;
                 frame.grids[d] = voice.grid;
@@ -717,7 +860,7 @@ impl Decks {
                 frame.reposition[d] = voice.reposition_seconds;
             }
         }
-        for sample in &mut frame.samples {
+        for sample in frame.samples.iter_mut().chain(frame.cue_samples.iter_mut()) {
             *sample = sample.clamp(-1., 1.);
         }
         Ok(frame)
@@ -727,6 +870,96 @@ impl Decks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn equal_power_curve_has_silent_endpoints_and_constant_power() {
+        assert_eq!(crossfader_gains(-1., true), [1., 0.]);
+        assert_eq!(crossfader_gains(1., true), [0., 1.]);
+        let centre = crossfader_gains(0., true);
+        assert!((centre[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((centre[1] - centre[0]).abs() < 1e-6);
+        for step in 0..=200 {
+            let position = step as f32 / 100. - 1.;
+            let [a, b] = crossfader_gains(position, true);
+            assert!((a * a + b * b - 1.).abs() < 1e-6);
+            assert_eq!(crossfader_gains(position, false), [1., 1.]);
+        }
+    }
+
+    #[test]
+    fn crossfader_attenuates_master_after_channel_meters_and_bypasses_when_hidden() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        install(&mut decks, 1, 1, source());
+        decks.command(Command::Play(0, 1), [1, 1]);
+        decks.command(Command::Play(1, 1), [1, 1]);
+        for position in [-1., 0., 1.] {
+            decks.command(Command::Crossfader(position), [1, 1]);
+            for _ in 0..240 {
+                decks.next().unwrap();
+            }
+            let frame = decks.next().unwrap();
+            let gains = crossfader_gains(position, true);
+            for channel in 0..2 {
+                let expected = MIX_GAIN
+                    * (frame.deck_samples[0][channel] * gains[0]
+                        + frame.deck_samples[1][channel] * gains[1]);
+                assert!((frame.samples[channel] - expected).abs() < 1e-6);
+            }
+        }
+        decks.command(Command::CrossfaderEnabled(false), [1, 1]);
+        for _ in 0..240 {
+            decks.next().unwrap();
+        }
+        let frame = decks.next().unwrap();
+        assert!(!frame.crossfader_enabled);
+        assert_eq!(frame.crossfader, 1.);
+        assert!(
+            (frame.samples[0] - MIX_GAIN * (frame.deck_samples[0][0] + frame.deck_samples[1][0]))
+                .abs()
+                < 1e-6
+        );
+        assert!(frame.deck_samples[0][0].abs() > 0.001);
+    }
+    #[test]
+    fn headphone_cue_bypasses_faders_selects_both_and_never_changes_master() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        install(&mut decks, 1, 1, source());
+        for d in 0..2 {
+            decks.command(Command::Play(d, 1), [1, 1]);
+            decks.command(Command::Gain(d, 1, 0.), [1, 1]);
+        }
+        decks.command(Command::Crossfader(1.), [1, 1]);
+        let mut power = 0.;
+        for selection in [[true, false], [false, true], [true, true], [false, false]] {
+            for d in 0..2 {
+                decks.command(Command::HeadphoneCue(d, selection[d]), [1, 1]);
+            }
+            for _ in 0..480 {
+                decks.next().unwrap();
+            }
+            for _ in 0..480 {
+                let frame = decks.next().unwrap();
+                assert_eq!(frame.samples, [0.; 2]);
+                assert_eq!(frame.deck_samples, [[0.; 2]; 2]);
+                let expected = (0..2)
+                    .filter(|d| selection[*d])
+                    .map(|d| decks.voices[d].as_ref().unwrap().pre_fader[0] * MIX_GAIN)
+                    .sum::<f32>();
+                assert!((frame.cue_samples[0] - expected).abs() < 1e-6);
+                assert_eq!(frame.headphone_cue, selection);
+                power += frame.cue_samples[0].abs();
+            }
+        }
+        assert!(power > 1.);
+        // A stopped deck produces no headphone audio, even when selected.
+        for d in 0..2 {
+            decks.command(Command::HeadphoneCue(d, true), [1, 1]);
+            decks.command(Command::Pause(d, 1), [1, 1]);
+        }
+        assert_eq!(decks.next().unwrap().cue_samples, [0.; 2]);
+    }
+
     fn source() -> Arc<Source> {
         let left: Vec<f32> = (0..48000)
             .map(|i| ((i as f32 * 440. * std::f32::consts::TAU) / 48000.).sin() * 0.2)
@@ -744,10 +977,86 @@ mod tests {
                 deck: d,
                 generation: g,
                 voice: Box::new(Voice::new(source, g)),
+                preserve_lock: false,
+                reset_mixer: false,
             },
             latest,
         ));
     }
+    #[test]
+    fn pioneer_cue_sets_returns_previews_and_latches() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::Seek(0, 1, 12000), [1, 1]);
+        decks.command(Command::CuePress(0, 1), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert_eq!(frame.cue_positions[0], 12000);
+        assert!(!frame.playing[0]);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        for _ in 0..1024 {
+            decks.next().unwrap();
+        }
+        decks.command(Command::CuePress(0, 1), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert_eq!(frame.positions[0], 12000);
+        assert!(!frame.playing[0]);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        decks.command(Command::CuePress(0, 1), [1, 1]);
+        let mut audible = false;
+        for _ in 0..1024 {
+            let frame = decks.next().unwrap();
+            audible |= frame.samples.iter().any(|s| s.abs() > 0.001);
+            assert!(frame.cue_preview[0] && frame.playing[0]);
+        }
+        assert!(audible);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert_eq!(frame.positions[0], 12000);
+        assert!(!frame.playing[0] && !frame.cue_preview[0]);
+        decks.command(Command::CuePress(0, 1), [1, 1]);
+        for _ in 0..300 {
+            decks.next().unwrap();
+        }
+        let before = decks.voices[0].as_ref().unwrap().position;
+        decks.command(Command::PlayPause(0, 1), [1, 1]);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert!(frame.positions[0] > before as u64);
+        assert!(frame.playing[0] && !frame.cue_preview[0]);
+        decks.command(Command::PlayPause(0, 1), [1, 1]);
+        assert!(!decks.next().unwrap().playing[0]);
+    }
+
+    #[test]
+    fn cue_is_immediate_with_sync_and_old_gestures_cannot_affect_replacement() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        install(&mut decks, 1, 1, source());
+        decks.command(Command::Play(1, 1), [1, 1]);
+        let voice = decks.voices[0].as_mut().unwrap();
+        voice.apply_grid(Grid {
+            bpm: 120.,
+            downbeat_seconds: 0.,
+            reviewed: true,
+        });
+        voice.synced = true;
+        decks.command(Command::CuePress(0, 1), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert!(frame.playing[0] && frame.cue_preview[0]);
+        assert!(!frame.launch_pending[0]);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        install(&mut decks, 0, 2, source());
+        decks.command(Command::CuePress(0, 2), [2, 1]);
+        decks.command(Command::CueRelease(0, 1), [2, 1]);
+        decks.command(Command::CuePress(0, 1), [2, 1]);
+        let frame = decks.next().unwrap();
+        assert_eq!(frame.cue_positions[0], 0);
+        assert!(frame.cue_preview[0]);
+        decks.command(Command::Stop(0, 2), [2, 1]);
+        assert!(!decks.next().unwrap().cue_preview[0]);
+    }
+
     #[test]
     fn scrub_follows_motion_then_is_silent_and_ignores_playing_decks() {
         let mut decks = Decks::new();
@@ -862,6 +1171,8 @@ mod tests {
                 deck: 0,
                 generation: 2,
                 voice: Box::new(Voice::new(shared.clone(), 2)),
+                preserve_lock: false,
+                reset_mixer: false,
             },
             [3, 1],
         );
@@ -963,6 +1274,8 @@ mod timing_tests {
                     deck: d,
                     generation: 1,
                     voice: Box::new(voice),
+                    preserve_lock: false,
+                    reset_mixer: false,
                 },
                 [1, 1],
             );
@@ -1278,11 +1591,66 @@ mod timing_tests {
                 deck: 0,
                 generation: 2,
                 voice: Box::new(Voice::new(source, 2)),
+                preserve_lock: false,
+                reset_mixer: false,
             },
             [2, 1],
         ));
         assert!(!decks.voices[0].as_ref().unwrap().synced);
         assert!(decks.voices[1].as_ref().unwrap().synced);
+    }
+    #[test]
+    fn replacement_options_preserve_lock_and_reset_or_keep_mixer() {
+        let mut decks = decks();
+        decks.command(Command::Sync(0, [1, 1], true), [1, 1]);
+        decks.command(Command::Gain(0, 1, 0.25), [1, 1]);
+        decks.command(Command::Mixer(0, 1, 0, 6.), [1, 1]);
+        decks.command(Command::Mixer(0, 1, 4, -0.5), [1, 1]);
+        let source = decks.voices[0].as_ref().unwrap().source.clone();
+        let mut next = Voice::new(source.clone(), 2);
+        next.apply_grid(Grid {
+            bpm: 100.,
+            downbeat_seconds: 0.1,
+            reviewed: true,
+        });
+        drop(decks.command(
+            Command::Install {
+                deck: 0,
+                generation: 2,
+                voice: Box::new(next),
+                preserve_lock: true,
+                reset_mixer: true,
+            },
+            [2, 1],
+        ));
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert!(voice.synced);
+        assert_eq!(voice.target_bpm, decks.master_bpm);
+        assert_eq!(voice.gain, 0.8);
+        assert_eq!(voice.mixer.settings, crate::mixer::Settings::default());
+
+        decks.command(Command::Gain(0, 2, 0.3), [2, 1]);
+        decks.command(Command::Mixer(0, 2, 4, 0.7), [2, 1]);
+        let mut third = Voice::new(source, 3);
+        third.apply_grid(Grid {
+            bpm: 110.,
+            downbeat_seconds: 0.1,
+            reviewed: true,
+        });
+        drop(decks.command(
+            Command::Install {
+                deck: 0,
+                generation: 3,
+                voice: Box::new(third),
+                preserve_lock: false,
+                reset_mixer: false,
+            },
+            [3, 1],
+        ));
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert!(!voice.synced);
+        assert_eq!(voice.gain, 0.3);
+        assert_eq!(voice.mixer.settings.filter, 0.7);
     }
     #[test]
     fn rendered_known_source_events_follow_output_mapping() {

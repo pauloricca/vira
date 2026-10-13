@@ -18,7 +18,7 @@ test('controls send independent deck commands and waveform supports pointer/keyb
   vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
   fireEvent.keyDown(wave, { key: 'Home' });
   fireEvent.keyDown(wave, { key: 'ArrowRight' });
-  expect(control.mock.calls).toEqual([[0, 'play'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
+  expect(control.mock.calls).toEqual([[0, 'play_pause'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
 });
 test('drop accepts only internal track IDs and preparation failure preserves controls', () => {
   const load = vi.fn().mockResolvedValue(undefined);
@@ -68,13 +68,20 @@ test('animation updates playhead and time without React commits for each frame',
   } finally {cleanup(); now.mockRestore(); vi.unstubAllGlobals();}
 });
 
-test('half and double presets use the precise source BPM within the expanded limits',()=>{
+test('timing BPM controls correct the source instead of changing playback tempo',()=>{
   const control=vi.fn().mockResolvedValue(undefined);
   render(<Deck state={{...state,grid:{bpm:118.999072,downbeat_seconds:0,reviewed:false}}} running loading={false} error={null} load={vi.fn()} control={control} />);
-  fireEvent.click(screen.getByText('Half speed')); fireEvent.click(screen.getByText('Double speed'));
-  expect(control.mock.calls).toEqual([[0,'tempo',118.999072*.5],[0,'tempo',118.999072*2]]);
-  expect(screen.getByRole('spinbutton',{name:'Target BPM'}).getAttribute('min')).toBe(String(118.999072*.5));
-  expect(screen.getByRole('spinbutton',{name:'Target BPM'}).getAttribute('max')).toBe(String(118.999072*2));
+  fireEvent.click(screen.getByText('Half BPM')); fireEvent.click(screen.getByText('Double BPM'));
+  fireEvent.click(screen.getByText('Original BPM'));
+  const input = screen.getByRole('spinbutton', { name: 'Detected BPM' });
+  expect((input as HTMLInputElement).value).toBe('118.999072');
+  fireEvent.change(input, { target: { value: '125' } });
+  fireEvent.click(screen.getByText('Set BPM'));
+  expect(control.mock.calls).toEqual([[0,'detected_bpm',118.999072*.5],[0,'detected_bpm',118.999072*2],[0,'original_bpm'],[0,'detected_bpm',125]]);
+  expect(input.getAttribute('min')).toBe('30');
+  expect(input.getAttribute('max')).toBe('300');
+  const buttons = screen.getAllByRole('button').map(button => button.textContent);
+  expect(buttons.indexOf('Double BPM')).toBeLessThan(buttons.indexOf('Original BPM'));
 });
 test('click is enabled only while Timing & tempo is open without changing its volume', async () => {
   const control = vi.fn().mockResolvedValue(undefined);
@@ -96,6 +103,21 @@ test('reference button uses the playhead and removes the clear deck button', () 
   expect(screen.queryByRole('button', { name: 'Clear deck A' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Set reference beat' }));
   expect(control).toHaveBeenCalledWith(0, 'reference_beat', 23.75);
+});
+test('analysis approval works while playing; beat and bar controls require a stopped deck', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const approveAnalysis = vi.fn();
+  const grid = { bpm: 120, downbeat_seconds: 0, reviewed: false };
+  const { rerender } = render(<Deck state={{ ...state, playing: true, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState="needs_review" approveAnalysis={approveAnalysis} />);
+  for (const name of ['Set reference beat', 'Shift bar start back one beat on deck A', 'Shift bar start forward one beat on deck A', 'Set BPM', 'Half BPM', 'Double BPM', 'Original BPM']) {
+    expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
+  }
+  expect((screen.getByRole('button', { name: 'Approve analysis' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
+  expect(approveAnalysis).toHaveBeenCalledOnce();
+  rerender(<Deck state={{ ...state, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState="needs_review" approveAnalysis={approveAnalysis} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
+  expect(approveAnalysis).toHaveBeenCalledTimes(2);
 });
 
 test('reference edits load saved flags, save source timing, and replace the oldest flag', async () => {
@@ -119,6 +141,30 @@ test('reference edits load saved flags, save source timing, and replace the olde
   fireEvent.click(screen.getByText('Third flag'));
   await waitFor(() => expect(screen.getByTestId('references').textContent).toBe('[18,26]'));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: expect.any(Object), referenceBeats: [18, 26] });
+});
+test('BPM correction and original reset persist and apply the grid with its existing anchor and flags', async () => {
+  const grid = { bpm: 120, downbeat_seconds: .25, reviewed: true };
+  const loaded = { ...state, grid, target_bpm: 130, synced: true };
+  invoke.mockImplementation((command: string, args?: { grid?: typeof grid | null }) => {
+    if (command === 'get_audio_state') return Promise.resolve({ running: true, error: null, telemetry: {}, decks: [loaded, { ...state, deck: 1, track: null }] });
+    if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? grid, suggestion: { ...grid, bpm: 118.999072 }, reference_beats: [10] });
+    if (command === 'timing_waveform') return Promise.resolve(state.track);
+    return Promise.resolve();
+  });
+  function Harness() {
+    const decks = useDecks();
+    return <Deck state={decks.audio.decks[0]} running={decks.audio.running} loading={false} error={null} load={decks.load} control={decks.control} />;
+  }
+  render(<Harness />);
+  const input = await screen.findByRole('spinbutton', { name: 'Detected BPM' });
+  await waitFor(() => expect((input as HTMLInputElement).value).toBe('120'));
+  fireEvent.change(input, { target: { value: '125' } });
+  fireEvent.click(screen.getByText('Set BPM'));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 125, reviewed: false } }));
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { ...grid, bpm: 125, reviewed: false }, referenceBeats: [10] });
+  fireEvent.click(screen.getByText('Original BPM'));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 118.999072, reviewed: false } }));
+  expect(invoke.mock.calls.some(([command]) => command === 'deck_control')).toBe(false);
 });
 test('bar start buttons save and apply adjacent downbeats while retaining reference flags', async () => {
   const grid = { bpm: 120, downbeat_seconds: 0, reviewed: true };
@@ -163,7 +209,8 @@ test('deck lock lives beside BPM and disables manual tempo while locked', () => 
   fireEvent.click(screen.getByRole('button', { name: 'Lock deck A to master tempo' }));
   expect(control).toHaveBeenCalledWith(0, 'sync', 1);
   rerender(<Deck state={{ ...reviewed, synced: true }} running loading={false} error={null} load={vi.fn()} control={control} />);
-  expect((screen.getByRole('spinbutton', { name: 'Target BPM' }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByLabelText('BPM deck A').getAttribute('aria-disabled')).toBe('true');
+  expect((screen.getByRole('spinbutton', { name: 'Detected BPM' }) as HTMLInputElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Unlock deck A to master tempo' }));
   expect(control).toHaveBeenCalledWith(0, 'sync', 0);
 });
@@ -185,9 +232,46 @@ test('mixer changes the selected native deck gain with immediate feedback', () =
   render(<Mixer audio={{ running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={control} />);
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '.35' } });
   expect(control.mock.calls).toEqual([[1, 'gain', .35]]);
-  expect(screen.getByText('35%')).toBeTruthy();
-  expect(screen.getByLabelText('Stereo master meters unavailable')).toBeTruthy();
-  expect((screen.getByRole('slider', { name: 'Crossfader coming later' }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText('-9.1 dB')).toBeTruthy();
+  expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('-9.1 dB');
+  expect(screen.getByRole('meter', { name: 'Deck B level' }).parentElement).toBe(screen.getByRole('slider', { name: 'Volume deck B' }).parentElement);
+  fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '0' } });
+  expect(screen.getByText('−∞ dB')).toBeTruthy();
+  fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '1' } });
+  expect(screen.getByText('0.0 dB')).toBeTruthy();
+  expect(screen.getByLabelText('Stereo master meters')).toBeTruthy();
+  expect((screen.getByRole('slider', { name: 'Crossfader' }) as HTMLInputElement).disabled).toBe(false);
+});
+
+test('meters refresh independently at 30 Hz without React commits or transport requests', async () => {
+  const { Profiler } = await import('react');
+  vi.useFakeTimers();
+  const callbacks: FrameRequestCallback[] = [];
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  let now = 16;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const commits = vi.fn();
+  invoke.mockResolvedValue({ running: true, decks: [.8, 0], master: [.5, .25] });
+  try {
+    render(<Profiler id="meters" onRender={commits}><Mixer audio={{ running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={vi.fn()} /></Profiler>);
+    const mounted = commits.mock.calls.length;
+    await act(async () => {});
+    act(() => callbacks.shift()?.(now));
+    const deck = screen.getByRole('meter', { name: 'Deck A level' });
+    expect(deck.getAttribute('aria-valuetext')).toBe('-1.9 dBFS peak');
+    expect(deck.firstElementChild?.getAttribute('style')).toContain('inset(4.0');
+    expect(screen.getByRole('meter', { name: 'Deck B level' }).getAttribute('aria-valuetext')).toBe('Silent');
+    expect(screen.getByRole('meter', { name: 'Master left level' }).getAttribute('aria-valuetext')).toBe('-6.0 dBFS peak');
+    expect(screen.getByRole('meter', { name: 'Master right level' }).getAttribute('aria-valuetext')).toBe('-12.0 dBFS peak');
+    for (let i = 0; i < 5; i++) {
+      now += 34;
+      await act(async () => { await vi.advanceTimersByTimeAsync(34); callbacks.shift()?.(now); });
+    }
+    expect(invoke.mock.calls.length).toBeGreaterThanOrEqual(6);
+    expect(invoke.mock.calls.every(([command]) => command === 'get_audio_levels')).toBe(true);
+    expect(commits.mock.calls.length).toBe(mounted);
+  } finally { cleanup(); clock.mockRestore(); vi.unstubAllGlobals(); vi.useRealTimers(); }
 });
 
 test('EQ dials send native controls and reset to unity', () => {
@@ -200,24 +284,29 @@ test('EQ dials send native controls and reset to unity', () => {
   expect(dial.getAttribute('aria-valuenow')).toBe('75');
   fireEvent.pointerUp(dial, { pointerId: 1 });
   fireEvent.keyDown(dial, { key: 'ArrowDown' });
-  expect(dial.getAttribute('aria-valuenow')).toBe('73');
+  expect(dial.getAttribute('aria-valuenow')).toBe('75');
+  expect(dial.getAttribute('tabindex')).toBe('-1');
   fireEvent.doubleClick(dial);
   expect(dial.getAttribute('aria-valuenow')).toBe('50');
-  expect(control.mock.calls).toEqual([[0, 'eq_high', .75], [0, 'eq_high', .73], [0, 'eq_high', .5]]);
-  fireEvent.keyDown(dial, { key: 'Home' });
-  expect(dial.getAttribute('aria-valuetext')).toBe('−∞ dB (kill)');
-  fireEvent.keyDown(dial, { key: 'End' });
-  expect(dial.getAttribute('aria-valuetext')).toBe('6.0 dB');
+  expect(control.mock.calls).toEqual([[0, 'eq_high', .75], [0, 'eq_high', .5]]);
 });
 
 test('gain trim is independent of volume and bipolar filter sends both polarities', () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Mixer audio={{ running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={control} />);
-  fireEvent.keyDown(screen.getByRole('slider', {name: 'Gain deck B'}), {key:'End'});
+  const gain = screen.getByRole('slider', {name: 'Gain deck B'});
+  fireEvent.pointerDown(gain, {pointerId:1,clientY:100});
+  fireEvent.pointerMove(gain, {pointerId:1,clientY:30});
+  fireEvent.pointerUp(gain, {pointerId:1});
   const filter = screen.getByRole('slider', {name:'Filter deck B'});
-  fireEvent.keyDown(filter, {key:'Home'});
+  fireEvent.pointerDown(filter, {pointerId:1,clientY:100});
+  fireEvent.pointerMove(filter, {pointerId:1,clientY:170});
+  fireEvent.pointerUp(filter, {pointerId:1});
   expect(filter.getAttribute('aria-valuetext')).toBe('Low-pass 100%');
-  fireEvent.keyDown(filter, {key:'End'});
+  fireEvent.pointerDown(filter, {pointerId:1,clientY:170});
+  fireEvent.pointerMove(filter, {pointerId:1,clientY:30});
+  fireEvent.pointerUp(filter, {pointerId:1});
   expect(filter.getAttribute('aria-valuetext')).toBe('High-pass 100%');
   fireEvent.doubleClick(filter);
   expect(control.mock.calls).toEqual([[1,'trim',12],[1,'filter',-1],[1,'filter',1],[1,'filter',0]]);
@@ -275,4 +364,63 @@ test('rolling waveform follows drag displacement beneath a fixed center playhead
     await act(async()=>{fireEvent.pointerMove(wave,{clientX:85});fireEvent.pointerMove(wave,{clientX:35});fireEvent.pointerUp(wave);await vi.advanceTimersByTimeAsync(100);});
     expect(control.mock.calls).toEqual([[0,'scrub_start',50],[0,'scrub',45],[0,'scrub',55],[0,'scrub_pause',55]]);
   } finally {cleanup();vi.useRealTimers();vi.unstubAllGlobals();}
+});
+
+test('Cue handles pointer release, keyboard repeat, cancellation and Play during preview', () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  const control = vi.fn().mockResolvedValue(undefined);
+  const { rerender } = render(<Deck state={state} running loading={false} error={null} load={vi.fn()} control={control} />);
+  const cue = screen.getByRole('button', { name: 'Cue deck A' });
+  fireEvent.pointerDown(cue, { button: 0, pointerId: 1 });
+  fireEvent.pointerUp(cue, { pointerId: 1 });
+  fireEvent.lostPointerCapture(cue);
+  expect(control.mock.calls).toEqual([[0, 'cue_press'], [0, 'cue_release']]);
+  control.mockClear();
+  fireEvent.keyDown(cue, { key: ' ', repeat: false });
+  fireEvent.keyDown(cue, { key: ' ', repeat: true });
+  fireEvent.keyUp(cue, { key: ' ' });
+  expect(control.mock.calls).toEqual([[0, 'cue_press'], [0, 'cue_release']]);
+  control.mockClear();
+  fireEvent.pointerDown(cue, { button: 0, pointerId: 2 });
+  fireEvent.blur(window);
+  expect(control.mock.calls).toEqual([[0, 'cue_press'], [0, 'cue_release']]);
+  rerender(<Deck state={{ ...state, playing: true, cue_preview: true, cue_seconds: 12 }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  control.mockClear();
+  fireEvent.pointerDown(cue, { button: 0, pointerId: 3 });
+  const play = screen.getByRole('button', { name: 'Play deck A' });
+  fireEvent.blur(cue, { relatedTarget: play });
+  fireEvent.click(play);
+  fireEvent.pointerUp(cue, { pointerId: 3 });
+  expect(control.mock.calls).toEqual([[0, 'cue_press'], [0, 'play_pause'], [0, 'cue_release']]);
+  expect(screen.getByLabelText('Cue point deck A').getAttribute('d')).toBe('M122.88,0v120');
+  vi.unstubAllGlobals();
+});
+
+test('crossfader sends global positions, centres on double-click and follows native state', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const audio = { running: true, error: null, telemetry: {}, crossfader: -.4, decks: [{ ...state, track: null }, { ...state, deck: 1, track: null }] };
+  const { rerender } = render(<Mixer audio={audio} control={control} />);
+  const slider = screen.getByRole('slider', { name: 'Crossfader' }) as HTMLInputElement;
+  expect(slider.value).toBe('-0.4');
+  expect(slider.disabled).toBe(false);
+  fireEvent.change(slider, { target: { value: '1' } });
+  expect(control).toHaveBeenLastCalledWith(0, 'crossfader', 1);
+  fireEvent.doubleClick(slider);
+  expect(control).toHaveBeenLastCalledWith(0, 'crossfader', 0);
+  rerender(<Mixer audio={audio} control={control} showCrossfader={false} />);
+  expect(screen.queryByRole('slider', { name: 'Crossfader' })).toBeNull();
+});
+
+
+test('headphone buttons toggle each deck independently and expose native selection', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const audio = { running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1, headphone_cue: true }] };
+  const { rerender } = render(<Mixer audio={audio} control={control} />);
+  const a = screen.getByRole('button', { name: 'Headphone cue deck A' });
+  expect(a.getAttribute('aria-pressed')).toBe('false');
+  fireEvent.click(a);
+  fireEvent.click(screen.getByRole('button', { name: 'Headphone cue deck B' }));
+  expect(control.mock.calls).toEqual([[0, 'headphone_cue', 1], [1, 'headphone_cue', 0]]);
+  rerender(<Mixer audio={{ ...audio, decks: [{ ...state, headphone_cue: true }, { ...state, deck: 1 }] }} control={control} />);
+  expect(a.getAttribute('aria-pressed')).toBe('true');
 });

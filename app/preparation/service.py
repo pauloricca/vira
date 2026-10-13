@@ -188,7 +188,7 @@ def make_handler(music: Path, generated: Path):
                     self.respond(400, {"error": str(exc)})
                 return
             # Accept only an opaque track ID, never a path or shell command.
-            if self.path in ("/v1/analysis", "/v1/prepare"):
+            if self.path in ("/v1/analysis", "/v1/analysis/approve", "/v1/prepare"):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
@@ -209,6 +209,8 @@ def make_handler(music: Path, generated: Path):
                             if deck is not None:
                                 preparation.complete(deck, generation)
                         self.respond(200, result)
+                    elif self.path == "/v1/analysis/approve":
+                        self.respond(200, jobs.approve(track_id))
                     else:
                         self.respond(202, jobs.request(track_id))
                 except (ValueError, OSError) as exc:

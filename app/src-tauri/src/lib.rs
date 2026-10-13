@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
+mod audio_devices;
+mod cue_output;
 pub mod decks;
 mod dsp;
 mod metrics;
@@ -48,6 +50,7 @@ pub enum AnalysisState {
     Analysing,
     Analysed,
     NeedsReview,
+    Approved,
     Stale,
     Failed,
 }
@@ -95,11 +98,11 @@ impl Library {
                         .is_some_and(|hash| valid_id(hash)))
                 || (matches!(
                     track.analysis.state,
-                    AnalysisState::Analysed | AnalysisState::NeedsReview
+                    AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved
                 ) && track.analysis.result.is_none())
                 || (!matches!(
                     track.analysis.state,
-                    AnalysisState::Analysed | AnalysisState::NeedsReview
+                    AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved
                 ) && track.analysis.result.is_some())
             {
                 return Err("Preparation service returned invalid track metadata.".into());
@@ -139,6 +142,17 @@ pub fn request_analysis(track_id: &str) -> Result<Library, String> {
     }
     service_request(
         "/v1/analysis",
+        Some(serde_json::json!({ "track_id": track_id })),
+        true,
+    )
+}
+
+pub fn approve_analysis(track_id: &str) -> Result<Library, String> {
+    if !valid_id(track_id) {
+        return Err("Analysis approval requires a library track ID.".into());
+    }
+    service_request(
+        "/v1/analysis/approve",
         Some(serde_json::json!({ "track_id": track_id })),
         true,
     )
@@ -268,6 +282,12 @@ pub fn run() {
             .map_err(|e| format!("Analysis request worker failed: {e}"))?
     }
     #[tauri::command]
+    async fn approve_track_analysis(track_id: String) -> Result<Library, String> {
+        tauri::async_runtime::spawn_blocking(move || approve_analysis(&track_id))
+            .await
+            .map_err(|e| format!("Analysis approval worker failed: {e}"))?
+    }
+    #[tauri::command]
     async fn get_track_artwork(track_id: String) -> Result<Option<String>, String> {
         tauri::async_runtime::spawn_blocking(move || track_artwork(&track_id))
             .await
@@ -284,16 +304,56 @@ pub fn run() {
             .map_err(|e| e.to_string())
     }
     #[tauri::command]
+    async fn get_audio_devices(
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<serde_json::Value, String> {
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            engine.audio_devices().map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn set_audio_devices(
+        master: Option<String>,
+        cue: Option<String>,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<(), String> {
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            engine
+                .set_audio_devices(crate::audio_devices::Routes { master, cue })
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn get_audio_levels(
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<runtime::AudioLevels, String> {
+        Ok(state.audio_levels())
+    }
+    #[tauri::command]
     async fn load_track(
         deck: usize,
         track_id: String,
+        preserve_lock: Option<bool>,
+        reset_mixer: Option<bool>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         let engine = state.inner().clone();
         let generation = engine.begin_load(deck).map_err(|e| e.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
             engine
-                .load(deck, generation, &track_id)
+                .load(
+                    deck,
+                    generation,
+                    &track_id,
+                    preserve_lock.unwrap_or(true),
+                    reset_mixer.unwrap_or(true),
+                )
                 .map_err(|e| format!("{e:#}"))
         })
         .await
@@ -394,8 +454,12 @@ pub fn run() {
             refresh_library,
             get_library_state,
             analyse_track,
+            approve_track_analysis,
             get_track_artwork,
             get_audio_state,
+            get_audio_levels,
+            get_audio_devices,
+            set_audio_devices,
             load_track,
             deck_control,
             track_timing,
