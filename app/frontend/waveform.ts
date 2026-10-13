@@ -4,8 +4,9 @@ const cache = new WeakMap<NonNullable<Prepared['fine_peaks']>, Float32Array[]>()
 /** Dark deck tint → bright tint for treble → white for strong attacks. */
 export function waveformColour(colour: string, feature?: [number, number]) {
   const high = feature?.[0] ?? 0, transient = feature?.[1] ?? 0;
-  const light = .28 + .65 * Math.pow(high, .7);
-  const white = transient > .35 ? Math.min(1, (transient - .35) / .5) : 0;
+  // Lift bass and midrange visibility while retaining headroom for white attacks.
+  const light = .40 + .40 * Math.pow(high, .55);
+  const white = transient > .45 ? Math.min(1, (transient - .45) / .45) : 0;
   const rgb = [1,3,5].map(i => Math.round(parseInt(colour.slice(i,i+2),16) * light * (1-white) + 255*white));
   return `rgb(${rgb.join(',')})`;
 }

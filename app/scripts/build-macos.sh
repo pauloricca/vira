@@ -15,4 +15,5 @@ mkdir -p output/VIRA.app/Contents/MacOS output/VIRA.app/Contents/Resources
 rm -f output/VIRA.app/Contents/MacOS/vira
 cp src-tauri/target/aarch64-apple-darwin/release/vira output/VIRA.app/Contents/MacOS/vira
 cp scripts/Info.plist output/VIRA.app/Contents/Info.plist
+python3 scripts/build-icon.py
 printf 'APPL????' > output/VIRA.app/Contents/PkgInfo

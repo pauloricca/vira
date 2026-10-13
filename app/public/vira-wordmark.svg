@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="90 95 940 200" role="img" aria-label="VIRA">
+  <g fill="#efa264">
+    <path d="M90 95h40v40H90zm40 40h40v80h-40zm40 80h40v40h-40zm40 40h40v40h-40zm40-40h40v40h-40zm40-80h40v80h-40zm40-40h40v40h-40z"/>
+  </g>
+  <g fill="#d4dce1">
+    <path d="M450 95h40v200h-40zm-20 0h80v40h-80zm0 160h80v40h-80z"/>
+    <path d="M600 95h40v200h-40zm40 0h120v40H640zm80 40h40v40h-40zm-80 40h120v40H640zm40 40h40v40h-40zm40 40h40v40h-40z"/>
+    <path d="M910 95h40v40h-40zm-40 40h40v40h-40zm80 0h40v40h-40zm-80 40h40v120h-40zm80 0h40v120h-40zm-40 40h40v40h-40zm-80 40h40v40h-40zm160 0h40v40h-40z"/>
+  </g>
+</svg>

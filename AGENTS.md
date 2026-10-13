@@ -6,6 +6,14 @@ The built macOS executable runs on bare metal for Core Audio/device measurements
 The audio spike includes a container cross-compiler using a read-only local Apple SDK.
 Container timings are not macOS acceptance evidence.
 
+# App preview after changes
+
+After every change to VIRA, rebuild `app/output/VIRA.app` in Docker before
+reporting completion, so Paulo can open the updated app and inspect the result.
+Use `app/scripts/build-app.sh` when the preparation service and app launch are
+needed; for code-only changes, the Docker `builder` service can rebuild the app.
+Do not treat a frontend-only build as an updated `.app`.
+
 # Deployment
 
 When Paulo requests a web-app deployment, default to Faffless and follow

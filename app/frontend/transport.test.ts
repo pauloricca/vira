@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { DisplayPosition } from './transport';
-import { gridGeometry, peakLevels, rangePeak } from './waveform';
+import { gridGeometry, peakLevels, rangePeak, waveformColour } from './waveform';
 const state={position_seconds:10,speed:1,playing:true,generation:1,position_epoch:0,duration:100};
 test('late, uneven polls correct continuously without a backwards jump',()=>{
   const clock=new DisplayPosition(); clock.update(state,0);
@@ -63,4 +63,11 @@ test('slow rAF fallback remains a single visible display loop and stops when unu
     now+=100; await vi.advanceTimersByTimeAsync(100);
     expect(draw.mock.calls.length).toBe(frames);
   } finally {stop();clock.mockRestore();vi.unstubAllGlobals();vi.useRealTimers();}
+});
+
+test('sustained treble stays tinted while a strong attack becomes white even over bass',()=>{
+  expect(waveformColour('#89d2ee', [0, .95])).toBe('rgb(255,255,255)');
+  expect(waveformColour('#89d2ee', [1, 0])).toBe('rgb(110,168,190)');
+  expect(waveformColour('#89d2ee', [0, .4])).toBe(waveformColour('#89d2ee', [0, 0]));
+  expect(waveformColour('#89d2ee', [0, 0])).toBe('rgb(55,84,95)');
 });

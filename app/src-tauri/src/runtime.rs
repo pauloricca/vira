@@ -432,17 +432,20 @@ impl EngineHandle {
             "play" => Command::Play(deck, generations[deck]),
             "pause" => Command::Pause(deck, generations[deck]),
             "stop" => Command::Stop(deck, generations[deck]),
-            "seek" => {
+            "seek" | "scrub_start" | "scrub" | "scrub_pause" => {
                 let seconds = value.ok_or_else(|| anyhow::anyhow!("Seek requires a position"))?;
                 ensure!(
                     seconds.is_finite() && seconds >= 0. && seconds <= frames as f64 / RATE as f64,
                     "Seek position is outside the track"
                 );
-                Command::Seek(
-                    deck,
-                    generations[deck],
-                    (seconds * RATE as f64).round() as usize,
-                )
+                let position = (seconds * RATE as f64).round() as usize;
+                if action == "seek" {
+                    Command::Seek(deck, generations[deck], position)
+                } else if action == "scrub_start" {
+                    Command::ScrubStart(deck, generations[deck], position)
+                } else {
+                    Command::Scrub(deck, generations[deck], position, action == "scrub")
+                }
             }
             "gain" => {
                 let gain = value.ok_or_else(|| anyhow::anyhow!("Gain requires a value"))?;
@@ -486,12 +489,14 @@ impl EngineHandle {
             }
             "drift" => {
                 ensure!(
-                    snapshot.grids[deck].is_some() && !snapshot.synced[deck],
-                    "Load and unlock deck before drifting to it"
+                    snapshot.grids[deck].is_some(),
+                    "Apply a source grid before drifting to it"
                 );
                 for d in 0..2 {
                     if snapshot.synced[d] {
-                        snapshot.grids[d].unwrap().speed(snapshot.targets[deck])?;
+                        snapshot.grids[d]
+                            .unwrap()
+                            .speed(snapshot.grids[deck].unwrap().bpm)?;
                     }
                 }
                 Command::Drift(deck, generations)

@@ -14,7 +14,7 @@ except ImportError:
 CONVERSION_VERSION = "ffmpeg-stereo-f32le-48000-v1"
 SETTINGS = {"sample_rate": 48000, "channels": 2, "format": "f32le"}
 PEAK_BINS = 1024
-FEATURE_VERSION = 2
+FEATURE_VERSION = 4
 FINE_FRAMES = 240 # 5 ms source-time buckets; no PCM in the webview
 
 
@@ -29,9 +29,12 @@ def spectral_features(path, frames, width):
     count = math.ceil(frames / FINE_FRAMES)
     features = np.zeros((count, 2), dtype=np.float32)
     window = np.hanning(1024)
-    high = np.fft.rfftfreq(1024, 1 / 48000) >= 3000
+    frequencies = np.fft.rfftfreq(1024, 1 / 48000)
+    high = frequencies >= 3000
+    low = (frequencies >= 40) & (frequencies < 250)
     previous = np.zeros(513)
     envelope = 0.0
+    normalization = 1024 * (window ** 2).sum() / 2
     for first in range(0, count, 512):
         centers = np.arange(first, min(first + 512, count)) * FINE_FRAMES
         indices = centers[:, None] + np.arange(1024)[None, :] - 512
@@ -41,16 +44,38 @@ def spectral_features(path, frames, width):
         magnitude = np.sqrt(power)
         for offset, spectrum in enumerate(magnitude):
             total = power[offset].sum()
-            rms = np.sqrt(total / (1024 * (window ** 2).sum() / 2))
+            rms = np.sqrt(total / normalization)
             presence = np.sqrt(power[offset, high].sum() / max(total, 1e-12))
-            flux = np.maximum(spectrum - previous, 0).sum() / max(spectrum.sum(), 1e-12)
-            attack = max(0, rms - envelope) / max(rms, 1e-6)
+            # White is reserved for strong bass attacks; treble keeps the deck tint.
+            low_power = power[offset, low].sum()
+            low_rms = np.sqrt(low_power / normalization)
+            flux = np.maximum(spectrum[low] - previous[low], 0).sum() / max(spectrum[low].sum(), 1e-12)
+            rise = max(0, low_rms - envelope) / max(low_rms, 1e-6)
+            novelty = np.sqrt(max(0, flux - .15) * max(0, rise - .1))
+            audible = min(1, max(0, low_rms - .015) / .07)
+            bass_weight = min(1, max(0, low_power / max(total, 1e-12) - .08) / .17)
+            onset = min(1, novelty * audible * bass_weight * 5.6)
+            envelope = max(low_rms, envelope * .92)
             strength = min(1, rms / .12)
-            features[first + offset] = [min(1, presence * strength), min(1, flux * attack * strength * 2.5)]
-            envelope = max(rms, envelope * .92)
+            features[first + offset] = [min(1, presence * strength), onset]
             previous = spectrum
+    # Keep one 5 ms stroke per attack, with 100 ms separation; avoid white clusters.
+    scores = features[:, 1].copy()
+    features[:, 1] = 0
+    selected = np.zeros(count, dtype=bool)
+    candidates = [i for i in range(count) if scores[i] > .35
+                  and scores[i] == scores[max(0, i-2):min(count, i+3)].max()]
+    for index in sorted(candidates, key=lambda i: (-scores[i], i)):
+        if not selected[max(0, index-20):min(count, index+21)].any():
+            features[index, 1] = scores[index]
+            selected[index] = True
     overview = np.zeros((math.ceil(frames / width), 2), dtype=np.float32)
-    np.maximum.at(overview, np.minimum(np.arange(count) * FINE_FRAMES // width, len(overview)-1), features)
+    buckets = np.minimum(np.arange(count) * FINE_FRAMES // width, len(overview)-1)
+    np.maximum.at(overview, buckets, features)
+    # A full-track pixel covers many attacks: show attack density rather than a white wall.
+    totals = np.bincount(buckets, weights=features[:, 1], minlength=len(overview))
+    counts = np.bincount(buckets, minlength=len(overview))
+    overview[:, 1] = totals / np.maximum(1, counts)
     return features.tolist(), overview.tolist()
 
 

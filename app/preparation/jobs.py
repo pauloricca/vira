@@ -13,7 +13,7 @@ import threading
 import uuid
 
 # Kept here too so the HTTP service never imports the numerical toolchain.
-ANALYZER_VERSION = "librosa-0.11.0-poc-v1"
+ANALYZER_VERSION = "librosa-0.11.0-poc-v3-attack-phase"
 ANALYSIS_SCHEMA = 1
 LIBRARY_SCHEMA = 2
 MAX_PENDING = 32

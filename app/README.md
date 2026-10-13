@@ -2,7 +2,7 @@
 
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
-single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons ← A and ← B drift it toward an unlocked deck's tempo.
+single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
 Deck volume faders control native gain. Expand **Timing & tempo** for grid editing,
 tempo presets and click volume. Future controls are disabled;
 deck/master meters are inactive placeholders (one per deck, stereo master) until
@@ -13,7 +13,7 @@ Collection rows show number, cover tile, title, artist, BPM, key, length and
 analysis status. The title's tooltip shows the source filename, and search also
 matches it. The old expandable estimate row has been removed.
 The **Settings** tab beside the workspace tabs shows the shared waveform zoom,
-music folder and refresh control, native audio status, master BPM, and the persisted master tempo drift rate (default 1 BPM/sec). Returning to Decks keeps the selected zoom and deck playback state.
+music folder and refresh control, native audio status, master BPM, and the persisted master tempo drift rate (default 1 BPM/sec). Returning to Decks keeps the selected zoom and deck playback state. Pinch over either top rolling waveform to zoom both rows together, snapping to the existing 1, 2, 4, and 8-bar intervals around the fixed playheads.
 
 The application window itself stays fixed. The deck row keeps a constant height,
 the library and performance panels fill the remaining space, and only the library
@@ -88,10 +88,18 @@ it ignores responses superseded by Refresh or a newer state revision.
 
 The worker copies the selected file to temporary container storage while hashing
 it, checks the requested revision, then invokes a single-file subprocess. It
-reuses `preparation/baseline.py`, an unchanged copy of the closed spike's method:
+uses `preparation/baseline.py`, based on the closed spike's method:
 FFmpeg full-song mono 22.05 kHz decoding, Librosa onset/beat tracking, constant-grid
 fitting, and harmonic chroma/Krumhansl-Schmuckler key candidates. There is no batch
-scan, preview generation, engine comparison or alteration to the fitting method.
+scan, preview generation or engine comparison. Grid fitting now seeds tempo from
+short runs and fits timestamps supporting the earliest coherent beat phase,
+so breakdowns and offbeat tracker slips do not skew the whole song. Diagnostics
+retain disagreement with all detected beats, including the supported fraction;
+an unstable tracker still requires review. A separate phase calibration uses
+repeatable PCM attack starts to remove spectral tracker delay, preserving tempo
+and source-time silence. Its measured correction/support are saved alongside the
+original tracker anchor; residual diagnostics describe the tracker fit before
+this correction.
 Dependencies are pinned to the spike's `requirements.lock.txt`.
 
 Completed results preserve raw detected beats, fitted BPM/offset, residual/tempo
@@ -149,9 +157,17 @@ separate R3/transport states.
 - **Play / Pause** resumes or holds position. Playing after a natural end restarts
   the song from the beginning. Reaching the end itself stops without looping.
 - **Stop** pauses and returns to the beginning.
-- Click the waveform to seek. Focus it and use left/right arrows for five-second
-  jumps, or Home/End for the track boundaries. Seeking preserves playing/paused
-  state except at the end, which stops.
+- On paused/stopped decks, drag the full-track overview playhead to seek silently.
+  Drag the top rolling waveform beneath its fixed center playhead to scrub audibly,
+  forwards or backwards. Audio goes silent when the pointer stops. Clicking the
+  rolling waveform grabs it without jumping. Release leaves the deck paused at
+  the selected position. While playing, click either waveform to jump to the
+  nearest position with the same phase as the deck immediately before the jump,
+  using the selected beat/bar setting. Playing clicks retain tempo lock and do
+  not start a scrub gesture. Tracks without a timing grid seek exactly.
+  Paused seeking and scrubbing unlock tempo sync. Use left/right arrows for
+  five-second jumps, or Home/End for the track boundaries; playing keyboard seeks
+  preserve phase too. Exact seeks to the end stop playback.
 - **Volume** sets per-deck gain from zero to one. The mix applies 0.45 headroom per
   deck and a final sample clamp; the default deck gain is 0.8. No crossfader or sync
   is included. The two decks remain unsynchronised.
@@ -274,7 +290,7 @@ an applied deck's BPM locks it to the master if it has a timing grid and
 the master fits its supported speed range. Draft grids can be locked, so review
 their musical timing before relying on alignment. Both decks can lock at once. A locked
 deck's BPM and manual tempo controls are greyed out. Unlocking preserves its
-current target BPM. Manual deck tempo changes or seeking unlock that deck;
+current target BPM. Manual deck tempo changes or paused seeking unlock that deck;
 replacing or applying a grid clears only that deck's lock. Pause and Stop leave
 the lock armed. Locking a playing deck seeks to the nearest source position with
 the master's selected beat or bar phase. When Play starts a locked deck while another deck is
@@ -288,9 +304,9 @@ current grid position, including a pickup beat before the first downbeat, withou
 seeking its audio. Both locked
 decks use that same phase, and follow master tempo changes at render boundaries.
 
-The header's ← A and ← B buttons, to the right of master BPM, move the master toward the selected unlocked
-deck at the configured BPM per second. Double-click sets the master to that deck's
-BPM immediately. These buttons preserve both decks' lock
+The header's A → and B → buttons, before master BPM, move the master toward the selected
+track's original grid BPM at the configured BPM per second, whether locked or unlocked.
+Double-click sets the master to that original BPM immediately. These buttons preserve both decks' lock
 states. The drift rate is in Settings, defaults to 1 BPM/sec, and persists locally.
 Settings also permits setting the master BPM directly. Range failures are
 reported instead of silently clipping; a drift stops before it would take a
@@ -305,7 +321,7 @@ window: eight beats at master tempo. Shared zoom offers 4/8/16/32
 beats (2/4/8/16 s fallback). Each row maps source peaks and grid through its own
 speed, so different target tempos have different beat spacing. Draft grids are
 fainter; unavailable grids draw no markers. Empty space outside source boundaries
-remains empty. The overviews stay seekable and the top rows are display-only.
+remains empty. The overviews stay seekable and the top rows also support paused scrubbing.
 Preparation caches stereo peaks at 240 source frames (5 ms). The webview fetches
 fine peaks once per active artifact and retains at most active-source caches;
 200 ms transport polling sends only overview peaks and applied timing. Animation
@@ -377,13 +393,17 @@ source-event/pitch checks do not replace musical listening.
 ## Frequency shading
 
 Waveforms retain dark deck tints, brighten with energy above 3 kHz and approach
-white on strong attacks. Left-channel power spectra use 1024-sample Hann windows and 5 ms
-hops. Playback and the amplitude peak envelope remain stereo. Brightness combines treble proportion
-and absolute RMS; positive spectral flux and a rising RMS envelope mark attacks.
+white on strong attacks. Left-channel power spectra use 1024-sample Hann windows
+and 5 ms hops. Playback and the amplitude peak envelope remain stereo. Brightness
+combines treble proportion and absolute RMS; positive spectral flux and
+a separate 40–250 Hz envelope identify strong bass attacks for white highlights.
+Treble attacks retain the deck colour; highlights are narrowed to one 5 ms bucket
+with at least 100 ms between candidates. Sustained bass remains dark.
 These are source-audio cues, independent of playback gain and tempo. Cached
 preparation gains versioned frequency features automatically on the next load.
-Rolling, overview and timing views share the shading. Overview maxima preserve
-short attacks but compress their timing at full-track scale.
+Rolling, overview and timing views share the shading. Close-up maxima preserve
+short attacks. The full-track overview averages attack strength into density
+to avoid saturating entire passages white.
 
 Frequency features persist in `generated/prepared/<artifact-id>/manifest.json`
 and are reused across loads and service restarts. Version and checksum checks

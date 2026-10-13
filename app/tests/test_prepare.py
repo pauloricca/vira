@@ -72,9 +72,35 @@ class PreparationTests(unittest.TestCase):
         signal = np.zeros(48000)
         signal[24000:24480] = np.random.default_rng(7).normal(0, .4, 480)
         attack = measure(signal)
-        self.assertGreater(attack[98:103, 1].max(), .8)
+        self.assertLess(attack[98:103, 1].max(), .35)
         self.assertEqual(attack[:90].max(), 0)
         self.assertTrue(np.isfinite(measure(np.zeros(48000))).all())
+
+    def test_attacks_stand_out_over_sustained_bass(self):
+        import numpy as np
+        path = self.root / "bass-attacks.f32"
+        t = np.arange(96000) / 48000
+        bass = .4 * np.sin(2 * np.pi * 60 * t)
+        signal = bass.copy()
+        rng = np.random.default_rng(9)
+        for frame in [24000, 48000, 72000]:
+            signal[frame:frame+480] += rng.normal(0, .14, 480) * np.exp(-np.arange(480) / 200)
+        def measure(samples):
+            np.stack([samples, samples], axis=1).astype("<f4").tofile(path)
+            return np.asarray(pcm_info(path)["fine_features"])
+        steady = measure(bass)
+        features = measure(signal)
+        self.assertLess(steady[20:-20, 1].max(), .22)
+        for bucket in [100, 200, 300]:
+            self.assertLess(features[bucket-2:bucket+4, 1].max(), .45)
+        self.assertLess(features[120:180, 1].max(), .22)
+        kick = bass.copy()
+        attack_time = np.arange(4800) / 48000
+        kick[48000:52800] += .5 * np.sin(2 * np.pi * 160 * attack_time) * np.exp(-attack_time * 35)
+        kick_features = measure(kick)
+        self.assertGreater(kick_features[198:207, 1].max(), .9)
+        self.assertEqual(np.count_nonzero(kick_features[190:220, 1]), 1)
+        self.assertLess(np.asarray(pcm_info(path)["features"])[:, 1].mean(), .1)
 
     def test_changed_source_rejects_cached_audio_even_before_refresh(self):
         old = self.prepare.prepare(self.track_id)

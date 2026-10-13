@@ -33,21 +33,116 @@ def keys(chroma):
 def grid_diagnostics(beats):
     if len(beats) < 8:
         return None
+    beats = np.asarray(beats, dtype=float)
     # Preserve missing beats, rather than treating long gaps as one slow beat.
     period = np.median(np.diff(beats))
     indices = np.r_[0, np.cumsum(np.maximum(1, np.rint(np.diff(beats) / period)))]
     slope, offset = np.polyfit(indices, beats, 1)
-    residual = beats - (offset + indices * slope)
     local = []
     for ids in np.array_split(np.arange(len(beats)), 3):
         local.append(float(60 / np.polyfit(indices[ids], beats[ids], 1)[0]))
+    # A tracker can change phase or lose count in a breakdown. Accumulating its
+    # intervals across that transition biases the tempo and phase of every bar.
+    # Seed tempo from short runs, then assign each timestamp directly to the
+    # nearest grid beat. Fit only timestamps supporting the opening phase.
+    runs = []
+    for start in range(0, len(beats) - 7, 16):
+        part = beats[start:start + 32]
+        ids = np.r_[0, np.cumsum(np.maximum(1, np.rint(np.diff(part) / period)))]
+        runs.append(float(np.polyfit(ids, part, 1)[0]))
+    candidate_period = float(np.median(runs))
+    tolerance = min(.025, candidate_period * .08)
+    # Choose the earliest coherent run; later offbeat passages must not redefine
+    # the opening phase. This remains a beat anchor, never a detected downbeat.
+    for start in range(0, len(beats) - 7, 16):
+        part = beats[start:start + 32]
+        ids = np.rint((part - part[0]) / candidate_period)
+        candidate_offset = float(np.median(part - ids * candidate_period))
+        if np.mean(abs(part - (candidate_offset + ids * candidate_period)) < tolerance) < .8:
+            continue
+        for _ in range(8):
+            fitted_ids = np.rint((beats - candidate_offset) / candidate_period)
+            errors = beats - (candidate_offset + fitted_ids * candidate_period)
+            supported = abs(errors) < tolerance
+            if supported.sum() < 8 or np.ptp(fitted_ids[supported]) < 7:
+                break
+            candidate_period, candidate_offset = np.polyfit(fitted_ids[supported], beats[supported], 1)
+        else:
+            slope, offset = float(candidate_period), float(candidate_offset)
+            # Preserve the source-time location of the anchor, including silence.
+            # Avoid a negative extrapolated anchor from small fitting residuals.
+            if offset < 0:
+                offset += np.ceil(-offset / slope) * slope
+        break
+    # Retain disagreement with *all* tracker beats in diagnostics. A robust
+    # estimate must not hide phase changes or turn an unstable track into a pass.
+    fitted_ids = np.rint((beats - offset) / slope)
+    residual = beats - (offset + fitted_ids * slope)
     n = max(3, len(beats) // 10)
     return {
         'bpm': float(60 / slope), 'offset_seconds': float(offset),
         'residual_p95_ms': float(np.percentile(abs(residual), 95) * 1000),
         'end_minus_start_residual_ms': float((np.median(residual[-n:]) - np.median(residual[:n])) * 1000),
         'thirds_bpm': local, 'tempo_spread_percent': float(100 * np.ptp(local) / (60 / slope)),
+        'supported_beats_fraction': float(np.mean(abs(residual) < .025)),
     }
+
+
+def align_grid_to_attacks(y, grid, beats):
+    """Calibrate spectral tracker phase against repeatable PCM attack starts.
+
+    Keep tracker-fit diagnostics and raw timestamps intact; publish the measured
+    correction separately. No universal latency constant or tempo adjustment.
+    """
+    if not grid:
+        return grid
+    step = max(1, round(SR / 1000))
+    energy = np.mean(y[:len(y) // step * step].reshape(-1, step) ** 2, axis=1)
+    smooth = np.convolve(energy, np.ones(3) / 3, mode='same')
+    rise = smooth - np.r_[np.zeros(5), smooth[:-5]]
+    period, anchor = 60 / grid['bpm'], grid['offset_seconds']
+    ids = np.unique(np.rint((np.asarray(beats) - anchor) / period).astype(int))
+    early, steep = [], []
+    for beat in ids[:64]:
+        time = anchor + beat * period
+        lo, hi = round((time - .060) * SR / step), round((time + .040) * SR / step)
+        if lo < 25 or hi + 20 >= len(energy):
+            continue
+        values = energy[lo:hi]
+        floor, peak = float(np.median(values[:15])), float(values.max())
+        hits = np.flatnonzero(values > floor + .02 * (peak - floor))
+        if peak > floor * 4 and peak - floor > .0001 and len(hits) and hits[0] > 15:
+            early.append((lo + hits[0]) * step / SR - time)
+        # For attacks over an audible tail, locate the sharp energy rise and
+        # backtrack to its foot. The low-floor route above avoids mistaking a
+        # later bass oscillation for the attack in otherwise quiet passages.
+        k = lo + int(np.argmax(rise[lo:hi - 15]))
+        floor, peak = float(smooth[k - 20:k].min()), float(smooth[k:k + 12].max())
+        threshold, start = floor + .1 * (peak - floor), k
+        while start > k - 25 and smooth[start - 1] > threshold:
+            start -= 1
+        if peak > floor * 3 and peak - floor > .0001:
+            steep.append(start * step / SR - time)
+    for candidates in (early, steep):
+        if len(candidates) < 8:
+            continue
+        values = np.asarray(candidates)
+        # Require a repeatable delay; occasional fills/weak attacks cannot move
+        # every beat. Prefer the strongest cluster over isolated early crossings.
+        counts = np.sum(abs(values[:, None] - values[None, :]) < .006, axis=1)
+        center = values[int(np.argmax(counts))]
+        support = values[abs(values - center) < .006]
+        if len(support) < max(8, .6 * len(values)):
+            continue
+        correction = float(np.median(support))
+        corrected = anchor + correction
+        if corrected < 0:
+            corrected += np.ceil(-corrected / period) * period
+        return {**grid, 'offset_seconds': corrected,
+                'tracker_offset_seconds': anchor,
+                'attack_phase_correction_seconds': correction,
+                'attack_phase_support': len(support)}
+    return grid
 
 
 def estimate(y):
@@ -56,7 +151,7 @@ def estimate(y):
     onset = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
     tempo, frames = librosa.beat.beat_track(onset_envelope=onset, sr=SR, hop_length=HOP, trim=True)
     beats = librosa.frames_to_time(frames, sr=SR, hop_length=HOP)
-    grid = grid_diagnostics(beats)
+    grid = align_grid_to_attacks(y, grid_diagnostics(beats), beats)
     chunks = []
     for start in range(0, len(y), 30 * SR):
         part = y[start:start + 30 * SR]

@@ -33,6 +33,6 @@ test('rolling rows share output scale and keep unequal target beat spacing visib
   const audio:AudioState = {master_bpm:120,running:true,error:null,telemetry:{},decks:[deck,{...deck,deck:1,target_bpm:96,speed:.8}]};
   const {container}=render(<RollingWaveforms audio={audio}/>);
   expect(container.querySelectorAll('.rolling-row canvas')).toHaveLength(2);
-  expect(container.querySelectorAll('.rolling-playhead')).toHaveLength(1);
+  expect(container.querySelectorAll('.rolling-playhead')).toHaveLength(2);
   expect(screen.getByText('Beat grid · 16.00 seconds output window')).toBeTruthy();
 });

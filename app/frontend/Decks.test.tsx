@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
+import { RollingRow } from './RollingRow';
 import { Deck, DeckState, Mixer, TRACK_MIME, useDecks } from './Decks';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -15,9 +16,9 @@ test('controls send independent deck commands and waveform supports pointer/keyb
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck A' }), { target: { value: '.4' } });
   const wave = screen.getByRole('slider', { name: 'Waveform seek deck A' });
   vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
-  fireEvent.click(wave, { clientX: 50 });
+  fireEvent.keyDown(wave, { key: 'Home' });
   fireEvent.keyDown(wave, { key: 'ArrowRight' });
-  expect(control.mock.calls).toEqual([[0, 'play'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 50], [0, 'seek', 5]]);
+  expect(control.mock.calls).toEqual([[0, 'play'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
 });
 test('drop accepts only internal track IDs and preparation failure preserves controls', () => {
   const load = vi.fn().mockResolvedValue(undefined);
@@ -96,5 +97,76 @@ test('mixer changes the selected native deck gain with immediate feedback', () =
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '.35' } });
   expect(control.mock.calls).toEqual([[1, 'gain', .35]]);
   expect(screen.getByText('35%')).toBeTruthy();
-  expect((screen.getByRole('slider', { name: 'Master volume coming later' }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByLabelText('Stereo master meters unavailable')).toBeTruthy();
+  expect((screen.getByRole('slider', { name: 'Crossfader coming later' }) as HTMLInputElement).disabled).toBe(true);
+});
+
+test('preview dials turn in either direction and double-click resets without audio commands', () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  const control = vi.fn().mockResolvedValue(undefined);
+  render(<Mixer audio={{ running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={control} />);
+  const dial = screen.getByRole('slider', { name: 'High EQ deck A preview' });
+  fireEvent.pointerDown(dial, { pointerId: 1, clientY: 100 });
+  fireEvent.pointerMove(dial, { pointerId: 1, clientY: 65 });
+  expect(dial.getAttribute('aria-valuenow')).toBe('75');
+  fireEvent.pointerUp(dial, { pointerId: 1 });
+  fireEvent.keyDown(dial, { key: 'ArrowDown' });
+  expect(dial.getAttribute('aria-valuenow')).toBe('73');
+  fireEvent.doubleClick(dial);
+  expect(dial.getAttribute('aria-valuenow')).toBe('50');
+  expect(control).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('overview seeks silently; playing clicks do not start a drag, playing=%s', async playing => {
+  vi.useFakeTimers(); vi.stubGlobal('PointerEvent', MouseEvent);
+  const control = vi.fn().mockResolvedValue(undefined);
+  try {
+    render(<Deck state={{...state, playing}} running loading={false} error={null} load={vi.fn()} control={control} />);
+    const wave = screen.getByRole('slider', {name:'Waveform seek deck A'});
+    Object.assign(wave, {setPointerCapture: vi.fn(), releasePointerCapture: vi.fn()});
+    vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({left:0,width:100} as DOMRect);
+    await act(async () => {fireEvent.pointerDown(wave, {button:0,clientX:25});});
+    if (playing) {
+      expect(control.mock.calls).toEqual([[0,'seek',25]]);
+      await act(async () => {fireEvent.pointerMove(wave, {clientX:70}); fireEvent.pointerUp(wave);});
+      expect(control.mock.calls).toEqual([[0,'seek',25]]);
+      return;
+    }
+    expect(control).toHaveBeenCalledWith(0,'seek',25);
+    await act(async () => {fireEvent.pointerMove(wave, {clientX:70});});
+    await act(async () => {fireEvent.pointerUp(wave, {clientX:80}); await vi.advanceTimersByTimeAsync(80);});
+    expect(control.mock.calls.at(-1)).toEqual([0,'seek',70]);
+    expect(control.mock.calls.every(call => call[1] === 'seek')).toBe(true);
+  } finally {cleanup();vi.useRealTimers();vi.unstubAllGlobals();}
+});
+
+test('playing rolling waveform clicks seek to the visible source position', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  const control = vi.fn().mockResolvedValue(undefined);
+  const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+  try {
+    render(<RollingRow state={{...state,playing:true,position_seconds:50,speed:2}} running window={10} control={control} />);
+    const wave=screen.getByRole('img',{name:'Rolling waveform deck A'});
+    vi.spyOn(wave,'getBoundingClientRect').mockReturnValue({left:10,width:100} as DOMRect);
+    await act(async()=>{fireEvent.pointerDown(wave,{button:0,clientX:85});});
+    expect(control.mock.calls).toEqual([[0,'seek',55]]);
+    await act(async()=>{fireEvent.pointerMove(wave,{clientX:20});fireEvent.pointerUp(wave);});
+    expect(control.mock.calls).toEqual([[0,'seek',55]]);
+  } finally {cleanup();now.mockRestore();vi.unstubAllGlobals();}
+});
+
+test('rolling waveform follows drag displacement beneath a fixed center playhead', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('PointerEvent', MouseEvent);
+  const control = vi.fn().mockResolvedValue(undefined);
+  try {
+    render(<RollingRow state={{...state,position_seconds:50,speed:2}} running window={10} control={control} />);
+    const wave=screen.getByRole('img',{name:'Rolling waveform deck A'});
+    Object.assign(wave,{setPointerCapture:vi.fn()});
+    vi.spyOn(wave,'getBoundingClientRect').mockReturnValue({left:0,width:100} as DOMRect);
+    await act(async()=>{fireEvent.pointerDown(wave,{button:0,clientX:60});});
+    expect(control).toHaveBeenCalledWith(0,'scrub_start',50);
+    expect(wave.parentElement?.querySelector('.rolling-playhead')?.getAttribute('style')).toBeNull();
+    await act(async()=>{fireEvent.pointerMove(wave,{clientX:85});fireEvent.pointerMove(wave,{clientX:35});fireEvent.pointerUp(wave);await vi.advanceTimersByTimeAsync(100);});
+    expect(control.mock.calls).toEqual([[0,'scrub_start',50],[0,'scrub',45],[0,'scrub',55],[0,'scrub_pause',55]]);
+  } finally {cleanup();vi.useRealTimers();vi.unstubAllGlobals();}
 });

@@ -13,6 +13,7 @@ pub const MIX_GAIN: f32 = 0.45;
 
 pub struct Voice {
     dsp: Dsp,
+    scrub: Option<(f64, f64, usize)>,
     pub grid: Option<Grid>,
     pub target_bpm: f64,
     pub click_gain: f32,
@@ -48,6 +49,7 @@ impl Voice {
         let skip = dsp.delay();
         Self {
             dsp,
+            scrub: None,
             grid: None,
             target_bpm: 0.,
             click_gain: 0.,
@@ -82,6 +84,7 @@ impl Voice {
     }
     pub fn seek(&mut self, position: usize) {
         // Retain the accepted reset path; no replacement-stretcher shortcut.
+        self.scrub = None;
         self.dsp.reset();
         self.launch_beat = None;
         self.position_epoch += 1;
@@ -137,6 +140,9 @@ impl Voice {
         let _ = self.tempo(grid.bpm);
     }
     pub fn play(&mut self) {
+        if self.scrub.is_some() {
+            self.seek(self.position);
+        }
         if self.position >= self.source.len() {
             self.seek(0);
         }
@@ -147,6 +153,30 @@ impl Voice {
         self.seek(0);
     }
     pub fn next(&mut self) -> Result<[f32; 2]> {
+        if let Some((from, target, remaining)) = self.scrub {
+            if remaining == 0 || (target - from).abs() < 0.001 {
+                return Ok([0.; 2]);
+            }
+            // Traverse only the pointer's displacement, including backwards.
+            // Ease each bounded segment, then stay silent at its destination.
+            let progress = (1921 - remaining) as f64 / 1920.;
+            let position = from + (target - from) * progress * progress * (3. - 2. * progress);
+            let index = (position.floor() as usize).min(self.source.len() - 1);
+            let next = (index + 1).min(self.source.len() - 1);
+            let fraction = (position - position.floor()) as f32;
+            let envelope = ((1920 - remaining).min(remaining) as f32 / 96.).min(1.);
+            let sample = [&self.source.left, &self.source.right].map(|channel| {
+                (channel[index] + (channel[next] - channel[index]) * fraction)
+                    * self.gain
+                    * envelope
+            });
+            self.position = position.round() as usize;
+            self.clock.source = position;
+            self.clock.output = self.output;
+            self.scrub = Some((from, target, remaining - 1));
+            self.last_sample = sample;
+            return Ok(sample);
+        }
         if !self.playing || self.launch_beat.is_some() {
             return Ok([0.; 2]);
         }
@@ -236,6 +266,8 @@ pub enum Command {
     Pause(usize, u64),
     Stop(usize, u64),
     Seek(usize, u64, usize),
+    ScrubStart(usize, u64, usize),
+    Scrub(usize, u64, usize, bool),
     Gain(usize, u64, f32),
     Remove(usize, u64),
     Grid(usize, u64, Grid),
@@ -418,8 +450,48 @@ impl Decks {
             Command::Seek(d, g, p) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
+                        if v.playing && v.launch_beat.is_none() {
+                            // Resolve against the deck's current phase at the render boundary.
+                            let target = if let Some(grid) = v.grid {
+                                match grid.align_quantum(
+                                    p as f64 / 48000.,
+                                    grid.beat(v.seconds()),
+                                    v.source.len() as f64 / 48000.,
+                                    f64::from(self.sync_quantum),
+                                ) {
+                                    Ok(seconds) => (seconds * 48000.).round() as usize,
+                                    Err(_) => return None,
+                                }
+                            } else {
+                                p
+                            };
+                            v.seek(target);
+                        } else {
+                            v.seek(p);
+                            v.synced = false;
+                        }
+                    }
+                }
+            }
+            Command::ScrubStart(d, g, p) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && !v.playing {
                         v.seek(p);
                         v.synced = false;
+                        v.scrub = Some((v.position as f64, v.position as f64, 0));
+                    }
+                }
+            }
+            Command::Scrub(d, g, p, moving) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && !v.playing && v.scrub.is_some() {
+                        if moving {
+                            let from = v.seconds() * 48000.;
+                            v.scrub = Some((from, p.min(v.source.len()) as f64, 1920));
+                            v.position_epoch += 1;
+                        } else {
+                            v.seek(p);
+                        }
                     }
                 }
             }
@@ -477,9 +549,7 @@ impl Decks {
             }
             Command::Drift(d, generations) => {
                 if self.matches(generations)
-                    && self.voices[d]
-                        .as_ref()
-                        .is_some_and(|v| v.grid.is_some() && !v.synced)
+                    && self.voices[d].as_ref().is_some_and(|v| v.grid.is_some())
                 {
                     self.drift_target = Some(d);
                 }
@@ -504,9 +574,6 @@ impl Decks {
                         }
                     } else if self.align_to_master(d).is_ok() {
                         self.voices[d].as_mut().unwrap().synced = true;
-                        if self.drift_target == Some(d) {
-                            self.drift_target = None;
-                        }
                     } else if let Some(v) = &mut self.voices[d] {
                         v.timing_error = 1;
                     }
@@ -537,7 +604,7 @@ impl Decks {
         }
         if let Some(d) = self.drift_target {
             if let Some(v) = &self.voices[d] {
-                let target = v.target_bpm;
+                let target = v.grid.unwrap().bpm;
                 let step = self.drift_rate / 48000.;
                 let next = if (target - self.master_bpm).abs() <= step {
                     target
@@ -644,6 +711,34 @@ mod tests {
             },
             latest,
         ));
+    }
+    #[test]
+    fn scrub_follows_motion_then_is_silent_and_ignores_playing_decks() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::ScrubStart(0, 1, 12000), [1, 1]);
+        assert_eq!(decks.next().unwrap().samples, [0.; 2]);
+        decks.command(Command::Scrub(0, 1, 24000, true), [1, 1]);
+        let mut audible = false;
+        for _ in 0..1920 {
+            let frame = decks.next().unwrap();
+            audible |= frame.samples.iter().any(|s| s.abs() > 0.001);
+            assert!(!frame.playing[0]);
+        }
+        assert!(audible);
+        for _ in 0..2000 {
+            assert_eq!(decks.next().unwrap().samples, [0.; 2]);
+        }
+        assert_eq!(decks.next().unwrap().positions[0], 24000);
+        decks.command(Command::Scrub(0, 1, 6000, true), [1, 1]);
+        for _ in 0..1920 {
+            decks.next().unwrap();
+        }
+        assert_eq!(decks.next().unwrap().positions[0], 6000);
+        decks.command(Command::Scrub(0, 1, 6000, false), [1, 1]);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        decks.command(Command::ScrubStart(0, 1, 30000), [1, 1]);
+        assert!(decks.next().unwrap().positions[0] < 10000);
     }
     #[test]
     fn finite_play_pause_stop_seek_and_end_without_looping() {
@@ -768,6 +863,39 @@ mod timing_tests {
         let voice = decks.voices[deck].as_ref().unwrap();
         let delta = (voice.grid.unwrap().beat(voice.seconds()) - decks.global_beat).rem_euclid(4.);
         delta.min(4. - delta)
+    }
+    #[test]
+    fn playing_seek_preserves_local_beat_or_bar_phase_and_lock() {
+        for quantum in [1, 4] {
+            for locked in [false, true] {
+                let mut decks = decks();
+                decks.sync_quantum = quantum;
+                let v = decks.voices[0].as_mut().unwrap();
+                v.seek(63600); // 1.325 seconds, offset from both beat and bar boundaries.
+                v.playing = true;
+                v.synced = locked;
+                let grid = v.grid.unwrap();
+                let before = grid.beat(v.seconds());
+                decks.command(Command::Seek(0, 1, 333600), [1, 1]);
+                let v = decks.voices[0].as_ref().unwrap();
+                let error = (grid.beat(v.seconds()) - before).rem_euclid(f64::from(quantum));
+                assert!(error.min(f64::from(quantum) - error) < 0.0001);
+                assert!((v.seconds() - 6.95).abs() <= f64::from(quantum) * 0.25 + 0.0001);
+                assert!(v.playing);
+                assert_eq!(v.synced, locked);
+                // Edge clicks choose a valid matching phase rather than clamping it away.
+                for target in [0, 480000] {
+                    decks.command(Command::Seek(0, 1, target), [1, 1]);
+                    let v = decks.voices[0].as_ref().unwrap();
+                    let error = (grid.beat(v.seconds()) - before).rem_euclid(f64::from(quantum));
+                    assert!(error.min(f64::from(quantum) - error) < 0.0001);
+                    assert!(v.seconds() >= 0. && v.seconds() < 10.);
+                }
+                decks.voices[0].as_mut().unwrap().playing = false;
+                decks.command(Command::Seek(0, 1, 333600), [1, 1]);
+                assert!((decks.voices[0].as_ref().unwrap().seconds() - 6.95).abs() < 0.0001);
+            }
+        }
     }
     fn advance_until_launch(decks: &mut Decks, deck: usize) {
         for _ in 0..240000 {
@@ -1070,7 +1198,20 @@ mod timing_tests {
         }
         assert!((decks.master_bpm - 117.).abs() < 0.0001);
         decks.command(Command::Drift(0, [1, 1]), [1, 1]);
-        assert_eq!(decks.drift_target, Some(1));
+        assert_eq!(decks.drift_target, Some(0));
+        decks.command(Command::Sync(1, [1, 1], true), [1, 1]);
+        decks.command(Command::Drift(1, [1, 1]), [1, 1]);
+        for _ in 0..48000 {
+            decks.next().unwrap();
+        }
+        assert!((decks.master_bpm - 115.).abs() < 0.0001);
+        assert!(decks.voices[0].as_ref().unwrap().synced);
+        assert!(decks.voices[1].as_ref().unwrap().synced);
+        for _ in 0..(8 * 48000) {
+            decks.next().unwrap();
+        }
+        assert_eq!(decks.master_bpm, 100.);
+        assert_eq!(decks.drift_target, None);
     }
     #[test]
     fn replacing_a_deck_only_clears_its_own_lock() {

@@ -69,6 +69,25 @@ test.each([
   if (expectedDeck === null) expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(0);
   else await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: expectedDeck, trackId: 'one' }));
 });
+test('double-click prefers the deck that played least recently when both are stopped and loaded', async () => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform' ? { artifact_id: 'artifact-0', fine_peaks: [], fine_peak_frames: 0 } : library));
+  let playing = [false, true];
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: { track_id: `old-${deck}`, artifact_id: `artifact-${deck}`, title: `Old ${deck}`, artist: '', filename: '', duration_seconds: 1, frames: 1, peak_frames: 0, peaks: [] },
+      position_seconds: 0, playing: playing[deck], gain: .8, generation: 0, requested_generation: 0,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByRole('button', { name: 'Pause deck B' });
+  playing = [true, false];
+  await screen.findByRole('button', { name: 'Pause deck A' });
+  playing = [false, false];
+  await screen.findByRole('button', { name: 'Play deck A' });
+  fireEvent.doubleClick(screen.getByText('Artist - Filename', { selector: 'span' }).closest('tr')!);
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 1, trackId: 'one' }));
+});
 const estimate = {
   grid: { bpm: 121.25, offset_seconds: .12, residual_p95_ms: 55, end_minus_start_residual_ms: 32, tempo_spread_percent: 1.5, thirds_bpm: [120, 121, 122] },
   beats_seconds: [.12, .62, 1.12], keys: [{ key: 'D minor', correlation: .72 }, { key: 'F major', correlation: .68 }],
@@ -150,22 +169,27 @@ test('master BPM is independent of deck tempos and search filters title, artist 
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'FILENAME.WAV' } });
   expect(screen.getByText('Unknown artist')).toBeTruthy();
 });
-test('header drift buttons sit before BPM and double-click sets tempo without drift', async () => {
+test('header buttons use original BPM even with adjusted tempo and locked decks', async () => {
   invoke.mockResolvedValue(library);
-  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, target_bpm: deck === 0 ? 110 : 130, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } })) });
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, synced: true, target_bpm: deck === 0 ? 110 : 130, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } })) });
   render(<App />);
   await screen.findByText('Unknown artist');
   const bpm = screen.getByLabelText('Master BPM');
   const a = screen.getByRole('button', { name: /Drift master tempo to deck A/ });
   expect(a.compareDocumentPosition(bpm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(a.textContent).toBe('A →');
-  expect(screen.getByRole('button', { name: /Drift master tempo to deck B/ }).textContent).toBe('B →');
+  expect(a.textContent).toBe('A (120.0) →');
+  expect((a as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.getByRole('button', { name: /Drift master tempo to deck B/ }).textContent).toBe('B (120.0) →');
   fireEvent.click(a, { detail: 1 });
   fireEvent.click(a, { detail: 2 });
   fireEvent.dblClick(a);
-  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'master_tempo', value: 110, generation: 1 }));
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'master_tempo', value: 120, generation: 1 }));
   await new Promise(resolve => setTimeout(resolve, 270));
   expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'drift')).toBe(false);
+  const b = screen.getByRole('button', { name: /Drift master tempo to deck B/ });
+  expect((b as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(b);
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'drift', value: null, generation: 1 }));
 });
 test('Settings opens from the workspace tabs and shares waveform zoom with Decks', async () => {
   invoke.mockResolvedValue(library);
