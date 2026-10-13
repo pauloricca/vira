@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 try:
     from .jobs import source_hash, atomic_json
 except ImportError:
@@ -22,7 +23,7 @@ def artifact_id(digest):
     return hashlib.sha256((digest + CONVERSION_VERSION).encode()).hexdigest()
 
 
-def spectral_features(path, frames, width):
+def spectral_features(path, frames, width, current=lambda: True):
     """Left-channel power spectra at 5 ms hops; bounded FFT batches."""
     import numpy as np
     pcm = np.memmap(path, dtype="<f4", mode="r", shape=(frames, 2))
@@ -36,6 +37,8 @@ def spectral_features(path, frames, width):
     envelope = 0.0
     normalization = 1024 * (window ** 2).sum() / 2
     for first in range(0, count, 512):
+        if not current():
+            raise ValueError("Load superseded by a newer selection")
         centers = np.arange(first, min(first + 512, count)) * FINE_FRAMES
         indices = centers[:, None] + np.arange(1024)[None, :] - 512
         samples = pcm[np.clip(indices, 0, frames - 1), 0].copy()
@@ -95,7 +98,7 @@ def valid_features(value, info):
     return value.get("waveform_feature_hash") == feature_hash(value)
 
 
-def pcm_info(path, include_features=True):
+def pcm_info(path, include_features=True, current=lambda: True):
     import numpy as np
     length = path.stat().st_size
     if not length or length % 8:
@@ -108,6 +111,8 @@ def pcm_info(path, include_features=True):
     position = 0
     with path.open("rb") as handle:
         while block := handle.read(65536):
+            if not current():
+                raise ValueError("Load superseded by a newer selection")
             digest.update(block)
             values = np.frombuffer(block, dtype="<f4").reshape(-1, 2)
             if not np.isfinite(values).all():
@@ -119,7 +124,7 @@ def pcm_info(path, include_features=True):
     info = {"frames": frames, "duration_seconds": frames / 48000,
             "peak_frames": width, "peaks": peaks.tolist(), "fine_peak_frames": FINE_FRAMES, "fine_peaks": fine.tolist(), "pcm_hash": digest.hexdigest(), "pcm_bytes": length}
     if include_features:
-        fine_features, features = spectral_features(path, frames, width)
+        fine_features, features = spectral_features(path, frames, width, current)
         info.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
         info["waveform_feature_hash"] = feature_hash(info)
     return info
@@ -130,6 +135,8 @@ class Preparation:
         self.jobs = jobs
         # Serial decoding bounds temporary storage/CPU; analysis has its own worker.
         self.lock = threading.Lock()
+        self.requests_lock = threading.Lock()
+        self.requests = [0, 0]
         self.root = jobs.generated / "prepared"
 
     def source_matches(self, row):
@@ -137,13 +144,30 @@ class Preparation:
         if digest != row["source_hash"] or (stat.st_size, str(stat.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
             raise ValueError("Source changed. Refresh the library before loading.")
 
-    def prepare(self, track_id):
+    def complete(self, deck, generation):
+        with self.requests_lock:
+            if self.requests[deck] == generation:
+                self.requests[deck] = 0
+
+    def prepare(self, track_id, deck=None, generation=None):
+        if deck is not None:
+            with self.requests_lock:
+                if generation < self.requests[deck]:
+                    raise ValueError("Load superseded by a newer selection")
+                self.requests[deck] = generation
+        def current():
+            if deck is None:
+                return True
+            with self.requests_lock:
+                return self.requests[deck] == generation
         with self.jobs.lock:
             row = self.jobs.rows.get(track_id)
             if not row or row["status"] != "ready":
                 raise ValueError("Track is unavailable. Refresh the library.")
             row = dict(row)
         with self.lock:
+            if not current():
+                raise ValueError("Load superseded by a newer selection")
             self.source_matches(row)
             identity = artifact_id(row["source_hash"])
             directory = self.root / identity
@@ -152,16 +176,18 @@ class Preparation:
             try:
                 value = json.loads(manifest.read_text())
                 if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == CONVERSION_VERSION and value["source_hash"] == row["source_hash"] and value["settings"] == SETTINGS:
-                    info = pcm_info(directory / "audio.f32", include_features=False)
+                    info = pcm_info(directory / "audio.f32", include_features=False, current=current)
                     if all(value[key] == info[key] for key in info):
                         cached = value
                         if not valid_features(value, info):
-                            fine_features, features = spectral_features(directory / "audio.f32", info["frames"], info["peak_frames"])
+                            fine_features, features = spectral_features(directory / "audio.f32", info["frames"], info["peak_frames"], current)
                             cached.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
                             cached["waveform_feature_hash"] = feature_hash(cached)
                             atomic_json(manifest, cached)
             except (OSError, ValueError, KeyError, TypeError):
                 pass
+            if not current():
+                raise ValueError("Load superseded by a newer selection")
             if cached is None:
                 self.root.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(prefix="prepare-", dir=self.root) as temporary:
@@ -172,23 +198,45 @@ class Preparation:
                     if digest != row["source_hash"] or str(stat.st_mtime_ns) != row["modified_ns"]:
                         raise ValueError("Source changed before decoding. Refresh and retry.")
                     pcm = work / "audio.f32"
+                    if not current():
+                        raise ValueError("Load superseded by a newer selection")
                     try:
-                        subprocess.run(["ffmpeg", "-v", "error", "-protocol_whitelist", "file", "-i", str(snapshot),
-                                        "-f", "f32le", "-ac", "2", "-ar", "48000", str(pcm)],
-                                       check=True, capture_output=True, timeout=120)
+                        command = ["ffmpeg", "-v", "error", "-protocol_whitelist", "file", "-i", str(snapshot),
+                                   "-f", "f32le", "-ac", "2", "-ar", "48000", str(pcm)]
+                        if deck is None:
+                            subprocess.run(command, check=True, capture_output=True, timeout=120)
+                        else:
+                            with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as process:
+                                deadline = time.monotonic() + 120
+                                while process.poll() is None:
+                                    if not current():
+                                        process.terminate()
+                                        process.wait()
+                                        raise ValueError("Load superseded by a newer selection")
+                                    if time.monotonic() > deadline:
+                                        process.kill()
+                                        process.wait()
+                                        raise subprocess.TimeoutExpired(process.args, 120)
+                                    time.sleep(.05)
+                                if process.returncode:
+                                    raise subprocess.CalledProcessError(process.returncode, process.args)
                     except subprocess.TimeoutExpired as exc:
                         raise ValueError("Audio preparation timed out. Retry loading the file.") from exc
                     except subprocess.CalledProcessError as exc:
                         raise ValueError("Cannot decode this source for playback.") from exc
                     cached = {"schema_version": 1, "conversion_version": CONVERSION_VERSION,
                               "settings": SETTINGS, "source_hash": row["source_hash"], "artifact_id": identity,
-                              **pcm_info(pcm)}
+                              **pcm_info(pcm, current=current)}
+                    if not current():
+                        raise ValueError("Load superseded by a newer selection")
                     self.source_matches(row)
                     directory.mkdir(parents=True, exist_ok=True)
                     # Audio before manifest: interrupted conversion can never be a valid cache entry.
                     pcm.replace(directory / "audio.f32")
                     atomic_json(manifest, cached)
             self.source_matches(row)
+            if not current():
+                raise ValueError("Load superseded by a newer selection")
             with self.jobs.lock:
                 if track_id not in self.jobs.rows:
                     raise ValueError("Source revision was superseded while preparing. Refresh and retry.")

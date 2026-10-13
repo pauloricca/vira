@@ -3,7 +3,13 @@
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
 single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
-Deck volume faders control native gain. Expand **Timing & tempo** for grid editing,
+Deck volume faders control native volume independently of the **GN** trim (−12 to +12 dB).
+**LO / MD / HI** use a three-band kill EQ (−∞ to +6 dB, unity at the midpoint),
+with 24 dB/oct crossovers at 250 Hz and 2.5 kHz. **FL** sweeps a low-pass to the
+left (20 kHz down to 30 Hz) and a high-pass to the right (20 Hz up to 18 kHz);
+the center bypasses the filter. Double-click any dial to reset. Dial changes
+ramp over 10 ms, and settings carry over when replacing a loaded track.
+Expand **Timing & tempo** for grid editing,
 tempo presets and click volume. Future controls are disabled;
 deck/master meters are inactive placeholders (one per deck, stereo master) until
 the engine supplies level telemetry. Master gain and crossfading remain deferred.
@@ -86,6 +92,11 @@ The queue holds at most 32 waiting jobs plus the active job, and returns a conci
 retry message when full. The UI polls authoritative library state once per second;
 it ignores responses superseded by Refresh or a newer state revision.
 
+**Analyse all** beside Refresh queues readable tracks in the current search view
+whose analysis is Not analysed, Stale, or Failed. It skips completed and already
+queued jobs, and waits for queue capacity when the view contains more tracks than
+the queue can hold. Refresh cancels any remaining bulk requests.
+
 The worker copies the selected file to temporary container storage while hashing
 it, checks the requested revision, then invokes a single-file subprocess. It
 uses `preparation/baseline.py`, based on the closed spike's method:
@@ -100,6 +111,12 @@ repeatable PCM attack starts to remove spectral tracker delay, preserving tempo
 and source-time silence. Its measured correction/support are saved alongside the
 original tracker anchor; residual diagnostics describe the tracker fit before
 this correction.
+Untrimmed boundary candidates are retained separately. After fitting and attack
+calibration, earlier candidates may extend the grid only when they agree with
+the established pulse and a PCM attack. Recovery preserves fitted BPM and beat
+phase, skips silence and unsupported candidates, and records the number of
+recovered beat positions. The earliest supported beat is provisionally treated
+as beat one of a 4/4 bar; musical downbeat detection remains unimplemented.
 Dependencies are pinned to the spike's `requirements.lock.txt`.
 
 Completed results preserve raw detected beats, fitted BPM/offset, residual/tempo
@@ -313,8 +330,14 @@ reported instead of silently clipping; a drift stops before it would take a
 locked deck outside its supported speed range. A manual per-deck phase bias and
 external clock integration remain future work.
 
-**Clear deck** removes that source and cancels pending preparations; a later load
-is protected by its generation. Source-specific commands are generation guarded.
+In **Timing & tempo**, **Set reference beat** marks the exact playhead position.
+With that panel open, double-click the top rolling waveform to mark the clicked
+source position instead. The first flag shifts the source beat grid without
+changing BPM; the earliest grid beat in the track becomes bar 1, beat 1.
+The second flag fits BPM so both flags fall on beats. A third flag replaces the
+oldest. Flags appear on the rolling and full-track waveforms while the panel is
+open. The adjusted source grid, BPM, and flags are saved with the track and
+restored after restarting VIRA. Target BPM remains a deck playback control.
 
 The top A/B rows retain a fixed central playhead and use a shared output-time
 window: eight beats at master tempo. Shared zoom offers 4/8/16/32

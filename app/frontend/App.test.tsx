@@ -108,8 +108,48 @@ test('selected row queues by ID and polling fills the compact collection row', a
   expect(screen.getByText('121.25')).toBeTruthy();
   expect(screen.getByText('D minor')).toBeTruthy();
   expect(screen.getByText('Needs review')).toBeTruthy();
-  expect(screen.getByText('1', { selector: 'td' })).toBeTruthy();
+  expect(screen.getByText('1', { selector: '.track-index' })).toBeTruthy();
   expect(screen.queryByText(/Review estimates for/)).toBeNull();
+});
+test('Analyse all queues only unanalysed readable tracks in the filtered view', async () => {
+  const states = ['not_analysed', 'stale', 'failed', 'analysed', 'queued', 'not_analysed'] as const;
+  const tracks = states.map((state, index) => ({
+    ...library.tracks[0], id: `track-${index}`, title: index === 5 ? 'Outside' : `Mix ${index}`,
+    status: index === 4 ? 'unreadable' as const : 'ready' as const,
+    analysis: { state, result: null, error: null },
+  }));
+  let current: Library = { ...library, tracks };
+  invoke.mockImplementation((command: string, args?: { trackId: string }) => {
+    if (command === 'refresh_library') return Promise.resolve(current);
+    if (command === 'analyse_track') {
+      current = { ...current, revision: current.revision + 1, tracks: current.tracks.map(track =>
+        track.id === args?.trackId ? { ...track, analysis: { ...track.analysis, state: 'queued' } } : track) };
+    }
+    return Promise.resolve(current);
+  });
+  render(<App />);
+  await screen.findByText('Mix 0');
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'Mix' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Analyse all' }));
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'analyse_track')).toHaveLength(3));
+  expect(invoke.mock.calls.filter(([command]) => command === 'analyse_track').map(([, args]) => args)).toEqual([
+    { trackId: 'track-0' }, { trackId: 'track-1' }, { trackId: 'track-2' },
+  ]);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Analyse all' }) as HTMLButtonElement).disabled).toBe(true));
+});
+test('Analyse all waits for room in the analysis queue', async () => {
+  let attempts = 0;
+  invoke.mockImplementation((command: string) => {
+    if (command === 'refresh_library') return Promise.resolve(library);
+    if (command === 'analyse_track' && ++attempts === 1) return Promise.reject('Analysis queue is full. Wait for a job to finish and retry.');
+    return Promise.resolve(snapshot('queued', 2));
+  });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'Analyse all' }));
+  expect(screen.getByRole('button', { name: 'Queueing…' })).toBeTruthy();
+  await waitFor(() => expect(attempts).toBe(2), { timeout: 2500 });
+  expect(screen.getByText('Queued', { selector: 'span' })).toBeTruthy();
 });
 test('failed jobs expose Retry and request errors remain local to the row', async () => {
   invoke.mockResolvedValueOnce(snapshot('failed', 1)).mockRejectedValueOnce('Queue unavailable').mockResolvedValueOnce(snapshot('queued', 2));
@@ -168,6 +208,143 @@ test('master BPM is independent of deck tempos and search filters title, artist 
   expect(screen.getByText('No tracks match your search.')).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'FILENAME.WAV' } });
   expect(screen.getByText('Unknown artist')).toBeTruthy();
+});
+test('library headers sort every data column in both directions and keep missing estimates last', async () => {
+  const tracks: Library['tracks'] = [
+    { ...library.tracks[0], id: 'z', title: 'Zebra', artist: 'Beta', duration_seconds: 90, artwork_available: true,
+      analysis: { state: 'analysed', result: { ...estimate, grid: { ...estimate.grid, bpm: 120 }, keys: [{ key: 'C', correlation: .8 }] }, error: null } },
+    { ...library.tracks[0], id: 'a', title: 'Alpha', artist: 'Gamma', duration_seconds: 180, artwork_available: false,
+      analysis: { state: 'failed', result: { ...estimate, grid: { ...estimate.grid, bpm: 90 }, keys: [{ key: 'A', correlation: .8 }] }, error: null } },
+    { ...library.tracks[0], id: 'm', title: 'Middle', artist: 'Alpha', duration_seconds: null, artwork_available: true,
+      analysis: { state: 'needs_review', result: null, error: null } },
+  ];
+  invoke.mockResolvedValue({ ...library, tracks });
+  render(<App />);
+  await screen.findByText('Middle');
+  const rowTitles = () => Array.from(document.querySelectorAll('.collection-table tbody tr'), row => row.querySelector('.title')?.textContent);
+  const cases: [string, string[], string[]][] = [
+    ['#', ['Zebra', 'Alpha', 'Middle'], ['Middle', 'Alpha', 'Zebra']],
+    ['Cover', ['Alpha', 'Zebra', 'Middle'], ['Zebra', 'Middle', 'Alpha']],
+    ['Title', ['Alpha', 'Middle', 'Zebra'], ['Zebra', 'Middle', 'Alpha']],
+    ['Artist', ['Middle', 'Zebra', 'Alpha'], ['Alpha', 'Zebra', 'Middle']],
+    ['BPM', ['Alpha', 'Zebra', 'Middle'], ['Zebra', 'Alpha', 'Middle']],
+    ['Key', ['Alpha', 'Zebra', 'Middle'], ['Zebra', 'Alpha', 'Middle']],
+    ['Length', ['Zebra', 'Alpha', 'Middle'], ['Alpha', 'Zebra', 'Middle']],
+    ['Analysis', ['Zebra', 'Alpha', 'Middle'], ['Middle', 'Alpha', 'Zebra']],
+  ];
+  for (const [column, ascending, descending] of cases) {
+    const header = screen.getByRole('button', { name: `Sort by ${column}` });
+    fireEvent.click(header);
+    expect(rowTitles()).toEqual(ascending);
+    expect(header.closest('th')?.getAttribute('aria-sort')).toBe('ascending');
+    fireEvent.click(header);
+    expect(rowTitles()).toEqual(descending);
+    expect(header.closest('th')?.getAttribute('aria-sort')).toBe('descending');
+  }
+  expect(screen.getByText('1', { selector: '.track-index' }).closest('tr')?.querySelector('.title')?.textContent).toBe('Zebra');
+});
+test('actions header groups rows by availability', async () => {
+  invoke.mockResolvedValue({ ...library, tracks: [
+    { ...library.tracks[0], id: 'ready-1', title: 'Ready one' },
+    { ...library.tracks[0], id: 'unavailable', title: 'Unavailable', status: 'unsupported' },
+    { ...library.tracks[0], id: 'ready-2', title: 'Ready two' },
+  ] });
+  render(<App />);
+  await screen.findByText('Unavailable');
+  const rowTitles = () => Array.from(document.querySelectorAll('.collection-table tbody tr'), row => row.querySelector('.title')?.textContent);
+  const header = screen.getByRole('button', { name: 'Sort by Actions' });
+  fireEvent.click(header);
+  expect(rowTitles()).toEqual(['Unavailable', 'Ready one', 'Ready two']);
+  fireEvent.click(header);
+  expect(rowTitles()).toEqual(['Ready one', 'Ready two', 'Unavailable']);
+});
+test('library selection follows arrows, scrolls into view and follows filtered results', async () => {
+  const tracks = ['Alpha', 'Beta', 'Gamma'].map((title, index) => ({
+    ...library.tracks[0], id: String(index + 1), title, filename: `${title}.wav`, artist: `Artist ${title}`,
+  }));
+  invoke.mockResolvedValue({ ...library, tracks });
+  const scrollIntoView = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+  render(<App />);
+  await screen.findByText('Gamma');
+  await waitFor(() => expect(screen.getByText('Alpha').closest('tr')?.getAttribute('aria-selected')).toBe('true'));
+
+  fireEvent.keyDown(window, { key: 'ArrowDown' });
+  await waitFor(() => expect(screen.getByText('Beta').closest('tr')?.getAttribute('aria-selected')).toBe('true'));
+  expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+
+  fireEvent.keyDown(window, { key: 'g' });
+  const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
+  expect(search.value).toBe('g');
+  expect(document.activeElement).toBe(search);
+  await waitFor(() => expect(screen.getByText('Gamma').closest('tr')?.getAttribute('aria-selected')).toBe('true'));
+  expect(screen.queryByText('Beta')).toBeNull();
+  delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+});
+test('space does not start a library search', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
+
+  fireEvent.keyDown(window, { key: ' ' });
+  expect(search.value).toBe('');
+  expect(document.activeElement).not.toBe(search);
+});
+test('space plus an arrow toggles the corresponding loaded deck', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 1, frames: 1, peak_frames: 0, peaks: [] },
+      position_seconds: 0, playing: deck === 1, gain: .8, generation: deck + 1, requested_generation: deck + 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Unknown artist');
+
+  fireEvent.keyDown(window, { key: ' ' });
+  fireEvent.keyDown(window, { key: 'ArrowLeft' });
+  fireEvent.keyUp(window, { key: ' ' });
+  fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'play', value: null, generation: 1 }));
+  expect(audioInvoke).not.toHaveBeenCalledWith('deck_control', expect.objectContaining({ deck: 1, action: 'pause' }));
+  fireEvent.keyDown(window, { key: ' ' });
+  fireEvent.keyDown(window, { key: 'ArrowRight' });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'pause', value: null, generation: 2 }));
+});
+test('command arrows load the selected track only onto a stopped target deck', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: null, position_seconds: 0, playing: deck === 1, gain: .8, generation: 0, requested_generation: 0,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  await waitFor(() => expect(screen.getByText('Artist - Filename', { selector: 'span' }).closest('tr')?.getAttribute('aria-selected')).toBe('true'));
+
+  fireEvent.keyDown(window, { key: 'ArrowLeft', metaKey: true });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 0, trackId: 'one' }));
+  fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true });
+  expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(1);
+});
+test('deck membership marks only the row index while selection highlights the row', async () => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform' ? { artifact_id: 'artifact-0', fine_peaks: [], fine_peak_frames: 0 } : library));
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: { track_id: 'one', artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 1, frames: 1, peak_frames: 0, peaks: [] },
+      position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0,
+    })),
+  } : undefined));
+  render(<App />);
+  const index = await screen.findByText('1', { selector: '.track-index' });
+  expect(index.classList.contains('on-deck-a')).toBe(true);
+  expect(index.classList.contains('on-deck-b')).toBe(true);
+  expect(index.closest('tr')?.classList.contains('loaded-track')).toBe(false);
+  await waitFor(() => expect(index.closest('tr')?.classList.contains('selected-track')).toBe(true));
 });
 test('header buttons use original BPM even with adjusted tempo and locked decks', async () => {
   invoke.mockResolvedValue(library);

@@ -13,7 +13,7 @@ import threading
 import uuid
 
 # Kept here too so the HTTP service never imports the numerical toolchain.
-ANALYZER_VERSION = "librosa-0.11.0-poc-v3-attack-phase"
+ANALYZER_VERSION = "librosa-0.11.0-poc-v4-opening-beats"
 ANALYSIS_SCHEMA = 1
 LIBRARY_SCHEMA = 2
 MAX_PENDING = 32
@@ -178,6 +178,14 @@ class LibraryJobs:
         with self.lock:
             return {"schema_version": LIBRARY_SCHEMA, "revision": self.revision, "instance_id": self.instance_id,
                     "tracks": copy.deepcopy(list(self.rows.values()))}
+
+    def source(self, track_id):
+        """Resolve an opaque current track ID without accepting a caller-supplied path."""
+        with self.lock:
+            row = self.rows.get(track_id)
+            if not row or row["status"] != "ready":
+                raise ValueError("Track is unavailable or has changed. Refresh the library.")
+            return copy.deepcopy(row), self.music / row["filename"]
 
     def request(self, track_id):
         with self.lock:

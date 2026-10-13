@@ -8,7 +8,7 @@ import time
 from baseline import SR, estimate
 import numpy as np
 
-ANALYZER_VERSION = "librosa-0.11.0-poc-v3-attack-phase"
+ANALYZER_VERSION = "librosa-0.11.0-poc-v4-opening-beats"
 ANALYSIS_SCHEMA = 1
 
 

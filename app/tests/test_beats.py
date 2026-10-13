@@ -2,10 +2,32 @@
 import unittest
 import librosa
 import numpy as np
-from preparation.baseline import SR, HOP, grid_diagnostics, align_grid_to_attacks, checks
+from preparation.baseline import SR, HOP, grid_diagnostics, align_grid_to_attacks, recover_opening_beats, checks
 
 
 class BeatTests(unittest.TestCase):
+    def test_opening_recovery_uses_attacks_without_refitting_the_grid(self):
+        for first_attack in [.01, .25, .387, 2.25, 10.25]:
+            with self.subTest(first_attack=first_attack):
+                expected = first_attack + np.arange(40) * .5
+                y = librosa.clicks(times=expected, sr=SR, length=int((first_attack + 21) * SR))
+                before = grid_diagnostics(expected[2:])
+                # Boundary candidates can be early; the trusted pulse decides timing.
+                grid = recover_opening_beats(y, before, expected - .012)
+                self.assertAlmostEqual(grid['offset_seconds'], expected[0], delta=.003)
+                self.assertEqual(grid['opening_recovered_beats'], 2)
+                for key in ('bpm', 'residual_p95_ms', 'supported_beats_fraction'):
+                    self.assertEqual(grid[key], before[key])
+
+    def test_opening_recovery_rejects_silence_steady_audio_and_offbeats(self):
+        expected = .25 + np.arange(40) * .5
+        before = grid_diagnostics(expected[2:])
+        for y in [np.zeros(21 * SR), np.full(21 * SR, .1),
+                  librosa.clicks(times=expected[:2] + .25, sr=SR, length=21 * SR)]:
+            grid = recover_opening_beats(y, before, expected)
+            self.assertEqual(grid['offset_seconds'], before['offset_seconds'])
+            self.assertEqual(grid['opening_recovered_beats'], 0)
+
     def test_pcm_attack_calibration_preserves_tempo_and_leading_silence(self):
         for silence in [0, .137, 2, 10]:
             with self.subTest(silence=silence):

@@ -13,10 +13,12 @@ pub const MIX_GAIN: f32 = 0.45;
 
 pub struct Voice {
     dsp: Dsp,
+    pub mixer: crate::mixer::MixerDsp,
     scrub: Option<(f64, f64, usize)>,
     pub grid: Option<Grid>,
     pub target_bpm: f64,
     pub click_gain: f32,
+    pub click_panel_open: bool,
     pub synced: bool,
     pub launch_beat: Option<f64>,
     pub reposition_seconds: f64,
@@ -49,10 +51,12 @@ impl Voice {
         let skip = dsp.delay();
         Self {
             dsp,
+            mixer: crate::mixer::MixerDsp::default(),
             scrub: None,
             grid: None,
             target_bpm: 0.,
             click_gain: 0.,
+            click_panel_open: false,
             synced: false,
             launch_beat: None,
             reposition_seconds: 0.,
@@ -86,6 +90,7 @@ impl Voice {
         // Retain the accepted reset path; no replacement-stretcher shortcut.
         self.scrub = None;
         self.dsp.reset();
+        self.mixer.reset();
         self.launch_beat = None;
         self.position_epoch += 1;
         self.input = position.min(self.source.len());
@@ -174,6 +179,7 @@ impl Voice {
             self.clock.source = position;
             self.clock.output = self.output;
             self.scrub = Some((from, target, remaining - 1));
+            let sample = self.mixer.process(sample);
             self.last_sample = sample;
             return Ok(sample);
         }
@@ -191,8 +197,12 @@ impl Voice {
                     self.skip -= 1;
                     continue;
                 }
+                value = self.mixer.process(value);
                 let seconds = self.seconds();
-                if let Some(grid) = self.grid.filter(|_| self.click_gain > 0.) {
+                if let Some(grid) = self
+                    .grid
+                    .filter(|_| self.click_panel_open && self.click_gain > 0.)
+                {
                     let beat = grid.beat(seconds);
                     let fraction = beat.rem_euclid(1.);
                     let age = fraction * 60. / self.target_bpm.max(1.);
@@ -269,10 +279,12 @@ pub enum Command {
     ScrubStart(usize, u64, usize),
     Scrub(usize, u64, usize, bool),
     Gain(usize, u64, f32),
+    Mixer(usize, u64, u8, f32),
     Remove(usize, u64),
     Grid(usize, u64, Grid),
     Tempo(usize, [u64; 2], f64),
     Click(usize, u64, f32),
+    ClickPanel(usize, u64, bool),
     MasterTempo(f64),
     Drift(usize, [u64; 2]),
     DriftRate(f64),
@@ -288,6 +300,7 @@ pub struct Frame {
     pub position_epochs: [u64; 2],
     pub playing: [bool; 2],
     pub gains: [f32; 2],
+    pub mixer: [crate::mixer::Settings; 2],
     pub grids: [Option<Grid>; 2],
     pub targets: [f64; 2],
     pub synced: [bool; 2],
@@ -403,6 +416,7 @@ impl Decks {
                 }
                 if let Some(old) = &self.voices[deck] {
                     voice.gain = old.gain;
+                    voice.mixer.set(old.mixer.settings);
                 }
                 self.clear_sync(deck);
                 return self.voices[deck].replace(voice);
@@ -511,6 +525,20 @@ impl Decks {
                     }
                 }
             }
+            Command::Mixer(d, g, parameter, value) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g {
+                        let mut settings = v.mixer.settings;
+                        match parameter {
+                            0 => settings.trim = value,
+                            1..=3 => settings.eq[parameter as usize - 1] = value,
+                            4 => settings.filter = value,
+                            _ => return None,
+                        }
+                        v.mixer.set(settings);
+                    }
+                }
+            }
             Command::Grid(d, g, grid) => {
                 if self.voices[d].as_ref().is_some_and(|v| {
                     v.generation == g && grid.validate(v.source.len() as f64 / 48000.).is_ok()
@@ -523,6 +551,13 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
                         v.click_gain = gain;
+                    }
+                }
+            }
+            Command::ClickPanel(d, g, open) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g {
+                        v.click_panel_open = open;
                     }
                 }
             }
@@ -672,6 +707,7 @@ impl Decks {
                 frame.position_epochs[d] = voice.position_epoch;
                 frame.playing[d] = voice.playing;
                 frame.gains[d] = voice.gain;
+                frame.mixer[d] = voice.mixer.settings;
                 frame.grids[d] = voice.grid;
                 frame.targets[d] = voice.target_bpm;
                 frame.synced[d] = voice.synced;
@@ -1154,6 +1190,7 @@ mod timing_tests {
         let mut decks = decks();
         decks.command(Command::Gain(0, 1, 0.), [1, 1]);
         decks.command(Command::Click(0, 1, 1.), [1, 1]);
+        decks.command(Command::ClickPanel(0, 1, true), [1, 1]);
         decks.command(Command::MasterTempo(125.), [1, 1]);
         decks.command(Command::Play(0, 1), [1, 1]);
         decks.command(Command::Sync(0, [1, 1], true), [1, 1]);
@@ -1179,6 +1216,23 @@ mod timing_tests {
             max_error_ms <= 10.,
             "Master click offset {max_error_ms:.3} ms"
         );
+    }
+    #[test]
+    fn click_is_silent_outside_the_timing_panel_and_resumes_at_its_saved_volume() {
+        let mut decks = decks();
+        decks.command(Command::Gain(0, 1, 0.), [1, 1]);
+        decks.command(Command::Click(0, 1, 1.), [1, 1]);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        let audible =
+            |decks: &mut Decks| (0..30000).any(|_| decks.next().unwrap().samples[0].abs() > 0.015);
+        assert!(!audible(&mut decks));
+        decks.command(Command::ClickPanel(0, 1, true), [1, 1]);
+        assert!(audible(&mut decks));
+        decks.command(Command::ClickPanel(0, 1, false), [1, 1]);
+        assert!(!audible(&mut decks));
+        assert_eq!(decks.voices[0].as_ref().unwrap().click_gain, 1.);
+        decks.command(Command::ClickPanel(0, 1, true), [1, 1]);
+        assert!(audible(&mut decks));
     }
     #[test]
     fn drift_is_rate_limited_and_keeps_lock_states() {

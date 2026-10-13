@@ -21,7 +21,8 @@ PROBE_TIMEOUT = 15
 
 def inspect_file(path: Path) -> dict:
     row = dict(id="", filename=path.name, title=path.stem, artist="Unknown artist",
-               duration_seconds=None, size_bytes=0, modified_ns="0", status="unreadable", error=None)
+               duration_seconds=None, size_bytes=0, modified_ns="0", status="unreadable", error=None,
+               artwork_available=False)
     try:
         # Do not follow symlinks, even to files outside the mounted bin.
         if path.is_symlink():
@@ -49,6 +50,9 @@ def inspect_file(path: Path) -> dict:
             return row
         tags = {k.lower(): v for k, v in audio.get("tags", {}).items()}
         tags.update({k.lower(): v for k, v in info.get("format", {}).get("tags", {}).items()})
+        row["artwork_available"] = any(
+            stream.get("codec_type") == "video" and stream.get("disposition", {}).get("attached_pic") == 1
+            for stream in info.get("streams", []))
         for key in ("title", "artist"):
             if isinstance(tags.get(key), str) and tags[key].strip():
                 row[key] = tags[key].strip()
@@ -110,6 +114,40 @@ def make_handler(music: Path, generated: Path):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith("/v1/artwork/"):
+                try:
+                    track_id = self.path[len("/v1/artwork/"):]
+                    if len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id):
+                        raise ValueError("Artwork requires a valid library track ID.")
+                    row, source = jobs.source(track_id)
+                    if not row.get("artwork_available"):
+                        self.send_response(204)
+                        self.end_headers()
+                        return
+                    artwork = generated / "artwork" / (row["source_hash"] + ".jpg")
+                    if not artwork.exists():
+                        artwork.parent.mkdir(parents=True, exist_ok=True)
+                        result = subprocess.run([
+                            "ffmpeg", "-v", "error", "-protocol_whitelist", "file,pipe", "-i", str(source),
+                            "-map", "0:v:0", "-frames:v", "1", "-vf",
+                            "scale=512:512:force_original_aspect_ratio=decrease", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
+                        ], capture_output=True, timeout=PROBE_TIMEOUT, check=True)
+                        if not result.stdout or len(result.stdout) > 5 * 1024 * 1024:
+                            raise ValueError("Embedded artwork is empty or too large.")
+                        before = source.stat()
+                        if (before.st_size, str(before.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
+                            raise ValueError("Source changed while reading artwork. Refresh the library.")
+                        artwork.write_bytes(result.stdout)
+                    body = artwork.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                    self.respond(404, {"error": str(exc)})
+                return
             if self.path.startswith("/v1/prepared/") and self.path.endswith("/pcm"):
                 try:
                     path = preparation.audio_path(self.path[len("/v1/prepared/"):-len("/pcm")])
@@ -138,13 +176,14 @@ def make_handler(music: Path, generated: Path):
                     if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
                         raise ValueError("Invalid timing request.")
                     body = json.loads(self.rfile.read(length))
-                    keys = {"track_id", "grid"} if self.path.endswith("save") else {"track_id"}
-                    if not isinstance(body, dict) or set(body) != keys:
+                    keys = set(body) if isinstance(body, dict) else set()
+                    allowed = ({"track_id", "grid"}, {"track_id", "grid", "reference_beats"}) if self.path.endswith("save") else ({"track_id"},)
+                    if keys not in allowed:
                         raise ValueError("Invalid timing request.")
                     track_id = body["track_id"]
                     if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id):
                         raise ValueError("Timing requires a library track ID.")
-                    self.respond(200, timing.save(track_id, body["grid"]) if "grid" in body else timing.get(track_id))
+                    self.respond(200, timing.save(track_id, body["grid"], body.get("reference_beats")) if "grid" in body else timing.get(track_id))
                 except (ValueError, OSError) as exc:
                     self.respond(400, {"error": str(exc)})
                 return
@@ -156,10 +195,20 @@ def make_handler(music: Path, generated: Path):
                         raise ValueError("Invalid analysis request.")
                     body = json.loads(self.rfile.read(length))
                     track_id = body.get("track_id") if isinstance(body, dict) else None
-                    if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or set(body) != {"track_id"}:
+                    keys = set(body) if isinstance(body, dict) else set()
+                    allowed = ({"track_id"}, {"track_id", "deck", "generation"}) if self.path == "/v1/prepare" else ({"track_id"},)
+                    if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or keys not in allowed:
                         raise ValueError("Analysis requires a valid library track ID.")
                     if self.path == "/v1/prepare":
-                        self.respond(200, preparation.prepare(track_id))
+                        deck, generation = body.get("deck"), body.get("generation")
+                        if deck is not None and (type(deck) is not int or deck not in (0, 1) or type(generation) is not int or generation < 1):
+                            raise ValueError("Invalid deck load request.")
+                        try:
+                            result = preparation.prepare(track_id, deck, generation)
+                        finally:
+                            if deck is not None:
+                                preparation.complete(deck, generation)
+                        self.respond(200, result)
                     else:
                         self.respond(202, jobs.request(track_id))
                 except (ValueError, OSError) as exc:

@@ -42,16 +42,19 @@ class TimingTests(unittest.TestCase):
         manager.reconcile([self.row()])
         row = self.track(manager)
         grid = {"bpm": 123.45, "downbeat_seconds": .123, "reviewed": True}
-        self.assertEqual(Timing(manager).save(row["id"], grid)["state"], "reviewed")
+        references = [.123, 1.623]
+        self.assertEqual(Timing(manager).save(row["id"], grid, references)["state"], "reviewed")
         manager.request(row["id"])
         manager.pending.join()
         self.assertEqual(Timing(manager).get(row["id"])["grid"], grid)
         restarted = self.manager()
         restarted.reconcile([self.row()])
         self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["grid"], grid)
+        self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["reference_beats"], references)
         (self.music / 'one.wav').rename(self.music / 'renamed.wav')
         restarted.reconcile([self.row('renamed.wav')])
         self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["grid"], grid)
+        self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["reference_beats"], references)
 
     def test_changed_bytes_stale_even_preserved_timestamp(self):
         manager = self.manager()
@@ -85,6 +88,9 @@ class TimingTests(unittest.TestCase):
                 timing.save(row['id'], grid)
         grid = {"bpm": 120, "downbeat_seconds": .1, "reviewed": False}
         timing.save(row['id'], grid)
+        for references in [[-1], [2], [.1, .2, .3], [float('nan')], [True], 'bad']:
+            with self.assertRaises(ValueError):
+                timing.save(row['id'], grid, references)
         (timing.root / (row['source_hash'] + '.json')).write_text('{}')
         self.assertEqual(timing.get(row['id'])['state'], 'stale')
 

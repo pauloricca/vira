@@ -119,7 +119,7 @@ impl Prepared {
         );
         Ok(())
     }
-    pub fn download(&self) -> Result<Arc<Source>> {
+    pub fn download(&self, current: impl Fn() -> bool) -> Result<Arc<Source>> {
         let mut response = service_response(
             &format!("/v1/prepared/{}/pcm", self.artifact_id),
             None,
@@ -136,6 +136,7 @@ impl Prepared {
         let mut remaining = self.pcm_bytes;
         let mut hash = Sha256::new();
         while remaining > 0 {
+            ensure!(current(), "Load superseded by a newer selection");
             let length = remaining.min(buffer.len());
             response.read_exact(&mut buffer[..length])?;
             hash.update(&buffer[..length]);
@@ -159,7 +160,7 @@ impl Prepared {
     }
 }
 
-pub fn prepare_track(track_id: &str) -> Result<Prepared> {
+pub fn prepare_track(track_id: &str, request: Option<(usize, u64)>) -> Result<Prepared> {
     ensure!(valid_id(track_id), "Loading requires a library track ID");
     let library = crate::library_state().map_err(anyhow::Error::msg)?;
     let track = library
@@ -169,7 +170,10 @@ pub fn prepare_track(track_id: &str) -> Result<Prepared> {
         .ok_or_else(|| anyhow::anyhow!("Track is unavailable. Refresh the library"))?;
     let value = service_response(
         "/v1/prepare",
-        Some(serde_json::json!({"track_id":track_id})),
+        Some(match request {
+            Some((deck, generation)) => serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation}),
+            None => serde_json::json!({"track_id":track_id}),
+        }),
         true,
     )
     .map_err(anyhow::Error::msg)?

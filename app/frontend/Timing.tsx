@@ -3,9 +3,38 @@ import { invoke } from '@tauri-apps/api/core';
 import { waveformColour } from './waveform';
 import type { Prepared } from './Decks';
 export type Grid = { bpm: number; downbeat_seconds: number; reviewed: boolean };
-export type TimingRecord = { grid: Grid | null; suggestion: Grid | null; state: string; source_hash: string };
+/** Fit a constant beat grid to one or two source-time beat references. */
+export function gridForReferenceBeats(grid: Grid, references: number[], duration: number): Grid {
+  if (!references.length || references.length > 2 || references.some(seconds => !Number.isFinite(seconds) || seconds < 0 || seconds >= duration)) throw new Error('Reference beat must lie within the track');
+  const [first, second] = references;
+  let bpm = grid.bpm;
+  if (second !== undefined) {
+    const difference = second - first;
+    const beats = Math.round(difference * grid.bpm / 60);
+    if (!beats || Math.abs(difference) < 1 / 48000) throw new Error('Reference beats must be on different beats');
+    bpm = Math.round(beats * 600 / difference) / 10;
+  }
+  const period = 60 / bpm;
+  // The first grid beat within the source is bar 1, beat 1. The reference itself
+  // may be any later beat, so only its phase within one beat matters here.
+  const downbeat_seconds = ((first % period) + period) % period;
+  const result = { bpm, downbeat_seconds, reviewed: false };
+  if (!validGrid(result, duration)) throw new Error('These reference beats need a source BPM between 30 and 300');
+  return result;
+}
+export type TimingRecord = { grid: Grid | null; suggestion: Grid | null; state: string; source_hash: string; reference_beats?: number[] };
 export function validGrid(grid: Grid, duration: number) {
   return Number.isFinite(grid.bpm) && grid.bpm >= 30 && grid.bpm <= 300 && Number.isFinite(grid.downbeat_seconds) && grid.downbeat_seconds >= 0 && grid.downbeat_seconds < duration;
+}
+/** Reassign the bar downbeat to an adjacent beat without moving beat positions. */
+export function shiftBarStart(grid: Grid, direction: -1 | 1, duration: number): Grid {
+  const beat = 60 / grid.bpm;
+  let downbeat_seconds = grid.downbeat_seconds + direction * beat;
+  if (downbeat_seconds < 0) downbeat_seconds += 4 * beat;
+  if (downbeat_seconds >= duration) downbeat_seconds -= 4 * beat;
+  const shifted = { ...grid, downbeat_seconds, reviewed: false };
+  if (!validGrid(shifted, duration)) throw new Error('No shifted bar start lies within this track');
+  return shifted;
 }
 export function markers(grid: Grid | null | undefined, start: number, end: number) {
   if (!grid || !Number.isFinite(start) || !Number.isFinite(end)) return [];
@@ -41,9 +70,9 @@ export function WaveDetail({ track, grid, start, end }: { track: Prepared | null
     {path}
   </>;
 }
-export function TimingEditor({ trackId, title, duration, prepared, position = 0, getPosition, deck, generation, seek, close }: {
+export function TimingEditor({ trackId, title, duration, prepared, position = 0, getPosition, deck, generation, seek, close, onSaved }: {
   trackId: string; title: string; duration: number; prepared?: Prepared; position?: number; getPosition?: () => number; deck?: number; generation?: number;
-  seek?: (seconds: number) => void; close: () => void;
+  seek?: (seconds: number) => void; close: () => void; onSaved?: () => void;
 }) {
   const [record, setRecord] = useState<TimingRecord | null>(null);
   const [wave, setWave] = useState<Prepared | null>(prepared ?? null);
@@ -77,6 +106,7 @@ export function TimingEditor({ trackId, title, duration, prepared, position = 0,
     try {
       const value = await invoke<TimingRecord>('track_timing', { trackId, grid }); setRecord(value);
       if (apply && deck !== undefined) await invoke('apply_timing', { deck, generation, grid });
+      onSaved?.();
       setStatus(apply ? 'Saved and applied to this deck; affected sync cleared.' : 'Saved. Loaded decks retain their applied timing until Apply or reload.');
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }

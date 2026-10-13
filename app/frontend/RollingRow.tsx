@@ -4,9 +4,10 @@ import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
 import { WaveTiles, gridGeometry } from './waveform';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
-export function RollingRow({ state, running, window, control }: { state: DeckState; running: boolean; window: number; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function RollingRow({ state, running, window, control, timingOpen = false }: { state: DeckState; running: boolean; window: number; timingOpen?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const latest = useRef({ state, running, window });
+  const latest = useRef({ state, running, window, timingOpen });
+  const firstClick = useRef<{ anchor: number; at: number } | null>(null);
   const clock = useRef(new DisplayPosition());
   const tiles = useRef(new WaveTiles());
   const size = useRef({width:0,height:100,dpr:1});
@@ -18,7 +19,7 @@ export function RollingRow({ state, running, window, control }: { state: DeckSta
     (element, x, anchor) => { const bounds=element.getBoundingClientRect(); return anchor + ((x-bounds.left)/Math.max(1,bounds.width)-.5)*window*(state.speed ?? 1); });
   paint.current = now => {
     const element=canvas.current; if (!element || !visible) return;
-    const {state,window}=latest.current, {width,height,dpr}=size.current;
+    const {state,window,timingOpen}=latest.current, {width,height,dpr}=size.current;
     if (width<=0) return; const ctx=element.getContext('2d'); if (!ctx) return;
     const began=performance.now(), speed=state.speed ?? 1, position=gesture.current?.position ?? clock.current.at(now);
     const colour=state.deck===0 ? '#89d2ee' : '#efa264';
@@ -32,15 +33,22 @@ export function RollingRow({ state, running, window, control }: { state: DeckSta
       ctx.beginPath(); ctx.moveTo(m.x,0); ctx.lineTo(m.x,height); ctx.stroke();
     }
     ctx.globalAlpha=1;
+    if (timingOpen) for (const seconds of state.reference_beats ?? []) {
+      const x = width * (.5 + (seconds - position) / (window * speed));
+      if (x < 0 || x > width) continue;
+      ctx.strokeStyle = '#f6d477'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
+      ctx.fillStyle = '#f6d477'; ctx.beginPath(); ctx.moveTo(x-5,0); ctx.lineTo(x+5,0); ctx.lineTo(x,9); ctx.fill();
+    }
     const cost=performance.now()-began;
     drawMetrics.count++; drawMetrics.total_ms+=cost; drawMetrics.max_ms=Math.max(drawMetrics.max_ms,cost);
   };
   useLayoutEffect(() => {
-    latest.current={state,running,window};
+    latest.current={state,running,window,timingOpen};
     const received=state.received_at ?? performance.now();
     clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0},received,state.sampled_at ?? received);
     paint.current(performance.now());
-  },[state,running,window]);
+  },[state,running,window,timingOpen]);
   useEffect(() => {
     const element=canvas.current; if (!element) return;
     function resize() {
@@ -60,7 +68,16 @@ export function RollingRow({ state, running, window, control }: { state: DeckSta
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
   return <div className={`rolling-row deck-${state.deck}`}><span className="deck-badge" title={state.grid ? state.grid.reviewed ? 'Reviewed grid' : 'Draft grid' : 'No grid'}>{state.deck===0 ? 'A' : 'B'}</span>
-    <canvas {...handlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`} />
+    <canvas {...handlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
+      onPointerDownCapture={event => { if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
+      onDoubleClick={event => {
+        if (!timingOpen || !running || !state.track || !state.grid || !control) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());
+        const seconds = Math.min(Math.max(0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));
+        firstClick.current = null;
+        void control(state.deck, 'reference_beat', seconds);
+      }} />
     <div className="rolling-playhead" />
   </div>;
 }

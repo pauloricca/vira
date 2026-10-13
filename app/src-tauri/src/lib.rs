@@ -3,6 +3,7 @@ use std::{collections::HashSet, time::Duration};
 pub mod decks;
 mod dsp;
 mod metrics;
+mod mixer;
 pub mod native_check;
 pub mod runtime;
 mod scheduling;
@@ -35,6 +36,8 @@ pub struct Track {
     pub error: Option<String>,
     pub source_hash: Option<String>,
     pub analysis: Analysis,
+    #[serde(default)]
+    pub artwork_available: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -189,6 +192,61 @@ fn service_response(
     Ok(response)
 }
 
+fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        encoded.push(TABLE[((value >> 18) & 63) as usize] as char);
+        encoded.push(TABLE[((value >> 12) & 63) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            TABLE[((value >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            TABLE[(value & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+pub fn track_artwork(track_id: &str) -> Result<Option<String>, String> {
+    if !valid_id(track_id) {
+        return Err("Artwork requires a library track ID.".into());
+    }
+    let library = library_state()?;
+    let track = library
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .ok_or("Track is unavailable or changed. Refresh the library.")?;
+    if !matches!(track.status, FileStatus::Ready) || !track.artwork_available {
+        return Ok(None);
+    }
+    let response = service_response(&format!("/v1/artwork/{track_id}"), None, false)?;
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("image/jpeg")
+        .to_owned();
+    let bytes = response
+        .bytes()
+        .map_err(|_| "Cannot read embedded artwork.".to_string())?;
+    if bytes.is_empty() || bytes.len() > 5 * 1024 * 1024 {
+        return Err("Embedded artwork is empty or too large.".into());
+    }
+    Ok(Some(format!(
+        "data:{mime};base64,{}",
+        encode_base64(&bytes)
+    )))
+}
+
 #[cfg(target_os = "macos")]
 pub fn run() {
     #[tauri::command]
@@ -208,6 +266,12 @@ pub fn run() {
         tauri::async_runtime::spawn_blocking(move || request_analysis(&track_id))
             .await
             .map_err(|e| format!("Analysis request worker failed: {e}"))?
+    }
+    #[tauri::command]
+    async fn get_track_artwork(track_id: String) -> Result<Option<String>, String> {
+        tauri::async_runtime::spawn_blocking(move || track_artwork(&track_id))
+            .await
+            .map_err(|e| format!("Artwork worker failed: {e}"))?
     }
     #[tauri::command]
     async fn get_audio_state(
@@ -251,12 +315,14 @@ pub fn run() {
     async fn track_timing(
         track_id: String,
         grid: Option<timing::Grid>,
+        reference_beats: Option<Vec<f64>>,
     ) -> Result<serde_json::Value, String> {
         tauri::async_runtime::spawn_blocking(move || {
             if !valid_id(&track_id) {
                 return Err("Timing requires a library track ID".into());
             }
             let body = match grid {
+                Some(grid) if reference_beats.is_some() => serde_json::json!({"track_id": track_id, "grid": grid, "reference_beats": reference_beats}),
                 Some(grid) => serde_json::json!({"track_id": track_id, "grid": grid}),
                 None => serde_json::json!({"track_id": track_id}),
             };
@@ -278,7 +344,7 @@ pub fn run() {
     #[tauri::command]
     async fn timing_waveform(track_id: String) -> Result<source::Prepared, String> {
         tauri::async_runtime::spawn_blocking(move || {
-            source::prepare_track(&track_id).map_err(|e| format!("{e:#}"))
+            source::prepare_track(&track_id, None).map_err(|e| format!("{e:#}"))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -328,6 +394,7 @@ pub fn run() {
             refresh_library,
             get_library_state,
             analyse_track,
+            get_track_artwork,
             get_audio_state,
             load_track,
             deck_control,
@@ -378,5 +445,12 @@ mod tests {
         let mut bad = library("test.wav");
         bad.tracks[0].source_hash = None;
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn base64_encoding_handles_padding() {
+        assert_eq!(encode_base64(b"f"), "Zg==");
+        assert_eq!(encode_base64(b"fo"), "Zm8=");
+        assert_eq!(encode_base64(b"foo"), "Zm9v");
     }
 }

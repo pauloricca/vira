@@ -30,6 +30,14 @@ class MetadataTests(unittest.TestCase):
             cmd += ["-c:a", codec]
         subprocess.run(cmd + [str(self.music / filename)], check=True)
 
+    def audio_with_artwork(self, filename):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+            "-f", "lavfi", "-i", "color=c=red:s=32x32:d=2", "-map", "0:a", "-map", "1:v",
+            "-c:a", "libmp3lame", "-c:v", "mjpeg", "-frames:v", "1", "-disposition:v", "attached_pic", "-shortest",
+            str(self.music / filename)
+        ], check=True)
+
     def scan(self):
         return scan_bin(self.music, self.generated)["tracks"]
 
@@ -48,6 +56,28 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(rows["notes.txt"]["status"], "unsupported")
         index = json.loads((self.generated / "library-v1.json").read_text())
         self.assertEqual(index["tracks"], list(rows.values()))
+
+    def test_embedded_artwork_is_detected_and_served_by_opaque_id(self):
+        self.audio_with_artwork("covered.mp3")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.music, self.generated))
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        try:
+            request = urllib.request.Request(url + "/v1/library/scan", method="POST")
+            track = json.load(urllib.request.urlopen(request))["tracks"][0]
+            self.assertTrue(track["artwork_available"])
+            response = urllib.request.urlopen(url + "/v1/artwork/" + track["id"])
+            self.assertEqual(response.headers.get_content_type(), "image/jpeg")
+            self.assertGreater(len(response.read()), 100)
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(url + "/v1/artwork/../covered.mp3")
+            self.assertEqual(rejected.exception.code, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+            server.RequestHandlerClass.jobs.close()
 
     def test_refresh_reconciles_and_changes_revision(self):
         self.audio("one.wav")

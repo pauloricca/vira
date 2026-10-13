@@ -30,6 +30,7 @@ struct Shared {
     generations: [AtomicU64; 2],
     playing: [AtomicBool; 2],
     gains: [AtomicU64; 2],
+    mixer: [[AtomicU64; 5]; 2],
     grid_bpm: [AtomicU64; 2],
     grid_anchor: [AtomicU64; 2],
     reviewed: [AtomicBool; 2],
@@ -70,6 +71,9 @@ impl Shared {
             generations: std::array::from_fn(|_| 0.into()),
             playing: std::array::from_fn(|_| false.into()),
             gains: std::array::from_fn(|_| (0.8_f32.to_bits() as u64).into()),
+            mixer: std::array::from_fn(|_| {
+                [0., 0.5_f32, 0.5, 0.5, 0.].map(|v| (v.to_bits() as u64).into())
+            }),
             grid_bpm: std::array::from_fn(|_| 0.into()),
             grid_anchor: std::array::from_fn(|_| 0.into()),
             reviewed: std::array::from_fn(|_| false.into()),
@@ -116,6 +120,16 @@ impl Shared {
                 generations: generation,
                 playing,
                 gains: gain,
+                mixer: std::array::from_fn(|d| {
+                    let values = std::array::from_fn::<_, 5, _>(|i| {
+                        f32::from_bits(self.mixer[d][i].load(Relaxed) as u32)
+                    });
+                    crate::mixer::Settings {
+                        trim: values[0],
+                        eq: [values[1], values[2], values[3]],
+                        filter: values[4],
+                    }
+                }),
                 grids: std::array::from_fn(|d| {
                     let bpm = f64::from_bits(self.grid_bpm[d].load(Relaxed));
                     (bpm > 0.).then(|| crate::timing::Grid {
@@ -238,6 +252,9 @@ pub struct DeckState {
     pub track_unchanged: bool,
     pub playing: bool,
     pub gain: f32,
+    pub trim_db: f32,
+    pub eq: [f32; 3],
+    pub filter: f32,
     pub generation: u64,
     pub requested_generation: u64,
     pub grid: Option<crate::timing::Grid>,
@@ -257,7 +274,6 @@ pub struct EngineHandle {
     metadata: Mutex<[Metadata; 2]>,
     sources: Mutex<HashMap<String, Weak<Source>>>,
     download: Mutex<()>,
-    loads: [Mutex<()>; 2],
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
@@ -271,7 +287,6 @@ impl EngineHandle {
             metadata: Mutex::new(std::array::from_fn(|_| Metadata::default())),
             sources: Mutex::new(HashMap::new()),
             download: Mutex::new(()),
-            loads: std::array::from_fn(|_| Mutex::new(())),
         });
         match wake {
             Ok(wake) => {
@@ -327,18 +342,19 @@ impl EngineHandle {
         outcome
     }
     fn prepare_and_install(&self, deck: usize, generation: u64, track_id: &str) -> Result<()> {
-        let _load = self.loads[deck].lock().unwrap();
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
         );
-        let mut prepared = source::prepare_track(track_id)?;
+        let mut prepared = source::prepare_track(track_id, Some((deck, generation)))?;
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
         );
         let source = {
             let _download = self.download.lock().unwrap();
+            ensure!(self.shared.requested[deck].load(Acquire) == generation,
+                "Load superseded by a newer selection");
             let cached = {
                 let mut cache = self.sources.lock().unwrap();
                 cache.retain(|_, value| value.strong_count() > 0);
@@ -347,7 +363,7 @@ impl EngineHandle {
             if let Some(source) = cached {
                 source
             } else {
-                let source = prepared.download()?;
+                let source = prepared.download(|| self.shared.requested[deck].load(Acquire) == generation)?;
                 self.sources
                     .lock()
                     .unwrap()
@@ -447,6 +463,21 @@ impl EngineHandle {
                     Command::Scrub(deck, generations[deck], position, action == "scrub")
                 }
             }
+            "trim" | "eq_low" | "eq_mid" | "eq_high" | "filter" => {
+                let v = value.ok_or_else(|| anyhow::anyhow!("Mixer control requires a value"))?;
+                let (parameter, min, max) = match action {
+                    "trim" => (0, -12., 12.),
+                    "eq_low" => (1, 0., 1.),
+                    "eq_mid" => (2, 0., 1.),
+                    "eq_high" => (3, 0., 1.),
+                    _ => (4, -1., 1.),
+                };
+                ensure!(
+                    v.is_finite() && (min..=max).contains(&v),
+                    "Mixer value out of range"
+                );
+                Command::Mixer(deck, generations[deck], parameter, v as f32)
+            }
             "gain" => {
                 let gain = value.ok_or_else(|| anyhow::anyhow!("Gain requires a value"))?;
                 ensure!(
@@ -466,6 +497,9 @@ impl EngineHandle {
                     "Apply timing before enabling click"
                 );
                 Command::Click(deck, generations[deck], gain as f32)
+            }
+            "click_panel" => {
+                Command::ClickPanel(deck, generations[deck], value.unwrap_or(0.) != 0.)
             }
             "tempo" => {
                 let target = value.ok_or_else(|| anyhow::anyhow!("Tempo requires target BPM"))?;
@@ -595,6 +629,9 @@ impl EngineHandle {
                     position_seconds: positions[d] as f64 / RATE as f64,
                     playing: playing[d] && self.shared.running.load(Acquire),
                     gain: gains[d],
+                    trim_db: snapshot.mixer[d].trim,
+                    eq: snapshot.mixer[d].eq,
+                    filter: snapshot.mixer[d].filter,
                     generation: generations[d],
                     requested_generation: requested,
                     grid: snapshot.grids[d],
@@ -829,6 +866,19 @@ fn native_output(
                     cb.generations[d].store(last.generations[d], Relaxed);
                     cb.playing[d].store(last.playing[d], Relaxed);
                     cb.gains[d].store(last.gains[d].to_bits() as u64, Relaxed);
+                    let settings = last.mixer[d];
+                    for (i, value) in [
+                        settings.trim,
+                        settings.eq[0],
+                        settings.eq[1],
+                        settings.eq[2],
+                        settings.filter,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        cb.mixer[d][i].store(value.to_bits() as u64, Relaxed);
+                    }
                     cb.grid_bpm[d].store(last.grids[d].map_or(0., |g| g.bpm).to_bits(), Relaxed);
                     cb.grid_anchor[d].store(
                         last.grids[d].map_or(0., |g| g.downbeat_seconds).to_bits(),

@@ -145,6 +145,43 @@ def align_grid_to_attacks(y, grid, beats):
     return grid
 
 
+def recover_opening_beats(y, grid, candidates):
+    """Extend the established pulse to earlier, attack-supported candidates.
+
+    Edge candidates cannot change the fitted tempo or fractional beat phase.
+    The earliest supported beat is provisionally beat one, not a downbeat claim.
+    """
+    if not grid:
+        return grid
+    period, anchor = 60 / grid['bpm'], grid['offset_seconds']
+    step = max(1, round(SR / 1000))
+    energy = np.mean(y[:len(y) // step * step].reshape(-1, step) ** 2, axis=1)
+    smooth = np.convolve(energy, np.ones(3) / 3, mode='same')
+    rise = smooth - np.r_[np.zeros(5), smooth[:-5]]
+    earliest = 0
+    for candidate in candidates:
+        beat = int(np.rint((candidate - anchor) / period))
+        time = anchor + beat * period
+        if beat >= 0 or time < 0 or abs(candidate - time) > min(.050, period * .1):
+            continue
+        lo = max(1, round((time - .040) * SR / step))
+        hi = min(len(smooth) - 12, round((time + .040) * SR / step))
+        if hi <= lo:
+            continue
+        k = lo + int(np.argmax(rise[lo:hi]))
+        floor = float(smooth[max(0, k - 20):k].min())
+        peak = float(smooth[k:k + 12].max())
+        threshold, start = floor + .1 * (peak - floor), k
+        while start > max(0, k - 25) and smooth[start - 1] > threshold:
+            start -= 1
+        if (peak > floor * 3 and peak - floor > .0001
+                and abs(start * step / SR - time) <= min(.025, period * .05)):
+            earliest = min(earliest, beat)
+    return {**grid, 'offset_seconds': anchor + earliest * period,
+            'opening_recovered_beats': -earliest,
+            'opening_anchor_before_recovery_seconds': anchor}
+
+
 def estimate(y):
     if len(y) < SR or np.max(abs(y)) < 1e-6:
         return {'grid': None, 'beats_seconds': [], 'keys': [], 'window_keys': [], 'flags': ['silence_or_too_short']}
@@ -152,6 +189,10 @@ def estimate(y):
     tempo, frames = librosa.beat.beat_track(onset_envelope=onset, sr=SR, hop_length=HOP, trim=True)
     beats = librosa.frames_to_time(frames, sr=SR, hop_length=HOP)
     grid = align_grid_to_attacks(y, grid_diagnostics(beats), beats)
+    _, opening_frames = librosa.beat.beat_track(
+        onset_envelope=onset, sr=SR, hop_length=HOP, bpm=tempo, trim=False)
+    candidates = librosa.frames_to_time(opening_frames, sr=SR, hop_length=HOP)
+    grid = recover_opening_beats(y, grid, candidates)
     chunks = []
     for start in range(0, len(y), 30 * SR):
         part = y[start:start + 30 * SR]
@@ -173,7 +214,8 @@ def estimate(y):
         flags.append('ambiguous_key')
     return {'tracker_bpm': float(np.asarray(tempo).flat[0]), 'grid': grid,
             'tempo_alternatives': [grid['bpm'] / 2, grid['bpm'], grid['bpm'] * 2] if grid else [],
-            'beats_seconds': beats.tolist(), 'keys': ranked, 'window_keys': window_keys,
+            'beats_seconds': beats.tolist(), 'untrimmed_beats_seconds': candidates.tolist(),
+            'keys': ranked, 'window_keys': window_keys,
             'key_window_agreement': agreement, 'flags': flags}
 
 
