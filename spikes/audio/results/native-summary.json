@@ -1,0 +1,104 @@
+[
+  {
+    "file": "native-r2-snippets4-buffer256.json",
+    "completed": true,
+    "requested_buffer": 256,
+    "observed_callback_frames": [
+      128,
+      128
+    ],
+    "queue_frames": 1024,
+    "starved_frames": 4480,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 4.541,
+    "producer_max_us": 64976.333,
+    "peak_cpu_percent": 22.145255472833,
+    "peak_rss_bytes": 47759360
+  },
+  {
+    "file": "native-r3-snippets4-buffer128.json",
+    "completed": true,
+    "requested_buffer": 128,
+    "observed_callback_frames": [
+      64,
+      64
+    ],
+    "queue_frames": 512,
+    "starved_frames": 10368,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 3.875,
+    "producer_max_us": 41535.334,
+    "peak_cpu_percent": 56.174302922108,
+    "peak_rss_bytes": 56508416
+  },
+  {
+    "file": "native-r3-snippets4-buffer256-queue4096.json",
+    "completed": true,
+    "requested_buffer": 256,
+    "observed_callback_frames": [
+      128,
+      128
+    ],
+    "queue_frames": 4096,
+    "starved_frames": 0,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 5.375,
+    "producer_max_us": 25153.292,
+    "peak_cpu_percent": 56.41750663602919,
+    "peak_rss_bytes": 56623104
+  },
+  {
+    "file": "native-r3-snippets4-buffer256-steady.json",
+    "completed": true,
+    "requested_buffer": 256,
+    "observed_callback_frames": [
+      128,
+      128
+    ],
+    "queue_frames": 1024,
+    "starved_frames": 1792,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 4.792,
+    "producer_max_us": 33411.083,
+    "peak_cpu_percent": 50.80163821648349,
+    "peak_rss_bytes": 55803904
+  },
+  {
+    "file": "native-r3-snippets4-buffer256.json",
+    "completed": true,
+    "requested_buffer": 256,
+    "observed_callback_frames": [
+      128,
+      128
+    ],
+    "queue_frames": 1024,
+    "starved_frames": 9984,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 4.166,
+    "producer_max_us": 174948.709,
+    "peak_cpu_percent": 57.42989182608631,
+    "peak_rss_bytes": 58097664
+  },
+  {
+    "file": "native-r3-snippets4-buffer512.json",
+    "completed": true,
+    "requested_buffer": 512,
+    "observed_callback_frames": [
+      256,
+      256
+    ],
+    "queue_frames": 2048,
+    "starved_frames": 2560,
+    "callback_deadline_misses": 0,
+    "device_errors": 0,
+    "callback_max_us": 6.083,
+    "producer_max_us": 40705.75,
+    "peak_cpu_percent": 58.54898527421641,
+    "peak_rss_bytes": 56541184
+  }
+]

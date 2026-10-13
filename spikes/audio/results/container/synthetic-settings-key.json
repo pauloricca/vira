@@ -1,0 +1,2629 @@
+{
+  "build": {
+    "arch": "aarch64",
+    "channels": "together",
+    "dsp_mode": "real_time",
+    "fft": "builtin",
+    "optimized": true,
+    "os": "linux",
+    "pitch_mode": "high_consistency",
+    "resampler": "BQResampler",
+    "rubberband": "4.0.0",
+    "rust": "1.90.0",
+    "speed_convention": "playback speed; native duration ratio = 1 / speed; pitch = 2^(semitones/12)",
+    "threading": "never"
+  },
+  "comparisons": [
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-001-A.wav",
+      "gain": 0.9384944891332282,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 19910.958,
+          "mean_us": 1751.1033632075473,
+          "p50_upper_us": 1690,
+          "p95_upper_us": 3250,
+          "p99_upper_us": 4970
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 17692
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-001-B.wav",
+      "gain": 0.9537818703054854,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1832.625,
+          "mean_us": 562.5474019607843,
+          "p50_upper_us": 550,
+          "p95_upper_us": 830,
+          "p99_upper_us": 1100
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 9216
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-002-A.wav",
+      "gain": 0.9455389659694698,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16438.459,
+          "mean_us": 1542.1993785046727,
+          "p50_upper_us": 1240,
+          "p95_upper_us": 2890,
+          "p99_upper_us": 5900
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 19100
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-002-B.wav",
+      "gain": 0.9547481254801958,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1985.125,
+          "mean_us": 518.2178634146342,
+          "p50_upper_us": 470,
+          "p95_upper_us": 830,
+          "p99_upper_us": 1280
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 9507
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-003-A.wav",
+      "gain": 0.9448007130653239,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 17835.25,
+          "mean_us": 1830.8729857819906,
+          "p50_upper_us": 1740,
+          "p95_upper_us": 2620,
+          "p99_upper_us": 3130
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 16319
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-003-B.wav",
+      "gain": 0.9531547822711404,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 39564.875,
+          "mean_us": 1064.612730392157,
+          "p50_upper_us": 690,
+          "p95_upper_us": 1070,
+          "p99_upper_us": 6220
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 8973
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-004-A.wav",
+      "gain": 0.9548022480619667,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1100.25,
+          "mean_us": 470.12052450980394,
+          "p50_upper_us": 440,
+          "p95_upper_us": 700,
+          "p99_upper_us": 820
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 8078
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-004-B.wav",
+      "gain": 0.9379705118934469,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 19153.917,
+          "mean_us": 1453.6057405660379,
+          "p50_upper_us": 1230,
+          "p95_upper_us": 2330,
+          "p99_upper_us": 2800
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 15983
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-005-A.wav",
+      "gain": 0.9575642358702222,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 929.416,
+          "mean_us": 293.28613658536585,
+          "p50_upper_us": 280,
+          "p95_upper_us": 540,
+          "p99_upper_us": 560
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 8315
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-005-B.wav",
+      "gain": 0.9474334217807319,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14168.083,
+          "mean_us": 1123.7910560747664,
+          "p50_upper_us": 1130,
+          "p95_upper_us": 1290,
+          "p99_upper_us": 1450
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 17149
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-006-A.wav",
+      "gain": 0.9647820886012345,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 13079.416,
+          "mean_us": 784.2130049019609,
+          "p50_upper_us": 680,
+          "p95_upper_us": 1470,
+          "p99_upper_us": 2560
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7880
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-006-B.wav",
+      "gain": 0.9454443722134778,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 21220.125,
+          "mean_us": 1647.3222132701421,
+          "p50_upper_us": 1700,
+          "p95_upper_us": 2020,
+          "p99_upper_us": 4420
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 14914
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-007-A.wav",
+      "gain": 0.9256397791530441,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 18547.333,
+          "mean_us": 1264.3302264150946,
+          "p50_upper_us": 1070,
+          "p95_upper_us": 1510,
+          "p99_upper_us": 8030
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 14336
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-007-B.wav",
+      "gain": 0.9364430397181034,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 408.0,
+          "mean_us": 208.23345098039218,
+          "p50_upper_us": 210,
+          "p95_upper_us": 260,
+          "p99_upper_us": 350
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 7168
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-008-A.wav",
+      "gain": 0.9543770201685154,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1138.541,
+          "mean_us": 294.5792536585366,
+          "p50_upper_us": 270,
+          "p95_upper_us": 540,
+          "p99_upper_us": 630
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 7362
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-008-B.wav",
+      "gain": 0.9463534609562478,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14051.209,
+          "mean_us": 1130.5827242990656,
+          "p50_upper_us": 1130,
+          "p95_upper_us": 1460,
+          "p99_upper_us": 1910
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 15846
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-009-A.wav",
+      "gain": 0.9655456726552778,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1858.042,
+          "mean_us": 569.6989852941176,
+          "p50_upper_us": 490,
+          "p95_upper_us": 1060,
+          "p99_upper_us": 1540
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7006
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-009-B.wav",
+      "gain": 0.9455758972856787,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15598.459,
+          "mean_us": 1568.734981042654,
+          "p50_upper_us": 1310,
+          "p95_upper_us": 2300,
+          "p99_upper_us": 6260
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 13442
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-010-A.wav",
+      "gain": 0.9397085904458997,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 30450.708,
+          "mean_us": 1304.0642311320755,
+          "p50_upper_us": 1180,
+          "p95_upper_us": 1430,
+          "p99_upper_us": 3160
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 13309
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-010-B.wav",
+      "gain": 0.9463738946879848,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 929.917,
+          "mean_us": 349.09014705882356,
+          "p50_upper_us": 280,
+          "p95_upper_us": 560,
+          "p99_upper_us": 770
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 6423
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-011-A.wav",
+      "gain": 0.9449296410164056,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 27242.084,
+          "mean_us": 1165.2336869158878,
+          "p50_upper_us": 1130,
+          "p95_upper_us": 1530,
+          "p99_upper_us": 3140
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 14593
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-011-B.wav",
+      "gain": 0.95877083241394,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1350.625,
+          "mean_us": 312.66241951219513,
+          "p50_upper_us": 270,
+          "p95_upper_us": 620,
+          "p99_upper_us": 860
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 6582
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-012-A.wav",
+      "gain": 0.9457642502771655,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 41577.834,
+          "mean_us": 1611.4194549763033,
+          "p50_upper_us": 1210,
+          "p95_upper_us": 2220,
+          "p99_upper_us": 9170
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 12696
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-012-B.wav",
+      "gain": 0.958650504521148,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1277.375,
+          "mean_us": 510.0508284313725,
+          "p50_upper_us": 470,
+          "p95_upper_us": 800,
+          "p99_upper_us": 1140
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 6290
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-013-A.wav",
+      "gain": 0.9411959485075153,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15170.709,
+          "mean_us": 1125.3900801886793,
+          "p50_upper_us": 1110,
+          "p95_upper_us": 1440,
+          "p99_upper_us": 2890
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 12210
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-013-B.wav",
+      "gain": 0.9481024118215499,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 684.125,
+          "mean_us": 327.38746568627454,
+          "p50_upper_us": 250,
+          "p95_upper_us": 520,
+          "p99_upper_us": 580
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 5530
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-014-A.wav",
+      "gain": 0.9457413404176755,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15374.709,
+          "mean_us": 1009.5629158878504,
+          "p50_upper_us": 1110,
+          "p95_upper_us": 1350,
+          "p99_upper_us": 1440
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 13130
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-014-B.wav",
+      "gain": 0.9584098607668721,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 716.0,
+          "mean_us": 272.49001951219515,
+          "p50_upper_us": 250,
+          "p95_upper_us": 500,
+          "p99_upper_us": 620
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 5646
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 2,
+      "file": "pair-015-A.wav",
+      "gain": 0.955164494156553,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 12680.791,
+          "mean_us": 497.22181372549016,
+          "p50_upper_us": 450,
+          "p95_upper_us": 880,
+          "p99_upper_us": 1270
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 5432
+      }
+    },
+    {
+      "category": "synthetic tone — integration only",
+      "engine": 3,
+      "file": "pair-015-B.wav",
+      "gain": 0.9473554768352505,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/tone.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14768.667,
+          "mean_us": 1343.8499383886256,
+          "p50_upper_us": 1150,
+          "p95_upper_us": 2420,
+          "p99_upper_us": 6310
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 11281
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-016-A.wav",
+      "gain": 0.986218348453417,
+      "matched_rms": 0.006323722434933023,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16183.459,
+          "mean_us": 1178.3932971698114,
+          "p50_upper_us": 1180,
+          "p95_upper_us": 1670,
+          "p99_upper_us": 2160
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 17692
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-016-B.wav",
+      "gain": 1.0144477410759447,
+      "matched_rms": 0.006323722434933023,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 719.833,
+          "mean_us": 329.4638382352941,
+          "p50_upper_us": 340,
+          "p95_upper_us": 570,
+          "p99_upper_us": 600
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 9216
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-017-A.wav",
+      "gain": 1.1130897677472888,
+      "matched_rms": 0.0071571531362352855,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14755.083,
+          "mean_us": 945.7856355140187,
+          "p50_upper_us": 860,
+          "p95_upper_us": 1280,
+          "p99_upper_us": 1410
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 19100
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-017-B.wav",
+      "gain": 1.1405180975449838,
+      "matched_rms": 0.0071571531362352855,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 691.792,
+          "mean_us": 301.55548780487806,
+          "p50_upper_us": 260,
+          "p95_upper_us": 480,
+          "p99_upper_us": 630
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 9507
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-018-A.wav",
+      "gain": 1.552134556311714,
+      "matched_rms": 0.007938558099364515,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 17217.708,
+          "mean_us": 1395.6097630331753,
+          "p50_upper_us": 1270,
+          "p95_upper_us": 1670,
+          "p99_upper_us": 3330
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 16319
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-018-B.wav",
+      "gain": 1.611901406487049,
+      "matched_rms": 0.007938558099364515,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1298.167,
+          "mean_us": 452.4526274509804,
+          "p50_upper_us": 380,
+          "p95_upper_us": 780,
+          "p99_upper_us": 1020
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 8973
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-019-A.wav",
+      "gain": 1.0436329614663582,
+      "matched_rms": 0.006582279792837795,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 685.834,
+          "mean_us": 293.73813725490197,
+          "p50_upper_us": 250,
+          "p95_upper_us": 530,
+          "p99_upper_us": 600
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 8078
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-019-B.wav",
+      "gain": 0.9958188211464846,
+      "matched_rms": 0.006582279792837795,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 23789.833,
+          "mean_us": 1035.8985613207547,
+          "p50_upper_us": 870,
+          "p95_upper_us": 1340,
+          "p99_upper_us": 1600
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 15983
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-020-A.wav",
+      "gain": 1.1824565941109484,
+      "matched_rms": 0.007678861964007013,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 13717.833,
+          "mean_us": 894.8015981308412,
+          "p50_upper_us": 840,
+          "p95_upper_us": 1050,
+          "p99_upper_us": 2360
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 17149
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-020-B.wav",
+      "gain": 1.125195746029885,
+      "matched_rms": 0.007678861964007013,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 469.083,
+          "mean_us": 194.93561463414633,
+          "p50_upper_us": 170,
+          "p95_upper_us": 360,
+          "p99_upper_us": 460
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 8315
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-021-A.wav",
+      "gain": 1.6894993084940333,
+      "matched_rms": 0.009266836427959186,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16634.583,
+          "mean_us": 1186.6834597156396,
+          "p50_upper_us": 1210,
+          "p95_upper_us": 1560,
+          "p99_upper_us": 2060
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 14914
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-021-B.wav",
+      "gain": 1.8088069070282353,
+      "matched_rms": 0.009266836427959186,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1718.75,
+          "mean_us": 396.5953725490196,
+          "p50_upper_us": 360,
+          "p95_upper_us": 680,
+          "p99_upper_us": 1020
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7880
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-022-A.wav",
+      "gain": 1.0462386729317468,
+      "matched_rms": 0.0074728699439259175,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16786.708,
+          "mean_us": 908.5780660377359,
+          "p50_upper_us": 830,
+          "p95_upper_us": 1090,
+          "p99_upper_us": 1880
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 14336
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-022-B.wav",
+      "gain": 1.0269232793849294,
+      "matched_rms": 0.0074728699439259175,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 240.458,
+          "mean_us": 165.8145980392157,
+          "p50_upper_us": 170,
+          "p95_upper_us": 210,
+          "p99_upper_us": 240
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 7168
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-023-A.wav",
+      "gain": 1.157660997495616,
+      "matched_rms": 0.0077115268369660735,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 627.25,
+          "mean_us": 192.16952682926828,
+          "p50_upper_us": 160,
+          "p95_upper_us": 350,
+          "p99_upper_us": 480
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 7362
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-023-B.wav",
+      "gain": 1.2449472925101495,
+      "matched_rms": 0.0077115268369660735,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14914.708,
+          "mean_us": 865.4986401869158,
+          "p50_upper_us": 850,
+          "p95_upper_us": 1100,
+          "p99_upper_us": 1290
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 15846
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-024-A.wav",
+      "gain": 1.5071791938379326,
+      "matched_rms": 0.008782965469111764,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 17458.875,
+          "mean_us": 1133.9127061611375,
+          "p50_upper_us": 950,
+          "p95_upper_us": 1710,
+          "p99_upper_us": 2130
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 13442
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-024-B.wav",
+      "gain": 1.6775651167832903,
+      "matched_rms": 0.008782965469111764,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1735.5,
+          "mean_us": 409.9614166666667,
+          "p50_upper_us": 360,
+          "p95_upper_us": 900,
+          "p99_upper_us": 1520
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7006
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-025-A.wav",
+      "gain": 1.1126112170321008,
+      "matched_rms": 0.0072884758842130335,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 44640.917,
+          "mean_us": 1064.6947641509435,
+          "p50_upper_us": 840,
+          "p95_upper_us": 1280,
+          "p99_upper_us": 2150
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 13309
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-025-B.wav",
+      "gain": 1.0920195116186104,
+      "matched_rms": 0.0072884758842130335,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 466.625,
+          "mean_us": 215.27286274509805,
+          "p50_upper_us": 210,
+          "p95_upper_us": 400,
+          "p99_upper_us": 450
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 6423
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-026-A.wav",
+      "gain": 1.233215096007473,
+      "matched_rms": 0.007669647730377324,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14619.875,
+          "mean_us": 824.0465373831776,
+          "p50_upper_us": 820,
+          "p95_upper_us": 1060,
+          "p99_upper_us": 1380
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 14593
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-026-B.wav",
+      "gain": 1.1928701467348646,
+      "matched_rms": 0.007669647730377324,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 503.625,
+          "mean_us": 179.34996585365855,
+          "p50_upper_us": 150,
+          "p95_upper_us": 310,
+          "p99_upper_us": 460
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 6582
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-027-A.wav",
+      "gain": 1.4623950955378393,
+      "matched_rms": 0.008704518535614998,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15389.208,
+          "mean_us": 1020.9865450236967,
+          "p50_upper_us": 870,
+          "p95_upper_us": 1460,
+          "p99_upper_us": 1930
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 12696
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-027-B.wav",
+      "gain": 1.6081208429701737,
+      "matched_rms": 0.008704518535614998,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 651.083,
+          "mean_us": 291.2667549019608,
+          "p50_upper_us": 250,
+          "p95_upper_us": 490,
+          "p99_upper_us": 580
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 6290
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-028-A.wav",
+      "gain": 1.1074523388822157,
+      "matched_rms": 0.007201322240966859,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16883.208,
+          "mean_us": 897.2605660377359,
+          "p50_upper_us": 820,
+          "p95_upper_us": 1600,
+          "p99_upper_us": 1970
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 12210
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-028-B.wav",
+      "gain": 1.1417320332903813,
+      "matched_rms": 0.007201322240966859,
+      "pitch_semitones": 0.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 418.167,
+          "mean_us": 201.99734313725492,
+          "p50_upper_us": 210,
+          "p95_upper_us": 390,
+          "p99_upper_us": 410
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 5530
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-029-A.wav",
+      "gain": 1.2537315614403706,
+      "matched_rms": 0.007572469902686528,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 484.208,
+          "mean_us": 170.16360975609754,
+          "p50_upper_us": 140,
+          "p95_upper_us": 300,
+          "p99_upper_us": 430
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 5646
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-029-B.wav",
+      "gain": 1.3008433274655982,
+      "matched_rms": 0.007572469902686528,
+      "pitch_semitones": -3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14222.917,
+          "mean_us": 781.4355420560747,
+          "p50_upper_us": 810,
+          "p95_upper_us": 1090,
+          "p99_upper_us": 1330
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 13130
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 3,
+      "file": "pair-030-A.wav",
+      "gain": 1.5971353822226202,
+      "matched_rms": 0.009832328067239932,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14829.667,
+          "mean_us": 934.2221563981043,
+          "p50_upper_us": 840,
+          "p95_upper_us": 1360,
+          "p99_upper_us": 1850
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 11281
+      }
+    },
+    {
+      "category": "synthetic attacks — integration only",
+      "engine": 2,
+      "file": "pair-030-B.wav",
+      "gain": 1.7487308805126833,
+      "matched_rms": 0.009832328067239932,
+      "pitch_semitones": 3.0,
+      "source": "media/impulses.wav",
+      "source_frames": 96000,
+      "source_start": 12000,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 544.417,
+          "mean_us": 223.7836911764706,
+          "p50_upper_us": 230,
+          "p95_upper_us": 410,
+          "p99_upper_us": 450
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 5432
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-031-A.wav",
+      "gain": 1.6886211226842,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1067.292,
+          "mean_us": 559.7820735294118,
+          "p50_upper_us": 570,
+          "p95_upper_us": 830,
+          "p99_upper_us": 890
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 9216
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-031-B.wav",
+      "gain": 1.6427257352650029,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 19202.584,
+          "mean_us": 2217.705396226415,
+          "p50_upper_us": 1710,
+          "p95_upper_us": 6170,
+          "p99_upper_us": 13110
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 17692
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-032-A.wav",
+      "gain": 1.6420660053068572,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15642.167,
+          "mean_us": 1694.8897570093459,
+          "p50_upper_us": 1220,
+          "p95_upper_us": 4080,
+          "p99_upper_us": 10090
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 19100
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-032-B.wav",
+      "gain": 1.7003966841325517,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 2069.458,
+          "mean_us": 533.0589609756097,
+          "p50_upper_us": 490,
+          "p95_upper_us": 840,
+          "p99_upper_us": 1220
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 9507
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-033-A.wav",
+      "gain": 1.6793282696476615,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 17649.292,
+          "mean_us": 1768.5813507109006,
+          "p50_upper_us": 1750,
+          "p95_upper_us": 2080,
+          "p99_upper_us": 2340
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 16319
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-033-B.wav",
+      "gain": 1.7314640211404138,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.8,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 978.542,
+          "mean_us": 671.5273284313726,
+          "p50_upper_us": 710,
+          "p95_upper_us": 800,
+          "p99_upper_us": 890
+        },
+        "output_frames": 120000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 8973
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-034-A.wav",
+      "gain": 1.682286244310377,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 892.375,
+          "mean_us": 473.4640980392157,
+          "p50_upper_us": 450,
+          "p95_upper_us": 690,
+          "p99_upper_us": 720
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 8078
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-034-B.wav",
+      "gain": 1.6351607592052326,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15729.125,
+          "mean_us": 1401.7981556603775,
+          "p50_upper_us": 1190,
+          "p95_upper_us": 2000,
+          "p99_upper_us": 2400
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 15983
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-035-A.wav",
+      "gain": 1.6520797321574763,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15786.792,
+          "mean_us": 1201.2611261682243,
+          "p50_upper_us": 1180,
+          "p95_upper_us": 1480,
+          "p99_upper_us": 2200
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 17149
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-035-B.wav",
+      "gain": 1.6885586493089602,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1100.167,
+          "mean_us": 306.9532585365854,
+          "p50_upper_us": 280,
+          "p95_upper_us": 570,
+          "p99_upper_us": 670
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 8315
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-036-A.wav",
+      "gain": 1.67958677760617,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 31837.0,
+          "mean_us": 1908.9024218009479,
+          "p50_upper_us": 1760,
+          "p95_upper_us": 2700,
+          "p99_upper_us": 5420
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 14914
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-036-B.wav",
+      "gain": 1.7214469942325648,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 0.9,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1566.917,
+          "mean_us": 675.801274509804,
+          "p50_upper_us": 710,
+          "p95_upper_us": 1050,
+          "p99_upper_us": 1390
+        },
+        "output_frames": 106667,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7880
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-037-A.wav",
+      "gain": 1.6026423673034011,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 437.916,
+          "mean_us": 212.60904901960782,
+          "p50_upper_us": 210,
+          "p95_upper_us": 280,
+          "p99_upper_us": 380
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 7168
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-037-B.wav",
+      "gain": 1.604928804802837,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 22045.083,
+          "mean_us": 1184.806400943396,
+          "p50_upper_us": 1100,
+          "p95_upper_us": 1400,
+          "p99_upper_us": 1650
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 14336
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-038-A.wav",
+      "gain": 1.6725610075425896,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14229.042,
+          "mean_us": 1133.1612289719626,
+          "p50_upper_us": 1170,
+          "p95_upper_us": 1420,
+          "p99_upper_us": 1620
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 15846
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-038-B.wav",
+      "gain": 1.7159082522257614,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1065.375,
+          "mean_us": 318.9835463414634,
+          "p50_upper_us": 280,
+          "p95_upper_us": 570,
+          "p99_upper_us": 800
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 7362
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-039-A.wav",
+      "gain": 1.6726955805689065,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 16403.625,
+          "mean_us": 1495.7004549763033,
+          "p50_upper_us": 1280,
+          "p95_upper_us": 2140,
+          "p99_upper_us": 2820
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 13442
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-039-B.wav",
+      "gain": 1.7125435447495296,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.0,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 926.292,
+          "mean_us": 518.5486029411765,
+          "p50_upper_us": 470,
+          "p95_upper_us": 740,
+          "p99_upper_us": 800
+        },
+        "output_frames": 96000,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 7006
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-040-A.wav",
+      "gain": 1.6944864674105646,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1007.334,
+          "mean_us": 372.1838039215686,
+          "p50_upper_us": 320,
+          "p95_upper_us": 650,
+          "p99_upper_us": 780
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 6423
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-040-B.wav",
+      "gain": 1.6510110357287917,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14870.625,
+          "mean_us": 1234.09625,
+          "p50_upper_us": 1170,
+          "p95_upper_us": 1720,
+          "p99_upper_us": 2330
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 13309
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-041-A.wav",
+      "gain": 1.724242699420313,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 668.125,
+          "mean_us": 292.3924731707317,
+          "p50_upper_us": 270,
+          "p95_upper_us": 540,
+          "p99_upper_us": 600
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 6582
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-041-B.wav",
+      "gain": 1.6871783139832517,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15147.292,
+          "mean_us": 1226.195831775701,
+          "p50_upper_us": 1160,
+          "p95_upper_us": 2150,
+          "p99_upper_us": 3770
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 14593
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-042-A.wav",
+      "gain": 1.713758047399717,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 46077.875,
+          "mean_us": 820.352362745098,
+          "p50_upper_us": 510,
+          "p95_upper_us": 1210,
+          "p99_upper_us": 1810
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 6290
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-042-B.wav",
+      "gain": 1.6720409453967742,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.1,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 15300.542,
+          "mean_us": 1329.5086777251186,
+          "p50_upper_us": 1190,
+          "p95_upper_us": 1950,
+          "p99_upper_us": 2210
+        },
+        "output_frames": 87273,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 12696
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-043-A.wav",
+      "gain": 1.714078040874157,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 891.125,
+          "mean_us": 347.4456274509804,
+          "p50_upper_us": 290,
+          "p95_upper_us": 570,
+          "p99_upper_us": 800
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1024,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7168,
+        "tail_trimmed_frames": 5530
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-043-B.wav",
+      "gain": 1.6673168976895338,
+      "matched_rms": 0.1,
+      "pitch_semitones": 0.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 212,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14503.292,
+          "mean_us": 1414.4933396226415,
+          "p50_upper_us": 1140,
+          "p95_upper_us": 3030,
+          "p99_upper_us": 10160
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2048,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 10240,
+        "tail_trimmed_frames": 12210
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-044-A.wav",
+      "gain": 1.6899317756423287,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 214,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 22178.25,
+          "mean_us": 1240.0924672897197,
+          "p50_upper_us": 1170,
+          "p95_upper_us": 2120,
+          "p99_upper_us": 2990
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 2436,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 11016,
+        "tail_trimmed_frames": 13130
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-044-B.wav",
+      "gain": 1.7180380779029574,
+      "matched_rms": 0.1,
+      "pitch_semitones": -3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 205,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 573.541,
+          "mean_us": 263.23030731707314,
+          "p50_upper_us": 250,
+          "p95_upper_us": 490,
+          "p99_upper_us": 550
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1218,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 7556,
+        "tail_trimmed_frames": 5646
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 3,
+      "file": "pair-045-A.wav",
+      "gain": 1.6625017700956606,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 211,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 14887.417,
+          "mean_us": 1218.6789573459716,
+          "p50_upper_us": 1130,
+          "p95_upper_us": 1550,
+          "p99_upper_us": 4430
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 1723,
+        "start_pad_frames": 2048,
+        "tail_silence_input_frames": 9590,
+        "tail_trimmed_frames": 11281
+      }
+    },
+    {
+      "category": "synthetic texture — integration only",
+      "engine": 2,
+      "file": "pair-045-B.wav",
+      "gain": 1.7154534655628009,
+      "matched_rms": 0.1,
+      "pitch_semitones": 3.0,
+      "source": "media/texture.wav",
+      "source_frames": 96000,
+      "source_start": 0,
+      "speed": 1.25,
+      "stats": {
+        "native_process": {
+          "count": 204,
+          "histogram_bin_us": 10,
+          "histogram_overflow_at_us": 100000,
+          "max_us": 1794.708,
+          "mean_us": 419.10806862745096,
+          "p50_upper_us": 360,
+          "p95_upper_us": 710,
+          "p99_upper_us": 870
+        },
+        "output_frames": 76800,
+        "start_delay_frames": 862,
+        "start_pad_frames": 1024,
+        "tail_silence_input_frames": 6844,
+        "tail_trimmed_frames": 5432
+      }
+    }
+  ],
+  "seed": 731294
+}

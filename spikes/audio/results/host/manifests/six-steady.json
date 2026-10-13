@@ -1,0 +1,92 @@
+{
+  "sources": [
+    "media/tone.wav",
+    "media/texture.wav"
+  ],
+  "engine": 3,
+  "duration_frames": 480000,
+  "block_frames": 256,
+  "queue_frames": 1024,
+  "voices": [
+    {
+      "source": 0,
+      "position": 0,
+      "speed": 0.8,
+      "pitch": 0.0,
+      "gain": 0.08333333333333333
+    },
+    {
+      "source": 1,
+      "position": 173,
+      "speed": 0.9,
+      "pitch": -3.0,
+      "gain": 0.08333333333333333
+    },
+    {
+      "source": 0,
+      "position": 346,
+      "speed": 1.0,
+      "pitch": 3.0,
+      "gain": 0.08333333333333333
+    },
+    {
+      "source": 1,
+      "position": 519,
+      "speed": 1.1,
+      "pitch": 0.0,
+      "gain": 0.08333333333333333
+    },
+    {
+      "source": 0,
+      "position": 692,
+      "speed": 1.25,
+      "pitch": -3.0,
+      "gain": 0.08333333333333333
+    },
+    {
+      "source": 1,
+      "position": 865,
+      "speed": 0.8,
+      "pitch": 3.0,
+      "gain": 0.08333333333333333
+    }
+  ],
+  "events": [
+    {
+      "frame": 0,
+      "voice": 0,
+      "action": "start",
+      "position": 0
+    },
+    {
+      "frame": 0,
+      "voice": 1,
+      "action": "start",
+      "position": 173
+    },
+    {
+      "frame": 0,
+      "voice": 2,
+      "action": "start",
+      "position": 346
+    },
+    {
+      "frame": 0,
+      "voice": 3,
+      "action": "start",
+      "position": 519
+    },
+    {
+      "frame": 0,
+      "voice": 4,
+      "action": "start",
+      "position": 692
+    },
+    {
+      "frame": 0,
+      "voice": 5,
+      "action": "start",
+      "position": 865
+    }
+  ]
+}

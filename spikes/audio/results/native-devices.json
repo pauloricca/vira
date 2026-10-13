@@ -1,0 +1,49 @@
+{
+  "default": "MacBook Pro Speakers",
+  "devices": [
+    {
+      "configs": [
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(8000), max_sample_rate: SampleRate(8000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(16000), max_sample_rate: SampleRate(16000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(44100), max_sample_rate: SampleRate(44100), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(48000), max_sample_rate: SampleRate(48000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(88200), max_sample_rate: SampleRate(88200), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(96000), max_sample_rate: SampleRate(96000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(176400), max_sample_rate: SampleRate(176400), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(192000), max_sample_rate: SampleRate(192000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(352800), max_sample_rate: SampleRate(352800), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(384000), max_sample_rate: SampleRate(384000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(705600), max_sample_rate: SampleRate(705600), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(768000), max_sample_rate: SampleRate(768000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }"
+      ],
+      "name": "BlackHole 2ch"
+    },
+    {
+      "configs": [
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(44100), max_sample_rate: SampleRate(44100), buffer_size: Range { min: 29, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(48000), max_sample_rate: SampleRate(48000), buffer_size: Range { min: 29, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(88200), max_sample_rate: SampleRate(88200), buffer_size: Range { min: 29, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(96000), max_sample_rate: SampleRate(96000), buffer_size: Range { min: 29, max: 4096 }, sample_format: F32 }"
+      ],
+      "name": "MacBook Pro Speakers"
+    },
+    {
+      "configs": [
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(8000), max_sample_rate: SampleRate(8000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(16000), max_sample_rate: SampleRate(16000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(44100), max_sample_rate: SampleRate(44100), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(48000), max_sample_rate: SampleRate(48000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(88200), max_sample_rate: SampleRate(88200), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(96000), max_sample_rate: SampleRate(96000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(176400), max_sample_rate: SampleRate(176400), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(192000), max_sample_rate: SampleRate(192000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(352800), max_sample_rate: SampleRate(352800), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(384000), max_sample_rate: SampleRate(384000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(705600), max_sample_rate: SampleRate(705600), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }",
+        "SupportedStreamConfigRange { channels: 2, min_sample_rate: SampleRate(768000), max_sample_rate: SampleRate(768000), buffer_size: Range { min: 14, max: 4096 }, sample_format: F32 }"
+      ],
+      "name": "Multi-Output Device"
+    }
+  ],
+  "host": "CoreAudio"
+}

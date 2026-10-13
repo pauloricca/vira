@@ -1,0 +1,15 @@
+ Container audio-dev-run-eafb1007b4d3 Creating 
+ Container audio-dev-run-eafb1007b4d3 Created 
+    Blocking waiting for file lock on build directory
+   Compiling vira-audio-spike v0.1.0 (/work)
+    Finished `release` profile [optimized + debuginfo] target(s) in 30.83s
+     Running unittests src/main.rs (target/release/deps/vira_audio_spike-5a7b32eeb46f604d)
+
+running 4 tests
+test engine::tests::parse_script_actions ... ok
+test engine::tests::stop_and_retrigger_are_sample_positioned ... ok
+test tests::impulse_alignment ... ok
+test tests::realtime_render_duration_stereo_and_pitch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.89s
+

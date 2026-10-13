@@ -1,0 +1,84 @@
+<!doctype html><meta charset="utf-8"><title>Vira · Song analysis review</title>
+<style>body{font:16px system-ui;background:#111820;color:#e3edf2;max-width:1050px;margin:40px auto;padding:0 24px}h1{font-size:32px}article{background:#1b2833;padding:24px;border-radius:12px;margin:20px 0}button,input,select{font:inherit;padding:8px;border-radius:5px;border:1px solid #527080;margin:5px;background:#12202b;color:inherit}button{cursor:pointer}input[type=number]{width:110px}p{line-height:1.5;color:#b7cbd6}.status{color:#87dfc1}label{display:inline-block}small{color:#aac0cf}</style>
+<style>.waveform{margin:18px 0;padding:12px;background:#101b24;border:1px solid #395465;border-radius:8px}.waveform canvas{display:block;width:100%;height:210px;cursor:crosshair}.wave-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.wave-caption{font-size:13px;color:#b7cbd6}.wave-pan{display:flex;align-items:center}.wave-pan input{flex:1;min-width:80px}.waveform small{display:block;line-height:1.6}</style>
+<script src="../../analysis/waveform.js"></script>
+<h1>Song preparation · spike 4</h1>
+<p>Compare detected beats with the fitted grid at the start, middle and end. The click now defaults to the yellow detected beats; choose green fitted grid to compare. Song and click volumes can be changed while playing. All values are estimates. These excerpts are mono analysis previews.</p>
+<button id="stop">Stop</button><button id="export">Export corrections</button><span id="status" class="status">Ready · human validation pending</span><main></main>
+<script>
+const report = /*REPORT*/;
+let context, active = [], playToken = 0, animation, mixer;
+const edits = new Map(), buffers = new Map(), views = new Map(), audition = new Map();
+const status = document.querySelector('#status');
+function stop(){playToken++;cancelAnimationFrame(animation);for(const node of active){try{node.stop()}catch{}}active=[];mixer=null;for(const view of views.values())view.stop();status.textContent='Stopped'}
+document.querySelector('#stop').onclick=stop;
+function touch(t){const e=edits.get(t.sha256);e.firstInteraction ??= Date.now();e.lastInteraction=Date.now();return e}
+function save(t){localStorage.setItem('vira-analysis-'+t.sha256,JSON.stringify(edits.get(t.sha256)))}
+function fields(e){const bpm=Number(e.bpm),offset=Number(e.offset_seconds);if(!Number.isFinite(bpm)||bpm<20||bpm>400||!Number.isFinite(offset))throw Error('Use a BPM between 20 and 400 and a finite phase');return {bpm,offset}}
+async function loadBuffer(clip){
+  context ??= new AudioContext();
+  if(!buffers.has(clip.url))buffers.set(clip.url,(async()=>{const response=await fetch(clip.url);if(!response.ok)throw Error('Preview unavailable. Start the documented local server.');return context.decodeAudioData(await response.arrayBuffer())})());
+  try{return await buffers.get(clip.url)}catch(error){buffers.delete(clip.url);throw error}
+}
+async function play(t,clip,click){
+  stop();const token=playToken;const e=touch(t);save(t);
+  try{
+    const settings=audition.get(t.sha256);
+    const grid=click&&settings.target==='grid'?fields(e):null;
+    context ??= new AudioContext();await context.resume();
+    const view=views.get(t.sha256);await view.select(clip);
+    const buffer=await loadBuffer(clip);
+    if(token!==playToken)return;
+    const position=view.cursor>=buffer.duration-.02?0:view.cursor, when=context.currentTime+.08;
+    const source=context.createBufferSource();source.buffer=buffer;
+    const songGain=context.createGain(),clickGain=context.createGain();songGain.gain.value=settings.song*.65;clickGain.gain.value=settings.click*.35;
+    source.connect(songGain).connect(context.destination);clickGain.connect(context.destination);mixer={id:t.sha256,song:songGain,click:clickGain};source.start(when,position);active.push(source);
+    if(click){
+      const start=clip.start_seconds+position,end=clip.start_seconds+buffer.duration;
+      let times;
+      if(settings.target==='detected')times=t.beats_seconds.filter(beat=>beat>=start&&beat<end);
+      else{times=[];const period=60/grid.bpm;for(let n=Math.ceil((start-grid.offset)/period);grid.offset+n*period<end;n++)times.push(grid.offset+n*period)}
+      for(const beat of times){
+        const at=when+beat-clip.start_seconds-position,osc=context.createOscillator(),g=context.createGain();
+        osc.frequency.value=1400;g.gain.setValueAtTime(1,at);g.gain.exponentialRampToValueAtTime(.001,at+.04);osc.connect(g).connect(clickGain);osc.start(at);osc.stop(at+.045);active.push(osc);
+      }
+    }
+    status.textContent=t.name+' · '+clip.label+(click?(settings.target==='detected'?' + yellow detected-beat click':' + green fitted-grid click'):'');
+    const tick=()=>{if(token!==playToken)return;view.setCursor(Math.min(buffer.duration,position+Math.max(0,context.currentTime-when)),true);animation=requestAnimationFrame(tick)};tick();
+    source.onended=()=>{if(token===playToken){cancelAnimationFrame(animation);view.setCursor(buffer.duration);status.textContent='Ready'}};
+  }catch(error){status.textContent=error.message}
+}
+for(const t of report.tracks){
+  let cached;try{cached=JSON.parse(localStorage.getItem('vira-analysis-'+t.sha256))}catch{}
+  edits.set(t.sha256,cached??{sha256:t.sha256,name:t.name,bpm:t.grid?.bpm??120,offset_seconds:t.grid?.offset_seconds??0,key:t.keys[0]?.key??'unknown',verified:false,notes:''});
+  const e=edits.get(t.sha256),a=document.createElement('article');
+  const heading=document.createElement('h2');heading.textContent=t.name;a.append(heading);
+  const p=document.createElement('p');p.textContent=`${(t.duration_seconds/60).toFixed(1)} min · grid residual p95 ${t.grid?.residual_p95_ms.toFixed(1)??'—'} ms · ${t.flags.join(', ')}. Keys: ${t.keys.map(k=>k.key+' ('+k.correlation+')').join(' / ')}. Correlations are not probabilities.`;a.append(p);
+  const inputs={};
+  for(const [label,field,type] of [['BPM','bpm','number'],['Grid offset (seconds)','offset_seconds','number'],['Key','key','text'],['Notes','notes','text']]){
+    const l=document.createElement('label');l.append(label);const input=document.createElement('input');input.type=type;input.value=e[field];if(type==='number')input.step='0.001';input.onchange=()=>{stop();touch(t)[field]=type==='number'?Number(input.value):input.value;e.verified=false;check.checked=false;save(t);views.get(t.sha256)?.draw()};l.append(input);a.append(l);inputs[field]=input;
+  }
+  for(const [label,mult] of [['½ tempo',.5],['2× tempo',2]]){const b=document.createElement('button');b.textContent=label;b.onclick=()=>{inputs.bpm.value=Number(inputs.bpm.value)*mult;inputs.bpm.onchange()};a.append(b)}
+  const help=document.createElement('small');help.style.display='block';help.textContent='BPM sets the spacing between green lines. Grid offset (also called phase) slides them all: +0.010 seconds moves them 10 ms later. Dashed yellow lines are individual beat detections; green lines are an evenly spaced fit, so they may disagree even before edits.';a.append(help);
+  const original=document.createElement('small');original.style.display='block';original.textContent=t.grid?`Original fitted grid: ${t.grid.bpm.toFixed(3)} BPM, offset ${t.grid.offset_seconds.toFixed(3)} s. The fields above may include your saved edits.`:'No usable fitted grid was detected.';a.append(original);
+  const settings={song:.55,click:.85,target:'detected'};audition.set(t.sha256,settings);
+  const mix=document.createElement('div');mix.style.margin='14px 0';
+  for(const [name,key] of [['Song volume','song'],['Click volume','click']]){
+    const label=document.createElement('label'),slider=document.createElement('input'),value=document.createElement('output');label.append(name);slider.type='range';slider.min=0;slider.max=100;slider.step=1;slider.value=settings[key]*100;slider.setAttribute('aria-label',name);value.textContent=slider.value+'%';
+    slider.oninput=()=>{settings[key]=Number(slider.value)/100;value.textContent=slider.value+'%';if(mixer?.id===t.sha256)mixer[key].gain.setTargetAtTime(settings[key]*(key==='song'?.65:.35),context.currentTime,.015)};
+    label.append(slider,value);mix.append(label);
+  }
+  const targetLabel=document.createElement('label');targetLabel.append('Click follows ');const target=document.createElement('select');target.setAttribute('aria-label','Click follows');
+  for(const [value,text] of [['detected','Yellow · detected beats'],['grid','Green · fitted grid']]){const option=document.createElement('option');option.value=value;option.textContent=text;target.append(option)}
+  target.onchange=()=>{stop();settings.target=target.value};targetLabel.append(target);mix.append(targetLabel);a.append(mix);
+  const row=document.createElement('div');for(const clip of t.excerpts){for(const click of [false,true]){const b=document.createElement('button');b.textContent=clip.label+(click?' + click':' music');b.onclick=()=>play(t,clip,click);row.append(b)}}const stopButton=document.createElement('button');stopButton.textContent='Stop';stopButton.onclick=stop;row.append(stopButton);a.append(row);
+  views.set(t.sha256,createWaveform(t,a,loadBuffer,()=>fields(e)));
+  const l=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.checked=e.verified;check.onchange=()=>{touch(t).verified=check.checked;save(t)};l.append(check,'I checked all three excerpts, metrical level, phase and key');a.append(l);document.querySelector('main').append(a);
+  const reset=document.createElement('button');reset.textContent='Reset corrections';reset.onclick=()=>{stop();localStorage.removeItem('vira-analysis-'+t.sha256);location.reload()};a.append(reset);
+}
+document.querySelector('#export').onclick=()=>{
+  try{for(const e of edits.values())fields(e)}catch(error){status.textContent=error.message;return}
+  const payload={schema_version:1,exported_at:new Date().toISOString(),timing_note:'Elapsed interaction span includes idle time; not an automatic measure of active correction effort.',tracks:[...edits.values()].map(e=>({...e,interaction_span_seconds:e.firstInteraction?(e.lastInteraction-e.firstInteraction)/1000:null}))};
+  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='vira-song-corrections.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+</script>

@@ -1,0 +1,31 @@
+2026-10-12
+Container commands completed successfully:
+  cargo test --release --locked
+    4 tests passed (including 30 engine/speed/pitch render combinations)
+  cargo clippy --release --locked -- -D warnings
+  cargo fmt
+  cargo build --release --locked
+  synth media
+  audition manifests/synthetic-audition.json output/auditions
+  python3 scripts/experiments.py --seconds 10 --run
+    24 unpaced cases completed
+  sh scripts/build-macos.sh
+    aarch64-apple-darwin release executable exported
+Native built-app commands:
+  devices
+    CoreAudio default: MacBook Pro Speakers
+  play (six 10-second manifests, see native-summary.json)
+    completed; five observed starvation, one did not
+Not performed:
+  Musical listening evaluation
+  30-minute acceptance soak
+  Measured end-to-end latency
+
+Worker scheduling follow-up (2026-10-12):
+  Docker: cargo test --release --locked (4 passed), cargo clippy --release --locked -- -D warnings (passed), cargo fmt; macOS cross-build succeeded.
+  27 matched native runs: 3 scenarios x 3 modes x 3 repetitions, 10 seconds each.
+  All 9 real-time runs had no observed starvation; 8/9 poll and 6/9 signal-only runs had starvation.
+  Final-build default-mode confirmation: 60 seconds at 256 frames had one 128-frame silence gap; 10 seconds at 128 frames had none; 10 seconds at 512 frames had 4096 missing frames.
+  All comparison and confirmation runs had zero measured callback overruns and reported device errors.
+  Prepared-restart prototype failed output-equivalence checks after pitch/speed changes, and was removed before the final build.
+  See worker-scheduling/REPORT.md; spike acceptance remains open.

@@ -1,0 +1,10 @@
+{
+  "seed": 731294,
+  "excerpts": [
+    {"label":"synthetic tone — integration only","path":"media/tone.wav","start":0,"frames":96000},
+    {"label":"synthetic attacks — integration only","path":"media/impulses.wav","start":12000,"frames":96000},
+    {"label":"synthetic texture — integration only","path":"media/texture.wav","start":0,"frames":96000}
+  ],
+  "speeds":[0.8,0.9,1.0,1.1,1.25],
+  "pitches":[0,-3,3]
+}

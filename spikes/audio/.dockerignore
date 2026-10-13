@@ -1,0 +1,6 @@
+.deps
+target
+media
+output
+*.wav
+.git

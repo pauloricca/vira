@@ -1,0 +1,699 @@
+[
+  {
+    "run": "six-stress-60s-realtime-1",
+    "gap": {
+      "first_output_frame": 150784,
+      "frames": 128
+    },
+    "next_unconsumed_render_frame": 150784,
+    "slow_block": [
+      {
+        "elapsed_us": 13792.709,
+        "first_render_frame": 150784,
+        "queue_before_frames": 640
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 47616,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 47616,
+    "slow_block": [
+      {
+        "elapsed_us": 19480.041,
+        "first_render_frame": 47616,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "seek",
+        "frame": 48017,
+        "position": 12195,
+        "voice": 2
+      },
+      {
+        "action": "seek",
+        "frame": 48017,
+        "position": 12292,
+        "voice": 3
+      },
+      {
+        "action": "seek",
+        "frame": 48017,
+        "position": 12389,
+        "voice": 4
+      },
+      {
+        "action": "seek",
+        "frame": 48017,
+        "position": 12486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 54016,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 53760,
+    "slow_block": [
+      {
+        "elapsed_us": 17264.875,
+        "first_render_frame": 53760,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 54001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 54001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 54001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 54001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 55296,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 54784,
+    "slow_block": [
+      {
+        "elapsed_us": 19919.0,
+        "first_render_frame": 54784,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 55001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 55001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 55001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 55001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 57600,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 56832,
+    "slow_block": [
+      {
+        "elapsed_us": 16173.125,
+        "first_render_frame": 56832,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 57001,
+        "position": 6195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 57001,
+        "position": 6292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 57001,
+        "position": 6389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 57001,
+        "position": 6486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 144896,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 143872,
+    "slow_block": [
+      {
+        "elapsed_us": 19818.5,
+        "first_render_frame": 143872,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "seek",
+        "frame": 144017,
+        "position": 12195,
+        "voice": 2
+      },
+      {
+        "action": "seek",
+        "frame": 144017,
+        "position": 12292,
+        "voice": 3
+      },
+      {
+        "action": "seek",
+        "frame": 144017,
+        "position": 12389,
+        "voice": 4
+      },
+      {
+        "action": "seek",
+        "frame": 144017,
+        "position": 12486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 150784,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 149504,
+    "slow_block": [
+      {
+        "elapsed_us": 16785.083,
+        "first_render_frame": 149504,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 150001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 150001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 150001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 150001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 152064,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 150528,
+    "slow_block": [
+      {
+        "elapsed_us": 18042.334,
+        "first_render_frame": 150528,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 151001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 241408,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 239616,
+    "slow_block": [
+      {
+        "elapsed_us": 16212.457999999999,
+        "first_render_frame": 239616,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "seek",
+        "frame": 240017,
+        "position": 12195,
+        "voice": 2
+      },
+      {
+        "action": "seek",
+        "frame": 240017,
+        "position": 12292,
+        "voice": 3
+      },
+      {
+        "action": "seek",
+        "frame": 240017,
+        "position": 12389,
+        "voice": 4
+      },
+      {
+        "action": "seek",
+        "frame": 240017,
+        "position": 12486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 247808,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 245760,
+    "slow_block": [
+      {
+        "elapsed_us": 19378.165999999997,
+        "first_render_frame": 245760,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 246001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 246001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 246001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 246001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 249088,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 246784,
+    "slow_block": [
+      {
+        "elapsed_us": 16825.5,
+        "first_render_frame": 246784,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 247001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 247001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 247001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 247001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 251392,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 248832,
+    "slow_block": [
+      {
+        "elapsed_us": 16067.042,
+        "first_render_frame": 248832,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 249001,
+        "position": 6195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 249001,
+        "position": 6292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 249001,
+        "position": 6389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 249001,
+        "position": 6486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 338688,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 335872,
+    "slow_block": [
+      {
+        "elapsed_us": 18243.542,
+        "first_render_frame": 335872,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "seek",
+        "frame": 336017,
+        "position": 12195,
+        "voice": 2
+      },
+      {
+        "action": "seek",
+        "frame": 336017,
+        "position": 12292,
+        "voice": 3
+      },
+      {
+        "action": "seek",
+        "frame": 336017,
+        "position": 12389,
+        "voice": 4
+      },
+      {
+        "action": "seek",
+        "frame": 336017,
+        "position": 12486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 345600,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 342528,
+    "slow_block": [
+      {
+        "elapsed_us": 17608.667,
+        "first_render_frame": 342528,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 343001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 343001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 343001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 343001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 434944,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 431616,
+    "slow_block": [
+      {
+        "elapsed_us": 16142.042,
+        "first_render_frame": 431616,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "seek",
+        "frame": 432017,
+        "position": 12195,
+        "voice": 2
+      },
+      {
+        "action": "seek",
+        "frame": 432017,
+        "position": 12292,
+        "voice": 3
+      },
+      {
+        "action": "seek",
+        "frame": 432017,
+        "position": 12389,
+        "voice": 4
+      },
+      {
+        "action": "seek",
+        "frame": 432017,
+        "position": 12486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 441344,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 437760,
+    "slow_block": [
+      {
+        "elapsed_us": 19447.790999999997,
+        "first_render_frame": 437760,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 438001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 438001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 438001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 438001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  },
+  {
+    "run": "six-stress-buffer512-realtime-1",
+    "gap": {
+      "first_output_frame": 442624,
+      "frames": 256
+    },
+    "next_unconsumed_render_frame": 438784,
+    "slow_block": [
+      {
+        "elapsed_us": 16031.25,
+        "first_render_frame": 438784,
+        "queue_before_frames": 512
+      }
+    ],
+    "events_in_block": [
+      {
+        "action": "start",
+        "frame": 439001,
+        "position": 24195,
+        "voice": 2
+      },
+      {
+        "action": "start",
+        "frame": 439001,
+        "position": 24292,
+        "voice": 3
+      },
+      {
+        "action": "start",
+        "frame": 439001,
+        "position": 24389,
+        "voice": 4
+      },
+      {
+        "action": "start",
+        "frame": 439001,
+        "position": 24486,
+        "voice": 5
+      }
+    ]
+  }
+]

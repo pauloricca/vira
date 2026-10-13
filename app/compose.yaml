@@ -1,0 +1,49 @@
+services:
+  preparation:
+    build:
+      context: .
+      target: preparation
+    ports:
+      - "127.0.0.1:47831:47831"
+    volumes:
+      - type: bind
+        source: ../music
+        target: /music
+        read_only: true
+      - ./generated:/generated
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:47831/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+  builder:
+    profiles: [tools]
+    build:
+      context: .
+      target: builder
+    volumes:
+      - .:/work
+      - node-modules:/work/node_modules
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - cargo-target:/work/src-tauri/target
+      - type: bind
+        source: ${MACOS_SDK_PATH:-../spikes/audio/.deps/MacOSX.sdk}
+        target: /sdk
+        read_only: true
+    command: [sh, scripts/build-macos.sh]
+  preparation-tests:
+    profiles: [tools]
+    build:
+      context: .
+      target: preparation
+    volumes:
+      - .:/work:ro
+    working_dir: /work
+    command: [python, -m, unittest, discover, -s, tests, -v]
+volumes:
+  node-modules:
+  cargo-registry:
+  cargo-git:
+  cargo-target:

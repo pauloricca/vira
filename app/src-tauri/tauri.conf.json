@@ -1,0 +1,11 @@
+{
+  "productName": "VIRA",
+  "version": "0.1.0",
+  "identifier": "uk.ricca.vira",
+  "build": { "frontendDist": "../dist" },
+  "app": {
+    "windows": [{ "title": "VIRA · Decks and library", "width": 1440, "height": 960, "minWidth": 1000, "minHeight": 760, "dragDropEnabled": false }],
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": { "active": false }
+}

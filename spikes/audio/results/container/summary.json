@@ -1,0 +1,242 @@
+[
+  {
+    "engine": 2,
+    "snippets": 0,
+    "buffer": 128,
+    "wall_to_audio": 0.0760317625,
+    "max_block_us": 8889.375,
+    "nominal_block_overruns": 5,
+    "peak_rss_bytes": 18186240,
+    "native_process_seconds": 0.752630846
+  },
+  {
+    "engine": 2,
+    "snippets": 0,
+    "buffer": 256,
+    "wall_to_audio": 0.07438389170000001,
+    "max_block_us": 2556.833,
+    "nominal_block_overruns": 0,
+    "peak_rss_bytes": 18186240,
+    "native_process_seconds": 0.7362594920000001
+  },
+  {
+    "engine": 2,
+    "snippets": 0,
+    "buffer": 512,
+    "wall_to_audio": 0.0740019917,
+    "max_block_us": 5059.0,
+    "nominal_block_overruns": 0,
+    "peak_rss_bytes": 18186240,
+    "native_process_seconds": 0.7323008869999998
+  },
+  {
+    "engine": 2,
+    "snippets": 16,
+    "buffer": 128,
+    "wall_to_audio": 1.2549602131,
+    "max_block_us": 120925.333,
+    "nominal_block_overruns": 1342,
+    "peak_rss_bytes": 57921536,
+    "native_process_seconds": 12.426769255
+  },
+  {
+    "engine": 2,
+    "snippets": 16,
+    "buffer": 256,
+    "wall_to_audio": 1.317479163,
+    "max_block_us": 101699.125,
+    "nominal_block_overruns": 1082,
+    "peak_rss_bytes": 57835520,
+    "native_process_seconds": 13.031939211000001
+  },
+  {
+    "engine": 2,
+    "snippets": 16,
+    "buffer": 512,
+    "wall_to_audio": 1.5026249923,
+    "max_block_us": 109160.792,
+    "nominal_block_overruns": 613,
+    "peak_rss_bytes": 57851904,
+    "native_process_seconds": 14.857151730000002
+  },
+  {
+    "engine": 2,
+    "snippets": 4,
+    "buffer": 128,
+    "wall_to_audio": 0.3003578877,
+    "max_block_us": 15387.791,
+    "nominal_block_overruns": 137,
+    "peak_rss_bytes": 26681344,
+    "native_process_seconds": 2.9783018949999995
+  },
+  {
+    "engine": 2,
+    "snippets": 4,
+    "buffer": 256,
+    "wall_to_audio": 0.3043725126,
+    "max_block_us": 11970.334,
+    "nominal_block_overruns": 17,
+    "peak_rss_bytes": 26664960,
+    "native_process_seconds": 3.0192554639999996
+  },
+  {
+    "engine": 2,
+    "snippets": 4,
+    "buffer": 512,
+    "wall_to_audio": 0.2987110335,
+    "max_block_us": 16040.25,
+    "nominal_block_overruns": 4,
+    "peak_rss_bytes": 26648576,
+    "native_process_seconds": 2.96323603
+  },
+  {
+    "engine": 2,
+    "snippets": 8,
+    "buffer": 128,
+    "wall_to_audio": 0.5757358169,
+    "max_block_us": 36248.417,
+    "nominal_block_overruns": 727,
+    "peak_rss_bytes": 36786176,
+    "native_process_seconds": 5.704571349
+  },
+  {
+    "engine": 2,
+    "snippets": 8,
+    "buffer": 256,
+    "wall_to_audio": 0.5754297378000001,
+    "max_block_us": 45493.708,
+    "nominal_block_overruns": 203,
+    "peak_rss_bytes": 36786176,
+    "native_process_seconds": 5.7026188950000005
+  },
+  {
+    "engine": 2,
+    "snippets": 8,
+    "buffer": 512,
+    "wall_to_audio": 0.5741718878000001,
+    "max_block_us": 65326.042,
+    "nominal_block_overruns": 48,
+    "peak_rss_bytes": 36777984,
+    "native_process_seconds": 5.695551961
+  },
+  {
+    "engine": 3,
+    "snippets": 0,
+    "buffer": 128,
+    "wall_to_audio": 0.23343478759999997,
+    "max_block_us": 12087.625,
+    "nominal_block_overruns": 32,
+    "peak_rss_bytes": 18698240,
+    "native_process_seconds": 2.326164298
+  },
+  {
+    "engine": 3,
+    "snippets": 0,
+    "buffer": 256,
+    "wall_to_audio": 0.24106693350000002,
+    "max_block_us": 14406.375,
+    "nominal_block_overruns": 11,
+    "peak_rss_bytes": 18698240,
+    "native_process_seconds": 2.402766261
+  },
+  {
+    "engine": 3,
+    "snippets": 0,
+    "buffer": 512,
+    "wall_to_audio": 0.24091326679999997,
+    "max_block_us": 17065.542,
+    "nominal_block_overruns": 2,
+    "peak_rss_bytes": 18698240,
+    "native_process_seconds": 2.4011142229999995
+  },
+  {
+    "engine": 3,
+    "snippets": 16,
+    "buffer": 128,
+    "wall_to_audio": 2.7118010428000003,
+    "max_block_us": 157206.875,
+    "nominal_block_overruns": 1912,
+    "peak_rss_bytes": 84406272,
+    "native_process_seconds": 26.967989328000005
+  },
+  {
+    "engine": 3,
+    "snippets": 16,
+    "buffer": 256,
+    "wall_to_audio": 2.8365182429,
+    "max_block_us": 335480.0,
+    "nominal_block_overruns": 1350,
+    "peak_rss_bytes": 84402176,
+    "native_process_seconds": 28.198260216999998
+  },
+  {
+    "engine": 3,
+    "snippets": 16,
+    "buffer": 512,
+    "wall_to_audio": 2.861339293,
+    "max_block_us": 181120.917,
+    "nominal_block_overruns": 901,
+    "peak_rss_bytes": 84271104,
+    "native_process_seconds": 28.45467246000001
+  },
+  {
+    "engine": 3,
+    "snippets": 4,
+    "buffer": 128,
+    "wall_to_audio": 0.8304170837000001,
+    "max_block_us": 40524.084,
+    "nominal_block_overruns": 1139,
+    "peak_rss_bytes": 34869248,
+    "native_process_seconds": 8.266695973
+  },
+  {
+    "engine": 3,
+    "snippets": 4,
+    "buffer": 256,
+    "wall_to_audio": 0.8298725795999999,
+    "max_block_us": 37495.792,
+    "nominal_block_overruns": 752,
+    "peak_rss_bytes": 34750464,
+    "native_process_seconds": 8.262334916999999
+  },
+  {
+    "engine": 3,
+    "snippets": 4,
+    "buffer": 512,
+    "wall_to_audio": 0.8236216795000001,
+    "max_block_us": 49651.542,
+    "nominal_block_overruns": 138,
+    "peak_rss_bytes": 34848768,
+    "native_process_seconds": 8.201467956
+  },
+  {
+    "engine": 3,
+    "snippets": 8,
+    "buffer": 128,
+    "wall_to_audio": 1.4257570381,
+    "max_block_us": 60614.5,
+    "nominal_block_overruns": 1576,
+    "peak_rss_bytes": 51265536,
+    "native_process_seconds": 14.186679269999999
+  },
+  {
+    "engine": 3,
+    "snippets": 8,
+    "buffer": 256,
+    "wall_to_audio": 1.4302646007,
+    "max_block_us": 92336.959,
+    "nominal_block_overruns": 1182,
+    "peak_rss_bytes": 51273728,
+    "native_process_seconds": 14.236356087000003
+  },
+  {
+    "engine": 3,
+    "snippets": 8,
+    "buffer": 512,
+    "wall_to_audio": 1.5371946465000002,
+    "max_block_us": 134475.667,
+    "nominal_block_overruns": 885,
+    "peak_rss_bytes": 51261440,
+    "native_process_seconds": 15.282558367
+  }
+]

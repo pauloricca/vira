@@ -1,0 +1,35 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Vira host spike</title>
+<style>
+body{margin:32px;background:#111821;color:#e4eee9;font:15px system-ui}h1{font-size:28px}button{background:#baf4ce;border:0;padding:12px 20px;border-radius:6px;cursor:pointer}canvas{width:100%;height:230px;background:#18252b;border-radius:10px;margin:20px 0}pre{white-space:pre-wrap;max-height:230px;overflow:auto;color:#baf4ce}p{color:#aebfba}
+</style><h1>Vira / host spike 2</h1><p id="mode">Connecting to the in-process audio engine…</p>
+<button id="restart">Reopen output & restart</button><span id="counter"></span>
+<canvas width="1600" height="460"></canvas><pre id="status"></pre>
+<script>
+const invoke=window.__TAURI__.core.invoke;
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
+let busy=false,frames=0,last=0,maxGap=0;
+function paint(t){
+ if(last)maxGap=Math.max(maxGap,(t-last)*1000);last=t;frames++;
+ ctx.clearRect(0,0,1600,460);ctx.strokeStyle='#a7efc4';
+ const lanes=busy?48:2,points=busy?1600:400;
+ for(let lane=0;lane<lanes;lane++){
+  ctx.beginPath();for(let x=0;x<points;x++){
+   const y=(lane+.5)*460/lanes+Math.sin(x*.07+t*.002+lane)*180/lanes;
+   if(x)ctx.lineTo(x*1600/points,y);else ctx.moveTo(0,y);
+  }ctx.stroke();
+ }
+ requestAnimationFrame(paint);
+}
+async function poll(){
+ try{const result=await invoke('status',{frames,maxGapUs:Math.round(maxGap)});
+ document.querySelector('#status').textContent=JSON.stringify(result,null,2);
+ document.querySelector('#counter').textContent=`  ${frames} animation frames`;
+ }catch(e){document.querySelector('#status').textContent=String(e)}
+ setTimeout(poll,250);
+}
+document.querySelector('#restart').onclick=()=>invoke('restart');
+invoke('ready').then(load=>{
+ busy=load;document.querySelector('#mode').textContent=busy?'Busy: 48 animated waveform lanes + two Rust decode/waveform workers':'Idle: lightweight animation; same audio engine and real-time policy';
+ requestAnimationFrame(paint);poll();
+}).catch(e=>document.querySelector('#status').textContent=String(e));
+</script></html>

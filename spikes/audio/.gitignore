@@ -1,0 +1,8 @@
+.deps/
+target/
+media/
+output/
+*.wav
+*.aiff
+*.mp3
+*.flac

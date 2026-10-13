@@ -1,0 +1,317 @@
+{
+  "attempts": [
+    {
+      "finished_at_seconds": 10.217986041,
+      "playback": {
+        "callback": {
+          "actual_callback_frames_max": 128,
+          "actual_callback_frames_min": 128,
+          "deadline_misses": 0,
+          "delivered_frames": 480000,
+          "device_errors": 0,
+          "execution": {
+            "count": 3750,
+            "histogram_bin_us": 10,
+            "histogram_overflow_at_us": 100000,
+            "max_us": 10.708,
+            "mean_us": 2.08746,
+            "p50_upper_us": 10,
+            "p95_upper_us": 10,
+            "p99_upper_us": 10
+          },
+          "starved_frames": 0
+        },
+        "completed": true,
+        "device": "MacBook Pro Speakers",
+        "device_observability": "CPAL stream errors only; no hardware xrun counter or loopback measurement",
+        "end_to_end_latency_ms": null,
+        "engine": {
+          "manifest": {
+            "block_frames": 256,
+            "duration_frames": 480000,
+            "engine": 3,
+            "events": [
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 0,
+                "voice": 0
+              },
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 173,
+                "voice": 1
+              },
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 346,
+                "voice": 2
+              },
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 519,
+                "voice": 3
+              },
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 692,
+                "voice": 4
+              },
+              {
+                "action": "start",
+                "frame": 0,
+                "position": 865,
+                "voice": 5
+              }
+            ],
+            "queue_frames": 1024,
+            "sources": [
+              "media/tone.wav",
+              "media/texture.wav"
+            ],
+            "voices": [
+              {
+                "gain": 0.0833333358168602,
+                "pitch": 0.0,
+                "position": 0,
+                "source": 0,
+                "speed": 0.8
+              },
+              {
+                "gain": 0.0833333358168602,
+                "pitch": -3.0,
+                "position": 173,
+                "source": 1,
+                "speed": 0.9
+              },
+              {
+                "gain": 0.0833333358168602,
+                "pitch": 3.0,
+                "position": 346,
+                "source": 0,
+                "speed": 1.0
+              },
+              {
+                "gain": 0.0833333358168602,
+                "pitch": 0.0,
+                "position": 519,
+                "source": 1,
+                "speed": 1.1
+              },
+              {
+                "gain": 0.0833333358168602,
+                "pitch": -3.0,
+                "position": 692,
+                "source": 0,
+                "speed": 1.25
+              },
+              {
+                "gain": 0.0833333358168602,
+                "pitch": 3.0,
+                "position": 865,
+                "source": 1,
+                "speed": 0.8
+              }
+            ]
+          },
+          "peak_amplitude": 0.07260186970233917,
+          "peak_process_cpu_percent_one_second_windows": 185.56625952776048,
+          "preloaded_audio_bytes": 6144000,
+          "producer_blocks": {
+            "count": 1875,
+            "histogram_bin_us": 10,
+            "histogram_overflow_at_us": 100000,
+            "max_us": 56329.708,
+            "mean_us": 2479.7770282666665,
+            "p50_upper_us": 2360,
+            "p95_upper_us": 4180,
+            "p99_upper_us": 4650
+          },
+          "rendered_frames": 480000,
+          "samples_above_full_scale": 0,
+          "voices": [
+            {
+              "current_start_delay_frames": 2048,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 762,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 2679.833,
+                "mean_us": 931.1824566929134,
+                "p50_upper_us": 1060,
+                "p95_upper_us": 1140,
+                "p99_upper_us": 1180
+              }
+            },
+            {
+              "current_start_delay_frames": 2436,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 857,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 4870.375,
+                "mean_us": 760.62647957993,
+                "p50_upper_us": 780,
+                "p95_upper_us": 810,
+                "p99_upper_us": 840
+              }
+            },
+            {
+              "current_start_delay_frames": 1723,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 950,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 3862.958,
+                "mean_us": 923.4991136842106,
+                "p50_upper_us": 800,
+                "p95_upper_us": 1180,
+                "p99_upper_us": 1220
+              }
+            },
+            {
+              "current_start_delay_frames": 2048,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 1044,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 2692.625,
+                "mean_us": 712.5593457854407,
+                "p50_upper_us": 740,
+                "p95_upper_us": 770,
+                "p99_upper_us": 780
+              }
+            },
+            {
+              "current_start_delay_frames": 2436,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 1187,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 1860.5,
+                "mean_us": 663.7039081718618,
+                "p50_upper_us": 760,
+                "p95_upper_us": 800,
+                "p99_upper_us": 830
+              }
+            },
+            {
+              "current_start_delay_frames": 1723,
+              "current_start_pad_frames": 2048,
+              "native_process": {
+                "count": 762,
+                "histogram_bin_us": 10,
+                "histogram_overflow_at_us": 100000,
+                "max_us": 4369.709,
+                "mean_us": 1120.481912073491,
+                "p50_upper_us": 1140,
+                "p95_upper_us": 1180,
+                "p99_upper_us": 1200
+              }
+            }
+          ],
+          "worker": {
+            "mode": "realtime",
+            "realtime_policy_at_end": true,
+            "realtime_policy_verified_at_activation": true,
+            "slow_block_trace_dropped": 0,
+            "slow_blocks": [
+              {
+                "elapsed_us": 56347.834,
+                "first_render_frame": 0,
+                "queue_before_frames": 0
+              },
+              {
+                "elapsed_us": 6097.625,
+                "first_render_frame": 256,
+                "queue_before_frames": 256
+              },
+              {
+                "elapsed_us": 6164.542,
+                "first_render_frame": 768,
+                "queue_before_frames": 768
+              },
+              {
+                "elapsed_us": 6914.0419999999995,
+                "first_render_frame": 1280,
+                "queue_before_frames": 768
+              },
+              {
+                "elapsed_us": 5426.6669999999995,
+                "first_render_frame": 1792,
+                "queue_before_frames": 768
+              },
+              {
+                "elapsed_us": 5380.25,
+                "first_render_frame": 474624,
+                "queue_before_frames": 768
+              }
+            ],
+            "wake_wait_nonzero_returns": 0,
+            "workgroup": "custom asynchronous AudioWorkInterval",
+            "workgroup_interval_errors": 0
+          }
+        },
+        "gap_trace_dropped": 0,
+        "gaps": [],
+        "max_callback_interval_us": 2798,
+        "mode": "device_playback",
+        "queue_capacity_frames": 1024,
+        "queue_capacity_ms": 21.333333333333332,
+        "requested_buffer_frames": 256,
+        "requested_buffer_ms": 5.333333333333333,
+        "resources": {
+          "peak_rss_bytes": 185106432,
+          "process_cpu_seconds": 18.731335
+        },
+        "sample_rate": 48000,
+        "stop_reason": "completed",
+        "wake_signal_errors": 0,
+        "wall_seconds": 10.00601825,
+        "worker_mode": "realtime"
+      },
+      "started_at_seconds": 0.0
+    }
+  ],
+  "background": [
+    {
+      "decode_waveform_passes": 442
+    },
+    {
+      "decode_waveform_passes": 440
+    }
+  ],
+  "build": {
+    "arch": "aarch64",
+    "channels": "together",
+    "dsp_mode": "real_time",
+    "fft": "vDSP",
+    "optimized": true,
+    "os": "macos",
+    "pitch_mode": "high_consistency",
+    "resampler": "BQResampler",
+    "rubberband": "4.0.0",
+    "rust": "1.90.0",
+    "speed_convention": "playback speed; native duration ratio = 1 / speed; pitch = 2^(semitones/12)",
+    "threading": "never"
+  },
+  "busy": true,
+  "mode": "tauri_in_process",
+  "recovery": "up to 3 reopens, 500 ms apart; restarts manifest from zero; no seamless resume",
+  "resources": {
+    "peak_rss_bytes": 185106432,
+    "process_cpu_seconds": 18.736238
+  },
+  "ui_animation_frames": 327,
+  "ui_max_frame_gap_us": 112000,
+  "wall_seconds": 10.227450208
+}

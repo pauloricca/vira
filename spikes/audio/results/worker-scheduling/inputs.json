@@ -1,0 +1,10 @@
+[
+  {
+    "path": "media/tone.wav",
+    "sha256": "2bf66584dc298cfb1d025501adb15606ea4b459fc931f892dd8d02985994085c"
+  },
+  {
+    "path": "media/texture.wav",
+    "sha256": "1447afb7cf093558609ec50fb77c01452f010a697ea00eb070b6ea4e0bb6a25f"
+  }
+]

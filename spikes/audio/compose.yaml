@@ -1,0 +1,31 @@
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target:/work/target
+  mac-builder:
+    profiles: [mac]
+    build:
+      context: .
+      target: mac-builder
+    working_dir: /work
+    volumes:
+      - .:/work
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target:/work/target
+      - type: bind
+        source: ${MACOS_SDK_PATH:-./.deps/MacOSX.sdk}
+        target: /sdk
+        read_only: true
+    command: [sh, scripts/build-macos.sh]
+volumes:
+  cargo-registry:
+  cargo-git:
+  target:

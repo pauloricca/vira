@@ -1,0 +1,12 @@
+{
+  "productName": "Vira Host Spike",
+  "version": "0.1.0",
+  "identifier": "uk.ricca.vira.spike",
+  "build": {"frontendDist": "host-ui"},
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{"title": "Vira · host spike 2", "width": 900, "height": 680}],
+    "security": {"csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"}
+  },
+  "bundle": {"active": false}
+}

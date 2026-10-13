@@ -1,0 +1,17 @@
+services:
+  analysis:
+    build:
+      context: .
+    working_dir: /work
+    volumes:
+      - ..:/work
+      - ../../../music:/music:ro
+    command: ["--input", "/music", "--output", "results/analysis"]
+  review:
+    image: analysis-analysis:latest
+    entrypoint: ["python", "-m", "http.server", "8044", "--bind", "0.0.0.0"]
+    working_dir: /work
+    ports:
+      - "127.0.0.1:8044:8044"
+    volumes:
+      - ..:/work:ro

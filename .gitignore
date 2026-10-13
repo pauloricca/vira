@@ -1,0 +1,38 @@
+# Local music library
+/music/
+
+# macOS and editor files
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local environment and Python caches
+.env
+.env.*
+!.env.example
+!.env.*.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build artifacts and local dependencies
+node_modules/
+dist/
+target/
+.deps/
+
+# Generated app and spike output
+/app/generated/
+/app/output/
+/app/output-build.log
+/app/src-tauri/gen/
+/spikes/audio/gen/
+/spikes/audio/media/
+/spikes/audio/output/

@@ -1,0 +1,229 @@
+{
+  "cases": [
+    {
+      "case": "steady-headless-1",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.786,
+      "ui_frames": null,
+      "background": null,
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-headless-2",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.837,
+      "ui_frames": null,
+      "background": null,
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-headless-3",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.787,
+      "ui_frames": null,
+      "background": null,
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-idle-1",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.802,
+      "ui_frames": 620,
+      "background": [],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-idle-2",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.719,
+      "ui_frames": 634,
+      "background": [],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-idle-3",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.793,
+      "ui_frames": 105,
+      "background": [],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-busy-1",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.785,
+      "ui_frames": 632,
+      "background": [
+        {
+          "decode_waveform_passes": 398
+        },
+        {
+          "decode_waveform_passes": 394
+        }
+      ],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-busy-2",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.798,
+      "ui_frames": 327,
+      "background": [
+        {
+          "decode_waveform_passes": 442
+        },
+        {
+          "decode_waveform_passes": 440
+        }
+      ],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "steady-busy-3",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.793,
+      "ui_frames": 100,
+      "background": [
+        {
+          "decode_waveform_passes": 448
+        },
+        {
+          "decode_waveform_passes": 441
+        }
+      ],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "stress-headless",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.77,
+      "ui_frames": null,
+      "background": null,
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "stress-idle",
+      "passed": false,
+      "attempts": 1,
+      "starved_frames": 128,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.809,
+      "ui_frames": 93,
+      "background": [],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "stress-busy",
+      "passed": true,
+      "attempts": 1,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.784,
+      "ui_frames": 622,
+      "background": [
+        {
+          "decode_waveform_passes": 441
+        },
+        {
+          "decode_waveform_passes": 442
+        }
+      ],
+      "stop_reasons": [
+        "completed"
+      ]
+    },
+    {
+      "case": "reopen-busy",
+      "passed": true,
+      "attempts": 2,
+      "starved_frames": 0,
+      "callback_misses": 0,
+      "device_errors": 0,
+      "max_callback_interval_ms": 2.773,
+      "ui_frames": 769,
+      "background": [
+        {
+          "decode_waveform_passes": 535
+        },
+        {
+          "decode_waveform_passes": 535
+        }
+      ],
+      "stop_reasons": [
+        "requested_stop",
+        "completed"
+      ]
+    }
+  ],
+  "pending": [
+    "physical audio-device switch/unplug",
+    "sample-rate change",
+    "actual sleep/wake",
+    "long soak"
+  ],
+  "limits": "Synthetic 10-second runs; restart probe is controlled cancellation, not physical device recovery. Callback intervals are not loopback or hardware xrun measurements."
+}
