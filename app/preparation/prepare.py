@@ -14,6 +14,7 @@ except ImportError:
 CONVERSION_VERSION = "ffmpeg-stereo-f32le-48000-v1"
 SETTINGS = {"sample_rate": 48000, "channels": 2, "format": "f32le"}
 PEAK_BINS = 1024
+FEATURE_VERSION = 2
 FINE_FRAMES = 240 # 5 ms source-time buckets; no PCM in the webview
 
 
@@ -21,7 +22,55 @@ def artifact_id(digest):
     return hashlib.sha256((digest + CONVERSION_VERSION).encode()).hexdigest()
 
 
-def pcm_info(path):
+def spectral_features(path, frames, width):
+    """Left-channel power spectra at 5 ms hops; bounded FFT batches."""
+    import numpy as np
+    pcm = np.memmap(path, dtype="<f4", mode="r", shape=(frames, 2))
+    count = math.ceil(frames / FINE_FRAMES)
+    features = np.zeros((count, 2), dtype=np.float32)
+    window = np.hanning(1024)
+    high = np.fft.rfftfreq(1024, 1 / 48000) >= 3000
+    previous = np.zeros(513)
+    envelope = 0.0
+    for first in range(0, count, 512):
+        centers = np.arange(first, min(first + 512, count)) * FINE_FRAMES
+        indices = centers[:, None] + np.arange(1024)[None, :] - 512
+        samples = pcm[np.clip(indices, 0, frames - 1), 0].copy()
+        samples[(indices < 0) | (indices >= frames)] = 0
+        power = np.abs(np.fft.rfft(samples * window[None, :], axis=1)) ** 2
+        magnitude = np.sqrt(power)
+        for offset, spectrum in enumerate(magnitude):
+            total = power[offset].sum()
+            rms = np.sqrt(total / (1024 * (window ** 2).sum() / 2))
+            presence = np.sqrt(power[offset, high].sum() / max(total, 1e-12))
+            flux = np.maximum(spectrum - previous, 0).sum() / max(spectrum.sum(), 1e-12)
+            attack = max(0, rms - envelope) / max(rms, 1e-6)
+            strength = min(1, rms / .12)
+            features[first + offset] = [min(1, presence * strength), min(1, flux * attack * strength * 2.5)]
+            envelope = max(rms, envelope * .92)
+            previous = spectrum
+    overview = np.zeros((math.ceil(frames / width), 2), dtype=np.float32)
+    np.maximum.at(overview, np.minimum(np.arange(count) * FINE_FRAMES // width, len(overview)-1), features)
+    return features.tolist(), overview.tolist()
+
+
+def feature_hash(value):
+    data = [value["waveform_feature_version"], value["fine_features"], value["features"]]
+    return hashlib.sha256(json.dumps(data, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def valid_features(value, info):
+    import numpy as np
+    if value.get("waveform_feature_version") != FEATURE_VERSION:
+        return False
+    for key, length in [("fine_features", len(info["fine_peaks"])), ("features", len(info["peaks"]))]:
+        features = np.asarray(value.get(key, []), dtype=float)
+        if features.shape != (length, 2) or not np.isfinite(features).all() or (features < 0).any() or (features > 1).any():
+            return False
+    return value.get("waveform_feature_hash") == feature_hash(value)
+
+
+def pcm_info(path, include_features=True):
     import numpy as np
     length = path.stat().st_size
     if not length or length % 8:
@@ -42,8 +91,13 @@ def pcm_info(path):
             np.maximum.at(peaks, buckets, np.abs(values))
             np.maximum.at(fine, (np.arange(len(values)) + position) // FINE_FRAMES, np.abs(values))
             position += len(values)
-    return {"frames": frames, "duration_seconds": frames / 48000,
+    info = {"frames": frames, "duration_seconds": frames / 48000,
             "peak_frames": width, "peaks": peaks.tolist(), "fine_peak_frames": FINE_FRAMES, "fine_peaks": fine.tolist(), "pcm_hash": digest.hexdigest(), "pcm_bytes": length}
+    if include_features:
+        fine_features, features = spectral_features(path, frames, width)
+        info.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
+        info["waveform_feature_hash"] = feature_hash(info)
+    return info
 
 
 class Preparation:
@@ -73,9 +127,14 @@ class Preparation:
             try:
                 value = json.loads(manifest.read_text())
                 if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == CONVERSION_VERSION and value["source_hash"] == row["source_hash"] and value["settings"] == SETTINGS:
-                    info = pcm_info(directory / "audio.f32")
+                    info = pcm_info(directory / "audio.f32", include_features=False)
                     if all(value[key] == info[key] for key in info):
                         cached = value
+                        if not valid_features(value, info):
+                            fine_features, features = spectral_features(directory / "audio.f32", info["frames"], info["peak_frames"])
+                            cached.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
+                            cached["waveform_feature_hash"] = feature_hash(cached)
+                            atomic_json(manifest, cached)
             except (OSError, ValueError, KeyError, TypeError):
                 pass
             if cached is None:

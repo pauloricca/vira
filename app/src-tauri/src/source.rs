@@ -26,6 +26,10 @@ pub struct Prepared {
     pub fine_peak_frames: usize,
     #[serde(default)]
     pub fine_peaks: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub features: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub fine_features: Vec<[f32; 2]>,
     pub pcm_hash: String,
     pub pcm_bytes: usize,
 }
@@ -100,6 +104,18 @@ impl Prepared {
                     .flatten()
                     .all(|v| v.is_finite() && *v >= 0.),
             "Invalid fine waveform peaks"
+        );
+        ensure!(
+            (self.features.is_empty() || self.features.len() == self.peaks.len())
+                && (self.fine_features.is_empty()
+                    || self.fine_features.len() == self.fine_peaks.len())
+                && self
+                    .features
+                    .iter()
+                    .chain(self.fine_features.iter())
+                    .flatten()
+                    .all(|v| v.is_finite() && *v >= 0. && *v <= 1.),
+            "Invalid waveform frequency features"
         );
         Ok(())
     }

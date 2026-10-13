@@ -36,8 +36,45 @@ class PreparationTests(unittest.TestCase):
         self.assertAlmostEqual(max(p[0] for p in descriptor["peaks"]), .2, delta=.001)
         self.assertAlmostEqual(max(p[1] for p in descriptor["peaks"]), .1, delta=.001)
         self.assertEqual(self.jobs.state()["tracks"][0]["analysis"]["state"], "not_analysed")
-        with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Cache must not decode again")):
+        with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Cache must not decode again")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Cache must not run FFT again")):
             self.assertEqual(self.prepare.prepare(self.track_id), descriptor)
+
+    def test_features_persist_across_restart_and_repair_without_decode(self):
+        descriptor = self.prepare.prepare(self.track_id)
+        restarted = Preparation(self.jobs)
+        with patch("preparation.prepare.spectral_features", side_effect=AssertionError("Persisted features must be reused")):
+            self.assertEqual(restarted.prepare(self.track_id), descriptor)
+        manifest = self.prepare.audio_path(descriptor["artifact_id"]).parent / "manifest.json"
+        for change in [lambda v: v.update(waveform_feature_version=1), lambda v: v["fine_features"][0].__setitem__(0, .999)]:
+            value = json.loads(manifest.read_text())
+            change(value)
+            manifest.write_text(json.dumps(value))
+            with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Feature repair must reuse PCM")):
+                self.assertEqual(restarted.prepare(self.track_id), descriptor)
+
+    def test_frequency_brightness_and_short_attacks(self):
+        import numpy as np
+        path = self.root / "features.f32"
+        t = np.arange(48000) / 48000
+        def measure(samples):
+            np.stack([samples, -samples], axis=1).astype("<f4").tofile(path)
+            return np.asarray(pcm_info(path)["fine_features"])
+        left = .3 * np.sin(2 * np.pi * 100 * t)
+        right = .3 * np.sin(2 * np.pi * 8000 * t)
+        np.stack([left, right], axis=1).astype("<f4").tofile(path)
+        unequal = np.asarray(pcm_info(path)["fine_features"])
+        self.assertTrue(np.allclose(unequal, measure(left)))
+        low = measure(.3 * np.sin(2 * np.pi * 100 * t))
+        high = measure(.3 * np.sin(2 * np.pi * 8000 * t))
+        self.assertGreater(high[10:-10, 0].mean(), low[10:-10, 0].mean() + .7)
+        quiet = measure(.001 * np.sin(2 * np.pi * 8000 * t))
+        self.assertLess(quiet[:, 0].max(), .02)
+        signal = np.zeros(48000)
+        signal[24000:24480] = np.random.default_rng(7).normal(0, .4, 480)
+        attack = measure(signal)
+        self.assertGreater(attack[98:103, 1].max(), .8)
+        self.assertEqual(attack[:90].max(), 0)
+        self.assertTrue(np.isfinite(measure(np.zeros(48000))).all())
 
     def test_changed_source_rejects_cached_audio_even_before_refresh(self):
         old = self.prepare.prepare(self.track_id)

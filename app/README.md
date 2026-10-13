@@ -373,3 +373,20 @@ lines while thinning labels to readable bar labels.
 Evidence: `VERIFICATION-OPTIMISATION.md`; the original milestone reports retain
 their historical range/settings. Extreme stretching can alter attacks and texture;
 source-event/pitch checks do not replace musical listening.
+
+## Frequency shading
+
+Waveforms retain dark deck tints, brighten with energy above 3 kHz and approach
+white on strong attacks. Left-channel power spectra use 1024-sample Hann windows and 5 ms
+hops. Playback and the amplitude peak envelope remain stereo. Brightness combines treble proportion
+and absolute RMS; positive spectral flux and a rising RMS envelope mark attacks.
+These are source-audio cues, independent of playback gain and tempo. Cached
+preparation gains versioned frequency features automatically on the next load.
+Rolling, overview and timing views share the shading. Overview maxima preserve
+short attacks but compress their timing at full-track scale.
+
+Frequency features persist in `generated/prepared/<artifact-id>/manifest.json`
+and are reused across loads and service restarts. Version and checksum checks
+reject stale or damaged shading. Feature repair reuses valid PCM without decoding.
+Cache checks still validate source/PCM integrity and amplitude peaks, but skip
+FFT analysis when frequency features are valid.

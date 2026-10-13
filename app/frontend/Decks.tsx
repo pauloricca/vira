@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { waveformColour } from './waveform';
 import { RollingRow } from './RollingRow';
 import { DisplayPosition, animate } from './transport';
 import { Grid, TimingEditor, markers } from './Timing';
 
 export const TRACK_MIME = 'application/x-vira-track-id';
-export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][] };
+export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
 export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; launch_pending?: boolean; gain: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid?: Grid | null; target_bpm?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
 export type AudioState = { master_bpm?: number; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number } };
 const empty = (deck: number): DeckState => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 });
@@ -30,7 +31,7 @@ export function useDecks() {
       void invoke<Prepared>('timing_waveform', { trackId: track.track_id }).then(value => {
         if (!currentAudio.current.decks.some(deck => deck.track?.artifact_id === value.artifact_id)) return;
         fineCache.current.set(value.artifact_id, value);
-        setAudio(previous => ({ ...previous, decks: previous.decks.map(deck => deck.track?.artifact_id === value.artifact_id ? { ...deck, track: { ...deck.track, fine_peaks: value.fine_peaks, fine_peak_frames: value.fine_peak_frames } } : deck) }));
+        setAudio(previous => ({ ...previous, decks: previous.decks.map(deck => deck.track?.artifact_id === value.artifact_id ? { ...deck, track: { ...deck.track, fine_features: value.fine_features, fine_peaks: value.fine_peaks, fine_peak_frames: value.fine_peak_frames } } : deck) }));
       }).catch(e => {
         if (currentAudio.current.decks[d.deck].generation === d.generation) setErrors(previous => previous.map((v, i) => i === d.deck ? `Close-up waveform: ${String(e)}. Reload to retry.` : v));
       })
@@ -50,7 +51,7 @@ export function useDecks() {
           const previous = currentAudio.current.decks[d.deck];
           const track = d.track_unchanged && previous.generation === d.generation ? previous.track : d.track;
           const cached = track && fineCache.current.get(track.artifact_id);
-          const stableTrack = cached && track && !track.fine_peaks?.length ? { ...track, fine_peaks: cached.fine_peaks, fine_peak_frames: cached.fine_peak_frames } : track;
+          const stableTrack = cached && track && !track.fine_peaks?.length ? { ...track, fine_features: cached.fine_features, fine_peaks: cached.fine_peaks, fine_peak_frames: cached.fine_peak_frames } : track;
           return { ...d, track: stableTrack, received_at: received, sampled_at: (sent + received) / 2 };
         }) }); setPollError(null); }
       } catch (e) { if (!cancelled) setPollError(String(e)); }
@@ -123,8 +124,8 @@ export function Deck({ state, running, loading, error, load, control, showVolume
     const x = index * state.track!.peak_frames / state.track!.frames * 1024;
     // One display envelope: retain the louder channel in each time bucket.
     const amplitude = Math.min(1, Math.max(...peak)) * 50;
-    return `M${x.toFixed(2)},${60 - amplitude}V${60 + amplitude}`;
-  }).join(' ') ?? '', [state.track?.artifact_id]);
+    return <path key={index} d={`M${x.toFixed(2)},${60 - amplitude}V${60 + amplitude}`} stroke={waveformColour(state.deck===0 ? '#89d2ee' : '#efa264', state.track!.features?.[index])} />;
+  }) ?? [], [state.track?.artifact_id]);
   const overviewBars = useMemo(() => markers(state.grid, 0, total).filter(m => m.beat === 1).map(m =>
     <path key={m.seconds} d={`M${m.seconds / total * 1024},0V120`} stroke="currentColor" opacity={state.grid?.reviewed ? .6 : .25} />),
     [state.grid?.bpm, state.grid?.downbeat_seconds, state.grid?.reviewed, total]);
@@ -147,7 +148,7 @@ export function Deck({ state, running, loading, error, load, control, showVolume
         if (value !== undefined) { event.preventDefault(); void control(state.deck, 'seek', value); }
       }}>
       {overviewBars}
-      <path d="M0,60H1024" stroke="#303943" /><path d={wave} stroke="currentColor" />
+      <path d="M0,60H1024" stroke="#303943" />{wave}
       <path ref={playhead} d={`M${total ? state.position_seconds / total * 1024 : 0},0V120`} stroke="#f2f5f6" strokeWidth="3" />
     </svg>
     {!state.track && <span className="waveform-empty">Drag a track from the library</span>}

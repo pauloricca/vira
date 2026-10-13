@@ -1,6 +1,20 @@
 import type { Prepared } from './Decks';
 import type { Grid } from './Timing';
 const cache = new WeakMap<NonNullable<Prepared['fine_peaks']>, Float32Array[]>();
+/** Dark deck tint → bright tint for treble → white for strong attacks. */
+export function waveformColour(colour: string, feature?: [number, number]) {
+  const high = feature?.[0] ?? 0, transient = feature?.[1] ?? 0;
+  const light = .28 + .65 * Math.pow(high, .7);
+  const white = transient > .35 ? Math.min(1, (transient - .35) / .5) : 0;
+  const rgb = [1,3,5].map(i => Math.round(parseInt(colour.slice(i,i+2),16) * light * (1-white) + 255*white));
+  return `rgb(${rgb.join(',')})`;
+}
+const featureCache = new WeakMap<NonNullable<Prepared['fine_features']>, Float32Array[][]>();
+function featureLevels(features: NonNullable<Prepared['fine_features']>) {
+  let result = featureCache.get(features);
+  if (!result) { result = [0,1].map(channel => peakLevels(features.map(f => [f[channel], f[channel]]))); featureCache.set(features,result); }
+  return result;
+}
 /** Max pyramid makes a screen column query independent of zoom/track length. */
 export function peakLevels(peaks: NonNullable<Prepared['fine_peaks']>) {
   let levels = cache.get(peaks);
@@ -50,7 +64,7 @@ export class WaveTiles {
     const pixels = width * dpr / window;
     const key = `${pixels}:${height}:${dpr}:${colour}`;
     if (key !== this.key || this.peaks !== peaks) { this.tiles.clear(); this.key=key; this.peaks=peaks; }
-    const levels = peakLevels(peaks), step = (track.fine_peak_frames ?? 240) / 48000;
+    const levels = peakLevels(peaks), features = track.fine_features?.length ? featureLevels(track.fine_features) : null, step = (track.fine_peak_frames ?? 240) / 48000;
     const tileWidth = 1024, origin = start * pixels;
     const first = Math.max(0, Math.floor(origin/tileWidth));
     const last = Math.min(Math.ceil(track.duration_seconds*pixels/tileWidth)-1, Math.floor((origin+width*dpr)/tileWidth));
@@ -60,16 +74,17 @@ export class WaveTiles {
       if (!bitmap) {
         bitmap=document.createElement('canvas'); bitmap.width=tileWidth; bitmap.height=Math.round(height*dpr);
         const c=bitmap.getContext('2d'); if (!c) continue;
-        c.strokeStyle=colour; c.lineWidth=1; c.beginPath();
+        c.lineWidth=1;
         const center=height*dpr/2, amplitude=height*dpr/3;
         for (let x=0; x<tileWidth; x++) {
           const seconds=(tile*tileWidth+x)/pixels;
           if (seconds>=track.duration_seconds) break;
           const a=Math.floor(seconds/step), b=Math.max(a+1,Math.ceil((seconds+1/pixels)/step));
           const peak=rangePeak(levels,a,b)*amplitude;
-          c.moveTo(x+.5,center-peak); c.lineTo(x+.5,center+peak);
+          c.strokeStyle=waveformColour(colour, features ? [rangePeak(features[0],a,b),rangePeak(features[1],a,b)] : undefined);
+          c.beginPath(); c.moveTo(x+.5,center-peak); c.lineTo(x+.5,center+peak); c.stroke();
         }
-        c.stroke(); this.tiles.set(tile,bitmap);
+        this.tiles.set(tile,bitmap);
       }
       ctx.drawImage(bitmap,(tile*tileWidth-origin)/dpr,0,tileWidth/dpr,height);
     }

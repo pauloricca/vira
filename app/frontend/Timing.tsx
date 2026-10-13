@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { waveformColour } from './waveform';
 import type { Prepared } from './Decks';
 export type Grid = { bpm: number; downbeat_seconds: number; reviewed: boolean };
 export type TimingRecord = { grid: Grid | null; suggestion: Grid | null; state: string; source_hash: string };
@@ -24,20 +25,20 @@ export function WaveDetail({ track, grid, start, end }: { track: Prepared | null
   const last = Math.min(peaks.length, Math.ceil(end / step));
   // Aggregate only the visible fine buckets to at most one line per screen column.
   const stride = Math.max(1, Math.ceil((last - first) / 1024));
-  const path: string[] = [];
+  const path = [];
   for (let i = first; i < last; i += stride) {
-    let peak = 0;
-    for (let j = i; j < Math.min(i + stride, last); j++) peak = Math.max(peak, ...peaks[j]);
+    let peak = 0, high = 0, transient = 0;
+    for (let j = i; j < Math.min(i + stride, last); j++) { peak = Math.max(peak, ...peaks[j]); high = Math.max(high, track?.fine_features?.[j]?.[0] ?? 0); transient = Math.max(transient, track?.fine_features?.[j]?.[1] ?? 0); }
     const x = (i * step - start) / width * 1024;
     const amp = Math.min(1, peak) * 32;
-    path.push(`M${x.toFixed(2)},${48 - amp}V${48 + amp}`);
+    path.push(<path key={i} d={`M${x.toFixed(2)},${48 - amp}V${48 + amp}`} stroke={waveformColour('#89d2ee', [high, transient])} />);
   }
   return <>
     {markers(grid, Math.max(0, start), Math.min(track?.duration_seconds ?? 0, end)).map(m => <g key={m.seconds} className={m.beat === 1 ? 'bar-line' : 'beat-line'} opacity={grid?.reviewed ? 1 : .5}>
       <path d={`M${(m.seconds - start) / width * 1024},16V96`} />
       <text x={(m.seconds - start) / width * 1024 + 3} y="12">{m.bar}.{m.beat}</text>
     </g>)}
-    <path d={path.join(' ')} stroke="currentColor" />
+    {path}
   </>;
 }
 export function TimingEditor({ trackId, title, duration, prepared, position = 0, getPosition, deck, generation, seek, close }: {

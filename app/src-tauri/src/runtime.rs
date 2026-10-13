@@ -380,6 +380,8 @@ impl EngineHandle {
         // record while an installation travels through the output queue.
         {
             let mut meta = self.metadata.lock().unwrap();
+            prepared.fine_features.clear();
+            prepared.fine_features.shrink_to_fit();
             prepared.fine_peaks.clear();
             prepared.fine_peaks.shrink_to_fit();
             meta[deck].records.insert(generation, prepared);
