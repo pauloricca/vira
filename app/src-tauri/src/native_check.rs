@@ -36,12 +36,15 @@ fn position(state: &Value, deck: usize) -> f64 {
 }
 
 pub fn run(seconds: u64, report: &Path) -> Result<()> {
-    run_mode(seconds, report, false)
+    run_mode(seconds, report, false, false)
 }
 pub fn run_timing(seconds: u64, report: &Path) -> Result<()> {
-    run_mode(seconds, report, true)
+    run_mode(seconds, report, true, false)
 }
-fn run_mode(seconds: u64, report: &Path, timing: bool) -> Result<()> {
+pub fn run_routing(seconds: u64, report: &Path) -> Result<()> {
+    run_mode(seconds, report, false, true)
+}
+fn run_mode(seconds: u64, report: &Path, timing: bool, routing: bool) -> Result<()> {
     ensure!(
         seconds >= 30,
         "Native session must last at least 30 seconds"
@@ -71,10 +74,49 @@ fn run_mode(seconds: u64, report: &Path, timing: bool) -> Result<()> {
         .clone();
     let analysis_id = tracks[0].id.clone();
     let engine = EngineHandle::new();
+    if routing {
+        let ready = Instant::now();
+        while engine.state()["running"] != true {
+            ensure!(
+                ready.elapsed() < Duration::from_secs(10),
+                "Native output failed to start"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        use crate::routing::{Graph, Kind, Node, Wire};
+        let mut graph = Graph::default();
+        graph.nodes.push(Node {
+            id: "compressor".into(),
+            kind: Kind::Compressor,
+            deck: None,
+            label: "Sidechain compressor".into(),
+            x: 0.,
+            y: 0.,
+            value: 0.1,
+        });
+        graph
+            .wires
+            .retain(|w| !(w.from == "a-eq" && w.to == "a-filter"));
+        for (from, to, input, gain) in [
+            ("a-eq", "compressor", "audio", 1.),
+            ("b-player", "compressor", "sidechain", 1.),
+            ("compressor", "a-filter", "audio", 1.),
+            ("a-eq", "master", "audio", 0.05),
+        ] {
+            graph.wires.push(Wire {
+                from: from.into(),
+                output: "audio".into(),
+                to: to.into(),
+                input: input.into(),
+                gain,
+            });
+        }
+        engine.set_routing_graph(graph)?;
+    }
     let result = if timing {
         timing_session(engine.clone(), seconds, &a, &b)
     } else {
-        session(engine.clone(), seconds, &a, &b, &analysis_id)
+        session(engine.clone(), seconds, &a, &b, &analysis_id, routing)
     };
     engine.shutdown();
     thread::sleep(Duration::from_millis(250));
@@ -86,7 +128,7 @@ fn run_mode(seconds: u64, report: &Path, timing: bool) -> Result<()> {
         && final_state["telemetry"]["callback"]["device_errors"].as_u64() == Some(0)
         && final_state["telemetry"]["workgroup_interval_errors"].as_u64() == Some(0)
         && final_state["telemetry"]["wake_signal_errors"].as_u64() == Some(0);
-    let mut evidence = json!({"timing_session":timing,"seconds_requested":seconds,"passed":result.is_ok() && clean,"error":result.as_ref().err().map(|e|format!("{e:#}")),
+    let mut evidence = json!({"edited_routing":routing,"timing_session":timing,"seconds_requested":seconds,"passed":result.is_ok() && clean,"error":result.as_ref().err().map(|e|format!("{e:#}")),
         "state":final_state,"position_timing_claim":"queue-aware callback position, not sample-exact physical speaker timing"});
     if let Ok(trace) = &result {
         evidence["trace"] = trace.clone();
@@ -117,6 +159,7 @@ fn session(
     a: &str,
     b: &str,
     analysis_id: &str,
+    routing: bool,
 ) -> Result<Value> {
     let ready_at = Instant::now();
     while !engine.state()["running"].as_bool().unwrap_or(false) {
@@ -143,6 +186,34 @@ fn session(
             .unwrap_or(0);
         if event != 0 {
             handled.insert(event);
+        }
+        if routing && matches!(event, 3 | 6 | 13) {
+            let mut graph = engine.routing_graph();
+            let send = graph
+                .wires
+                .iter_mut()
+                .find(|w| w.from == "a-eq" && w.to == "master")
+                .unwrap();
+            send.gain = if event == 6 { 0.075 } else { 0.05 };
+            engine.set_routing_graph(graph)?;
+            let accepted = engine.routing_graph();
+            let mut invalid = accepted.clone();
+            invalid.wires.push(crate::routing::Wire {
+                from: "a-filter".into(),
+                output: "audio".into(),
+                to: "a-eq".into(),
+                input: "audio".into(),
+                gain: 1.,
+            });
+            ensure!(
+                engine.set_routing_graph(invalid).is_err(),
+                "Feedback graph accepted"
+            );
+            ensure!(
+                engine.routing_graph() == accepted,
+                "Rejected edit changed the graph"
+            );
+            trace.push(json!({"elapsed":elapsed,"check":"live graph swap and rejected-feedback isolation","passed":true}));
         }
         match event {
             2 => {

@@ -105,8 +105,8 @@ test('selected row queues by ID and polling fills the compact collection row', a
   expect(screen.getByText('Queued', { selector: 'span' })).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Reanalyse Artist - Filename' }) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(screen.getByText('121.25')).toBeTruthy();
-  expect(screen.getByText('D minor')).toBeTruthy();
+  expect(screen.getByText('121')).toBeTruthy();
+  expect(screen.getByText('7A / Dmin')).toBeTruthy();
   expect(screen.getByText('Needs review')).toBeTruthy();
   expect(screen.getByText('1', { selector: '.track-index' })).toBeTruthy();
   expect(screen.queryByText(/Review estimates for/)).toBeNull();
@@ -242,6 +242,39 @@ test('library headers sort every data column in both directions and keep missing
     expect(header.closest('th')?.getAttribute('aria-sort')).toBe('descending');
   }
   expect(screen.getByText('1', { selector: '.track-index' }).closest('tr')?.querySelector('.title')?.textContent).toBe('Zebra');
+});
+test('library compatibility indicators follow loaded deck keys and sort numerically', async () => {
+  const withKey = (id: string, title: string, key: string | null): Library['tracks'][number] => ({
+    ...library.tracks[0], id, title,
+    analysis: { state: 'analysed', result: key ? { ...estimate, keys: [{ key, correlation: .8 }] } : null, error: null },
+  });
+  const tracks = [withKey('c', 'Same A', 'C major'), withKey('g', 'Adjacent A', 'G major'),
+    withKey('f-sharp', 'Same B', 'F# major'), withKey('unknown', 'Unknown', null)];
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform'
+    ? { artifact_id: 'artifact', fine_peaks: [], fine_peak_frames: 0 } : { ...library, tracks }));
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: { track_id: deck === 0 ? 'c' : 'f-sharp', artifact_id: `artifact-${deck}`,
+        title: '', artist: '', filename: '', duration_seconds: 1, frames: 1, peak_frames: 0, peaks: [] },
+      position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('8B / Cmaj');
+  await waitFor(() => expect(screen.getByLabelText('Deck A compatibility 100%')).toBeTruthy());
+  expect(screen.getByLabelText('Deck B compatibility 100%')).toBeTruthy();
+  expect(screen.getByLabelText('Deck A compatibility unavailable')).toBeTruthy();
+  const rowTitles = () => Array.from(document.querySelectorAll('.collection-table tbody tr'), row => row.querySelector('.title')?.textContent);
+  const header = screen.getByRole('button', { name: 'Sort by A comp' });
+  fireEvent.click(header);
+  expect(rowTitles()).toEqual(['Same A', 'Adjacent A', 'Same B', 'Unknown']);
+  expect(header.closest('th')?.getAttribute('aria-sort')).toBe('descending');
+  fireEvent.click(header);
+  expect(rowTitles()).toEqual(['Same B', 'Adjacent A', 'Same A', 'Unknown']);
+  const bHeader = screen.getByRole('button', { name: 'Sort by B comp' });
+  fireEvent.click(bHeader);
+  expect(rowTitles()[0]).toBe('Same B');
+  expect(bHeader.closest('th')?.getAttribute('aria-sort')).toBe('descending');
 });
 test('actions header groups rows by availability', async () => {
   invoke.mockResolvedValue({ ...library, tracks: [
@@ -561,4 +594,27 @@ test('crossfader visibility persists and hiding bypasses the native fader', asyn
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show crossfader' }));
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'crossfader_enabled', value: 1 })));
   localStorage.removeItem('vira.show-crossfader');
+});
+
+test('Routing keeps an unapplied patch and undo history across workspace pages', async () => {
+  const routing = { nodes: [{ id: 'a-player', label: 'PLAYER', kind: 'player', deck: 0, x: 40, y: 80, value: 1 }], wires: [] };
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_routing_graph' ? routing : library));
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
+  await screen.findByRole('button', { name: 'a-player output audio' });
+  fireEvent.doubleClick(document.querySelector('.routing-canvas')!, { clientX: 400, clientY: 400 });
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Effects ›' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Compressor' }));
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  fireEvent.keyDown(window, { key: 'Backspace' });
+  fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
+  expect(screen.getByRole('button', { name: /input sidechain/ })).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Apply routing' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.keyDown(window, { key: 'z', metaKey: true });
+  expect(screen.queryByRole('button', { name: /input sidechain/ })).toBeNull();
+  expect(invoke.mock.calls.filter(([command]) => command === 'get_routing_graph')).toHaveLength(1);
+  expect(invoke.mock.calls.some(([command]) => command === 'set_routing_graph')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'SHORTCUTS' }));
+  for (const key of ['Delete / Backspace', 'Cmd + Z', 'Cmd + Shift + Z', 'Escape']) expect(screen.getByText(key)).toBeTruthy();
 });

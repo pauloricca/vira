@@ -26,8 +26,12 @@ immediately on each peak and falls at 24 dB/sec on the shared animation loop,
 from −48 to 0 dBFS. Master gain and crossfading remain deferred.
 Use each library row's **•••** menu for timing, analysis and Load A / Load B;
 dragging rows onto decks remains available.
-Collection rows show number, cover tile, title, artist, BPM, key, length and
-analysis status. The title's tooltip shows the source filename, and search also
+Collection rows show number, cover tile, title, artist, rounded BPM, Camelot and
+musical key (for example, 8B / Cmaj), A/B key compatibility, length and analysis
+status. Compatibility dots range from red to green using Camelot wheel distance;
+same key, neighbouring keys and relative major/minor score highest. They update
+when tracks load on either deck and can be sorted independently. A missing key
+or empty deck shows no score. The title's tooltip shows the source filename, and search also
 matches it. The old expandable estimate row has been removed.
 The **Settings** tab beside the workspace tabs shows the shared waveform zoom,
 music folder and refresh control, native audio status, master BPM, and the persisted master tempo drift rate (default 1 BPM/sec). Returning to Decks keeps the selected zoom and deck playback state. Pinch over either top rolling waveform to zoom both rows together, snapping to the existing 1, 2, 4, and 8-bar intervals around the fixed playheads.
@@ -336,11 +340,12 @@ current target BPM. Manual deck tempo changes or paused seeking unlock that deck
 replacing or applying a grid clears only that deck's lock. Pause and Stop leave
 the lock armed. Locking a playing deck seeks to the nearest source position with
 the master's selected beat or bar phase. When Play starts a locked deck while another deck is
-running, its cue waits for the next matching master beat or bar phase, selected
-in Settings (Bar by default). Its audio and
-pickup stay at the cue instead of skipping ahead; if there is not enough time
-for the pickup before the imminent selected boundary, it starts for the following
-beat or bar.
+running, the Bar setting (the default) joins the current bar immediately during
+its first beat if the cue can advance to the matching phase. From beat 2 onward,
+or if joining would move the cue backwards, it waits for the next matching bar.
+The Beat setting waits for the next matching beat. A queued deck keeps its audio
+and pickup at the cue; if there is not enough time for the pickup before the
+imminent selected boundary, it starts for the following beat or bar.
 Pause or Stop cancels the pending launch. The first deck to play starts the master clock at its own
 current grid position, including a pickup beat before the first downbeat, without
 seeking its audio. Both locked
@@ -481,3 +486,65 @@ failure leaves master playback running. The Audio page refreshes the device list
 and displays output errors. A bounded stereo queue with interpolation compensates
 for small clock differences between devices; physical headphone latency remains
 device dependent. Dual-device listening still needs verification on macOS hardware.
+
+### Audio Routing page
+
+**ROUTING** opens a stereo audio patchbay. Deck A and B keep their labeled, color-coded groups;
+player → trim → EQ → filter → fader is the initial chain. These nodes retain the
+Decks page's controls. Crossfader/mix and cue mix retain their existing controls;
+Master and Headphone outputs use the devices selected on AUDIO. No MIDI routing
+is included.
+
+Drag an output port onto an input port. Release anywhere else to cancel.
+Multiple destinations create branches; multiple wires feeding an input sum their
+signals. Select a wire to change its linear gain (0–2×) or disconnect it. Choose a
+processor from the categorized menu opened by double-clicking a cable to splice
+it into that connection. The first inserted wire retains the original gain.
+Double-click empty space to create a node at that point. Drag node headers to
+arrange the canvas. Zoom / Fit shows the whole graph; scroll to reach its full area.
+
+Built-in processors initially include Gain, a 4:1 Compressor with a named
+sidechain input and separate processed/dry outputs, a sine instrument with
+sine/cosine outputs (20–2,000 Hz at 0.1 amplitude), and a Ring modulator with
+separate audio/carrier inputs and processed/dry outputs. Compressor threshold is
+linear amplitude (0.01–1); its detector follows its own audio when no sidechain
+wire exists. A connected silent sidechain remains a silent external detector.
+The node/port schema supports multiple named stereo audio inputs and outputs;
+this increment does not host third-party plug-ins.
+
+Edits are staged. **Apply routing** validates and publishes the complete graph;
+invalid ports, duplicate wires, non-finite/out-of-range values and all directed
+cycles are rejected without changing the current audio configuration. The graph
+is limited to 32 nodes and 128 wires. Select any node or cable, then press
+Delete / Backspace to remove it; removing a node also removes its cables.
+Disconnected outputs are silent. Revert edits restores the last accepted graph;
+Default chain stages the factory configuration. Cmd-Z / Cmd-Shift-Z undo and
+redo draft edits, including complete node moves and node/cable deletions.
+Drafts, selections and edit history survive switching to other workspace pages.
+Click empty space to deselect; Escape cancels a drag or closes the menu.
+Removing an output silences that output; removing a fader silences its meter.
+Undo or Default chain restores removed built-in nodes. Accepted graphs/layouts are
+session-local, and opening VIRA again starts with the conventional chain.
+
+A graph compiler validates and orders nodes on an ordinary command thread. The
+producer executes a precompiled bounded schedule with stack scratch buffers;
+it does not allocate, discover topology or rebuild graphs per frame. Graph swaps
+occur at existing 128-frame command boundaries, preserve compatible processor
+state, ramp output for 5 ms and retire old plans through the existing ordinary
+thread retirement queue. Layout-only updates do not swap the audio plan. The
+conventional graph selects the original fused deck/mixer path, with the original
+click, cue, fader and crossfader behavior. The Core Audio callback is unchanged.
+
+Native benchmark evidence and limits are in `VERIFICATION-ROUTING.md`. Repeat the
+steady workload with the GUI closed:
+
+```sh
+output/VIRA.app/Contents/MacOS/vira --audio-benchmark 30 output/routing-steady.json
+output/VIRA.app/Contents/MacOS/vira --native-routing-check 30 output/routing-edited.json
+```
+
+The first measures steady process CPU, callback execution, dropouts and measured
+control-to-consumed-callback latency under a fixed two-deck EQ/filter workload.
+The second runs the existing native transport/lifecycle harness with a compressor
+between Deck A's EQ and filter, Deck B feeding its sidechain, and an additional
+parallel EQ send to master. Physical device latency requires loopback hardware.

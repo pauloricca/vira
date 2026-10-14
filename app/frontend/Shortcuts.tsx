@@ -1,4 +1,8 @@
 const shortcuts = [
+  ['Delete / Backspace', 'Remove selected node (and its cables) or selected cable', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
+  ['Cmd + Z', 'Undo the last routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
+  ['Cmd + Shift + Z', 'Redo the last undone routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
+  ['Escape', 'Cancel cable/node drag or close the node menu', 'Routing page; outside text/number fields and selectors'],
   ['Alt + ←', 'Make deck A active', 'Decks page; outside text fields'],
   ['Alt + →', 'Make deck B active', 'Decks page; outside text fields'],
   ['Cmd + L', 'Lock active deck to master tempo', 'Decks page; outside text fields; loaded deck with a timing grid'],

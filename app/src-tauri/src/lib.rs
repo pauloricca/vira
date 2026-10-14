@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
+pub mod audio_benchmark;
 mod audio_devices;
 mod cue_output;
 pub mod decks;
@@ -7,6 +8,7 @@ mod dsp;
 mod metrics;
 mod mixer;
 pub mod native_check;
+pub mod routing;
 pub mod runtime;
 mod scheduling;
 pub mod source;
@@ -294,6 +296,28 @@ pub fn run() {
             .map_err(|e| format!("Artwork worker failed: {e}"))?
     }
     #[tauri::command]
+    fn default_routing_graph() -> routing::Graph {
+        routing::Graph::default()
+    }
+    #[tauri::command]
+    fn get_routing_graph(
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> routing::Graph {
+        state.routing_graph()
+    }
+    #[tauri::command]
+    async fn set_routing_graph(
+        graph: routing::Graph,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<(), String> {
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            engine.set_routing_graph(graph).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
     async fn get_audio_state(
         known_generations: Option<[u64; 2]>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
@@ -457,6 +481,9 @@ pub fn run() {
             approve_track_analysis,
             get_track_artwork,
             get_audio_state,
+            get_routing_graph,
+            default_routing_graph,
+            set_routing_graph,
             get_audio_levels,
             get_audio_devices,
             set_audio_devices,

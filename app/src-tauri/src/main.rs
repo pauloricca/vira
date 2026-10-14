@@ -1,10 +1,9 @@
 fn main() {
     // Native, UI-independent metadata smoke test; no media tools run on the Mac.
     let args: Vec<String> = std::env::args().collect();
-    if let Some(position) = args
-        .iter()
-        .position(|arg| arg == "--native-check" || arg == "--native-timing-check")
-    {
+    if let Some(position) = args.iter().position(|arg| {
+        arg == "--native-check" || arg == "--native-timing-check" || arg == "--native-routing-check"
+    }) {
         let seconds = args
             .get(position + 1)
             .and_then(|v| v.parse().ok())
@@ -15,10 +14,27 @@ fn main() {
             .unwrap_or("app/output/native-session.json");
         let result = if args[position] == "--native-timing-check" {
             vira::native_check::run_timing(seconds, std::path::Path::new(report))
+        } else if args[position] == "--native-routing-check" {
+            vira::native_check::run_routing(seconds, std::path::Path::new(report))
         } else {
             vira::native_check::run(seconds, std::path::Path::new(report))
         };
         if let Err(error) = result {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(position) = args.iter().position(|arg| arg == "--audio-benchmark") {
+        let seconds = args
+            .get(position + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        let report = args
+            .get(position + 2)
+            .map(String::as_str)
+            .unwrap_or("app/output/audio-benchmark.json");
+        if let Err(error) = vira::audio_benchmark::run(seconds, std::path::Path::new(report)) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

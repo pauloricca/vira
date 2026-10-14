@@ -171,7 +171,9 @@ pub fn prepare_track(track_id: &str, request: Option<(usize, u64)>) -> Result<Pr
     let value = service_response(
         "/v1/prepare",
         Some(match request {
-            Some((deck, generation)) => serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation}),
+            Some((deck, generation)) => {
+                serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation})
+            }
             None => serde_json::json!({"track_id":track_id}),
         }),
         true,

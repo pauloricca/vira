@@ -20,6 +20,11 @@ test('controls send independent deck commands and waveform supports pointer/keyb
   fireEvent.keyDown(wave, { key: 'ArrowRight' });
   expect(control.mock.calls).toEqual([[0, 'play_pause'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
 });
+test('deck overview shows grid lines every eight bars from the downbeat', () => {
+  render(<Deck state={{ ...state, grid: { bpm: 120, downbeat_seconds: 2, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} />);
+  const paths = screen.getByRole('slider', { name: 'Waveform seek deck A' }).querySelectorAll('path[stroke="currentColor"]');
+  expect(Array.from(paths, path => path.getAttribute('d'))).toEqual(['M20.48,0V120', 'M184.32,0V120', 'M348.16,0V120', 'M512,0V120', 'M675.84,0V120', 'M839.68,0V120', 'M1003.52,0V120']);
+});
 test('drop accepts only internal track IDs and preparation failure preserves controls', () => {
   const load = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={state} running loading error="Preparation failed" load={load} control={vi.fn()} />);

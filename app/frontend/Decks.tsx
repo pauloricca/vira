@@ -210,7 +210,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     const amplitude = Math.min(1, Math.max(...peak)) * 50;
     return <path key={index} d={`M${x.toFixed(2)},${60 - amplitude}V${60 + amplitude}`} stroke={waveformColour(state.deck===0 ? '#89d2ee' : '#efa264', state.track!.features?.[index])} />;
   }) ?? [], [state.track?.artifact_id]);
-  const overviewBars = useMemo(() => markers(state.grid, 0, total).filter(m => m.beat === 1).map(m =>
+  const overviewBars = useMemo(() => markers(state.grid, 0, total).filter(m => m.beat === 1 && (m.bar - 1) % 8 === 0).map(m =>
     <path key={m.seconds} d={`M${m.seconds / total * 1024},0V120`} stroke="currentColor" opacity={state.grid?.reviewed ? .6 : .25} />),
     [state.grid?.bpm, state.grid?.downbeat_seconds, state.grid?.reviewed, total]);
   const ready = Boolean(state.track && running);

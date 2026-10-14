@@ -339,6 +339,7 @@ pub struct DeckState {
 }
 
 pub struct EngineHandle {
+    graph: Mutex<crate::routing::Graph>,
     shared: Arc<Shared>,
     commands: Mutex<rtrb::Producer<Command>>,
     wake: Option<Arc<Wake>>,
@@ -352,6 +353,7 @@ impl EngineHandle {
         let (tx, rx) = rtrb::RingBuffer::new(32);
         let wake = Wake::new().map(Arc::new);
         let handle = Arc::new(Self {
+            graph: Mutex::new(crate::routing::Graph::default()),
             shared: shared.clone(),
             commands: Mutex::new(tx),
             wake: wake.as_ref().ok().cloned(),
@@ -376,6 +378,21 @@ impl EngineHandle {
             Err(e) => shared.fail(e.to_string()),
         }
         handle
+    }
+    pub fn benchmark_gains(&self) -> [f32; 2] {
+        self.shared.audible().gains
+    }
+    pub fn routing_graph(&self) -> crate::routing::Graph {
+        self.graph.lock().unwrap().clone()
+    }
+    pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
+        let plan = graph.compile()?;
+        let mut current = self.graph.lock().unwrap();
+        if !graph.same_audio(&current) {
+            self.send(Command::Routing(plan))?;
+        }
+        *current = graph;
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     pub fn audio_devices(&self) -> Result<Value> {
@@ -867,13 +884,16 @@ fn native_output(
     let (cue_tx, cue_rx) = rtrb::RingBuffer::<[f32; 2]>::new(8192);
     let cue_tx = Arc::new(Mutex::new(cue_tx));
     let cue_output = Arc::new(Mutex::new(crate::cue_output::CueOutput::new(cue_rx)));
-    let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<Box<Voice>>::new(64);
+    let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<crate::decks::Retired>::new(64);
     let finished = Arc::new(AtomicBool::new(false));
     let retired_finished = finished.clone();
     let retirement = thread::spawn(move || {
         loop {
             while let Ok(voice) = retire_rx.pop() {
-                drop(voice);
+                match voice {
+                    crate::decks::Retired::Voice(v) => drop(v),
+                    crate::decks::Retired::Routing(p) => drop(p),
+                }
             }
             if retired_finished.load(Acquire) {
                 break;
@@ -881,7 +901,10 @@ fn native_output(
             thread::sleep(Duration::from_millis(2));
         }
         while let Ok(voice) = retire_rx.pop() {
-            drop(voice);
+            match voice {
+                crate::decks::Retired::Voice(v) => drop(v),
+                crate::decks::Retired::Routing(p) => drop(p),
+            }
         }
     });
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel::<std::result::Result<(), String>>(1);

@@ -130,6 +130,47 @@ impl MixerDsp {
             f.state = [[0.; 2]; 2];
         }
     }
+    // Separate processors for editable graph stages. Each owns independent state.
+    pub fn process_stage(&mut self, input: [f32; 2], stage: u8) -> [f32; 2] {
+        if self.remaining > 0 {
+            for i in 0..6 {
+                self.current[i] += (self.target[i] - self.current[i]) / self.remaining as f64;
+            }
+            self.remaining -= 1;
+        }
+        let [trim, lo, mid, hi, position, wet] = self.current;
+        if stage == 2 && self.filter_tick == 0 {
+            let hz = if position < 0. {
+                20_000. * (30_f64 / 20_000.).powf(-position)
+            } else {
+                20. * (18_000_f64 / 20.).powf(position)
+            };
+            for f in &mut self.filter {
+                f.tune(hz, position > 0.);
+            }
+        }
+        self.filter_tick = (self.filter_tick + 1) % 16;
+        std::array::from_fn(|channel| {
+            let x = input[channel] as f64;
+            match stage {
+                0 => (x * trim) as f32,
+                1 => {
+                    let [low, upper] = self.low.split(x, channel);
+                    let [middle, high] = self.upper.split(upper, channel);
+                    let low = self.low_phase.split(low, channel).iter().sum::<f64>();
+                    (x * (1. - wet) + (low * lo + middle * mid + high * hi) * wet) as f32
+                }
+                _ => {
+                    let mut filtered = x;
+                    for f in &mut self.filter {
+                        filtered = f.process(filtered, channel);
+                    }
+                    let blend = (position.abs() / 0.04).min(1.);
+                    (x * (1. - blend) + filtered * blend) as f32
+                }
+            }
+        })
+    }
     pub fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
         if self.remaining > 0 {
             for i in 0..6 {
