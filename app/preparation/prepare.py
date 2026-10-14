@@ -98,6 +98,27 @@ def valid_features(value, info):
     return value.get("waveform_feature_hash") == feature_hash(value)
 
 
+def valid_cached_audio(value, path):
+    """Check the descriptor without rereading or recomputing the prepared PCM."""
+    try:
+        length = path.stat().st_size
+        frames = value["frames"]
+        width = value["peak_frames"]
+        if (not length or length % 8 or value["pcm_bytes"] != length
+                or frames != length // 8 or width != max(1, math.ceil(frames / PEAK_BINS))
+                or value["fine_peak_frames"] != FINE_FRAMES
+                or len(value["peaks"]) != math.ceil(frames / width)
+                or len(value["fine_peaks"]) != math.ceil(frames / FINE_FRAMES)
+                or not isinstance(value["pcm_hash"], str) or len(value["pcm_hash"]) != 64
+                or any(c not in "0123456789abcdef" for c in value["pcm_hash"])):
+            return False
+        return all(isinstance(pair, list) and len(pair) == 2
+                   and all(isinstance(sample, (int, float)) and math.isfinite(sample) and sample >= 0 for sample in pair)
+                   for key in ("peaks", "fine_peaks") for pair in value[key])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def pcm_info(path, include_features=True, current=lambda: True):
     import numpy as np
     length = path.stat().st_size
@@ -176,11 +197,10 @@ class Preparation:
             try:
                 value = json.loads(manifest.read_text())
                 if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == CONVERSION_VERSION and value["source_hash"] == row["source_hash"] and value["settings"] == SETTINGS:
-                    info = pcm_info(directory / "audio.f32", include_features=False, current=current)
-                    if all(value[key] == info[key] for key in info):
+                    if valid_cached_audio(value, directory / "audio.f32"):
                         cached = value
-                        if not valid_features(value, info):
-                            fine_features, features = spectral_features(directory / "audio.f32", info["frames"], info["peak_frames"], current)
+                        if not valid_features(value, value):
+                            fine_features, features = spectral_features(directory / "audio.f32", value["frames"], value["peak_frames"], current)
                             cached.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
                             cached["waveform_feature_hash"] = feature_hash(cached)
                             atomic_json(manifest, cached)

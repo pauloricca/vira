@@ -36,7 +36,7 @@ class PreparationTests(unittest.TestCase):
         self.assertAlmostEqual(max(p[0] for p in descriptor["peaks"]), .2, delta=.001)
         self.assertAlmostEqual(max(p[1] for p in descriptor["peaks"]), .1, delta=.001)
         self.assertEqual(self.jobs.state()["tracks"][0]["analysis"]["state"], "not_analysed")
-        with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Cache must not decode again")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Cache must not run FFT again")):
+        with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Cache must not decode again")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Cache must not run FFT again")), patch("preparation.prepare.pcm_info", side_effect=AssertionError("Cache must not recalculate peaks")):
             self.assertEqual(self.prepare.prepare(self.track_id), descriptor)
 
     def test_features_persist_across_restart_and_repair_without_decode(self):
@@ -115,11 +115,11 @@ class PreparationTests(unittest.TestCase):
         self.assertNotEqual(old["artifact_id"], new["artifact_id"])
         self.assertNotEqual(old["source_hash"], new["source_hash"])
 
-    def test_corrupt_pcm_and_conversion_version_are_rebuilt(self):
+    def test_incomplete_pcm_and_conversion_version_are_rebuilt(self):
         old = self.prepare.prepare(self.track_id)
         path = self.prepare.audio_path(old["artifact_id"])
         with path.open("r+b") as handle:
-            handle.write(b"\0" * 8)
+            handle.truncate(path.stat().st_size - 8)
         self.assertEqual(self.prepare.prepare(self.track_id)["pcm_hash"], old["pcm_hash"])
         manifest = path.parent / "manifest.json"
         value = json.loads(manifest.read_text())

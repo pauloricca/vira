@@ -112,6 +112,8 @@ class LibraryJobs:
         self.rows = {}
         self.revision = 0
         self.instance_id = uuid.uuid4().hex
+        self.scan_pending = False
+        self.scan_error = None
         self.pending = queue.Queue(capacity)
         self.tokens = {}
         self.worker = threading.Thread(target=self._work, daemon=True, name="serial-analysis")
@@ -174,9 +176,19 @@ class LibraryJobs:
             self.revision += 1
             return self.state()
 
+    def seed(self, tracks):
+        """Publish size-checked saved rows while a full scan runs in the background."""
+        with self.lock:
+            if self.revision:
+                return self.state()
+            self.rows = {row["id"]: row for row in tracks}
+            self.revision += 1
+            return self.state()
+
     def state(self):
         with self.lock:
             return {"schema_version": LIBRARY_SCHEMA, "revision": self.revision, "instance_id": self.instance_id,
+                    "scan_pending": self.scan_pending, "scan_error": self.scan_error,
                     "tracks": copy.deepcopy(list(self.rows.values()))}
 
     def source(self, track_id):

@@ -31,6 +31,13 @@ test('tempo changes preserve continuity and latency estimate is bounded at both 
   expect(clock.at(400)).toBeCloseTo(10.6);
   expect(clock.at(500)).toBeGreaterThan(clock.at(400));
 });
+test('display playhead wraps inside an active loop',()=>{
+  const clock=new DisplayPosition();
+  clock.update({...state,position_seconds:10.4,loop_in_seconds:10,loop_out_seconds:10.5},0);
+  expect(clock.at(200)).toBeCloseTo(10.1);
+  clock.update({...state,position_seconds:10.1,position_epoch:1,loop_in_seconds:10,loop_out_seconds:10.5},200);
+  expect(clock.at(200)).toBeCloseTo(10.1);
+});
 test('max pyramid preserves narrow peaks at every zoom without resampling the full song',()=>{
   const peaks: [number,number][] = [[.1,.2],[.8,.1],[.3,.4],[.2,.95],[.1,.1]];
   const levels=peakLevels(peaks);

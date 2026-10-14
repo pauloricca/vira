@@ -72,6 +72,10 @@ pub struct Library {
     pub tracks: Vec<Track>,
     pub revision: u64,
     pub instance_id: String,
+    #[serde(default)]
+    pub scan_pending: bool,
+    #[serde(default)]
+    pub scan_error: Option<String>,
 }
 
 impl Library {
@@ -117,6 +121,10 @@ impl Library {
 
 pub fn scan_library() -> Result<Library, String> {
     service_request("/v1/library/scan", None, true)
+}
+
+pub fn open_library() -> Result<Library, String> {
+    service_request("/v1/library/open", None, true)
 }
 
 pub fn library_state() -> Result<Library, String> {
@@ -270,6 +278,12 @@ pub fn run() {
         tauri::async_runtime::spawn_blocking(scan_library)
             .await
             .map_err(|e| format!("Library scan worker failed: {e}"))?
+    }
+    #[tauri::command]
+    async fn open_library() -> Result<Library, String> {
+        tauri::async_runtime::spawn_blocking(crate::open_library)
+            .await
+            .map_err(|e| format!("Library opening worker failed: {e}"))?
     }
     #[tauri::command]
     async fn get_library_state() -> Result<Library, String> {
@@ -426,9 +440,16 @@ pub fn run() {
         .map_err(|e| e.to_string())?
     }
     #[tauri::command]
-    async fn timing_waveform(track_id: String) -> Result<source::Prepared, String> {
+    async fn timing_waveform(
+        deck: usize,
+        generation: u64,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<runtime::Waveform, String> {
+        let engine = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
-            source::prepare_track(&track_id, None).map_err(|e| format!("{e:#}"))
+            engine
+                .waveform_for_generation(deck, generation)
+                .map_err(|e| format!("{e:#}"))
         })
         .await
         .map_err(|e| e.to_string())?
@@ -475,6 +496,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
+            open_library,
             refresh_library,
             get_library_state,
             analyse_track,

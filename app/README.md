@@ -91,6 +91,13 @@ is limited to the file protocol, with a 15-second per-file timeout. Concurrent
 scans return a retry message. The native request has a 120-second total timeout;
 very large/problematic bins can exceed it in this initial serial implementation.
 
+At startup, the app first shows saved library rows whose files still have the same
+size. A background scan then probes and hashes every readable source and replaces
+the provisional rows with verified results. New files and files with changed sizes
+appear after that scan. Loading a provisional row still checks its full source hash;
+same-size changes cannot silently load an old prepared track. **Refresh** waits for
+a complete scan.
+
 Each successful scan writes `generated/library-v2.json` atomically (the original
 metadata-only v1 snapshot is also retained). IDs encode relative filename, size,
 mtime and SHA-256 content hash. Refresh rereads metadata and hashes readable
@@ -177,8 +184,9 @@ and time correspondence. Each deck displays one combined waveform, using the
 larger channel peak per bucket, while playback stays stereo. These are full-song
 waveforms, not the spike's excerpts.
 The Docker service caches versioned PCM/peaks outside the source bin. Matching
-content/settings are reusable; altered/corrupt caches are rebuilt. Native loading
-validates the descriptor and streamed PCM checksum. Full PCM never travels
+content/settings are reusable; incomplete or incompatible caches are rebuilt.
+On a cache hit, saved peaks are reused without scanning the PCM again. Native loading
+validates the descriptor and streamed PCM checksum, rejecting same-size corruption. Full PCM never travels
 through webview commands/events.
 
 Each successful load installs only the selected deck, paused at the beginning.
@@ -189,7 +197,17 @@ The same source can occupy both decks, sharing immutable PCM but retaining two
 separate R3/transport states.
 
 - **Play / Pause** resumes or holds position. Playing after a natural end restarts
-  the song from the beginning. Reaching the end itself stops without looping.
+  the song from the beginning. Reaching the end stops unless a loop is active.
+- **Loops** use bar lengths in 4/4: 1/4 is one beat, 1 is one bar, and 2 is two
+  bars. By default, a length loops the grid segment containing the playhead;
+  Settings can switch to starting at the playhead. Click the same length
+  again to release it, or a different length to switch. IN and OUT mark a manual
+  loop and snap to the nearest beat by default when a grid is available; a
+  separate Settings option allows exact playhead placement. Both waveforms show
+  the loop bounds.
+- **SLIP** keeps a background playhead moving while a loop repeats. Releasing
+  the loop resumes at the background position. It pauses and follows tempo with
+  the deck, and stays enabled when another track loads on that deck.
 - **Cue** uses Pioneer-style transport behavior. While paused away from Cue,
   press to set it at the current position. During playback, press to return to Cue
   and pause. While paused at Cue, hold to audition; release returns and pauses.
@@ -207,7 +225,7 @@ separate R3/transport states.
   nearest position with the same phase as the deck immediately before the jump,
   using the selected beat/bar setting. Playing clicks retain tempo lock and do
   not start a scrub gesture. Tracks without a timing grid seek exactly.
-  Paused seeking and scrubbing unlock tempo sync. Use left/right arrows for
+  Paused seeking and scrubbing retain tempo lock. Use left/right arrows for
   five-second jumps, or Home/End for the track boundaries; playing keyboard seeks
   preserve phase too. Exact seeks to the end stop playback.
 - **Volume** sets per-deck gain from zero to one. The mix applies 0.45 headroom per
@@ -303,7 +321,7 @@ milestone-1 descriptions of unity-only speed and independent-only decks are
 superseded by this section. See `VERIFICATION-MILESTONE-2.md` for acceptance
 status and measured limits.
 
-Use **Timing** on a library row or **Edit timing** on a loaded deck. Source BPM
+Use **Edit timing** on a loaded deck. Source BPM
 supports 30–300; first downbeat must be within the source. The constant 4/4 grid
 labels the anchor bar 1, beat 1. Before it, bars 0, −1, … retain beats 1–4.
 Half/double BPM, a 10 ms keyboard cursor, Shift ±1 s, window zoom, beginning /
@@ -336,13 +354,13 @@ an applied deck's BPM locks it to the master if it has a timing grid and
 the master fits its supported speed range. Draft grids can be locked, so review
 their musical timing before relying on alignment. Both decks can lock at once. A locked
 deck's BPM and manual tempo controls are greyed out. Unlocking preserves its
-current target BPM. Manual deck tempo changes or paused seeking unlock that deck;
+current target BPM. Manual deck tempo changes unlock that deck;
 replacing or applying a grid clears only that deck's lock. Pause and Stop leave
 the lock armed. Locking a playing deck seeks to the nearest source position with
 the master's selected beat or bar phase. When Play starts a locked deck while another deck is
 running, the Bar setting (the default) joins the current bar immediately during
-its first beat if the cue can advance to the matching phase. From beat 2 onward,
-or if joining would move the cue backwards, it waits for the next matching bar.
+its first beat by seeking to the nearest matching source bar phase. From beat 2 onward,
+it waits for the next matching bar.
 The Beat setting waits for the next matching beat. A queued deck keeps its audio
 and pickup at the cue; if there is not enough time for the pickup before the
 imminent selected boundary, it starts for the following beat or bar.
@@ -379,8 +397,9 @@ beats (2/4/8/16 s fallback). Each row maps source peaks and grid through its own
 speed, so different target tempos have different beat spacing. Draft grids are
 fainter; unavailable grids draw no markers. Empty space outside source boundaries
 remains empty. The overviews stay seekable and the top rows also support paused scrubbing.
-Preparation caches stereo peaks at 240 source frames (5 ms). The webview fetches
-fine peaks once per active artifact and retains at most active-source caches;
+Preparation caches stereo peaks at 240 source frames (5 ms). The native load keeps
+those saved fine peaks for the webview, which fetches them once per active artifact
+without a second preparation request and retains at most active-source caches;
 200 ms transport polling sends only overview peaks and applied timing. Animation
 interpolates authoritative callback snapshots for at most 300 ms; pause freezes,
 and seek/load/ratio changes re-anchor. UI frames never schedule audio events.

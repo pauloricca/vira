@@ -25,6 +25,21 @@ export function RollingRow({ state, running, window, control, timingOpen = false
     const colour=state.deck===0 ? '#89d2ee' : '#efa264';
     ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,width,height);
     tiles.current.draw(ctx,state.track,position-window*speed/2,window*speed,width,height,dpr,colour);
+    const loopIn=state.loop_in_seconds, loopOut=state.loop_out_seconds;
+    const loopX=(seconds:number)=>width*(.5+(seconds-position)/(window*speed));
+    if (loopIn != null && loopOut != null) {
+      const left=loopX(loopIn), right=loopX(loopOut);
+      ctx.fillStyle=state.deck===0 ? 'rgba(137,210,238,.16)' : 'rgba(239,162,100,.16)';
+      ctx.fillRect(Math.max(0,left),0,Math.max(0,Math.min(width,right)-Math.max(0,left)),height);
+    }
+    for (const [seconds,label] of [[loopIn,'IN'],[loopOut,'OUT']] as const) {
+      if (seconds == null) continue;
+      const x=loopX(seconds);
+      if (x < 0 || x > width) continue;
+      ctx.strokeStyle=state.deck===0 ? '#89d2ee' : '#efa264'; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
+      ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 10px sans-serif'; ctx.fillText(label,Math.min(x+4,width-28),12);
+    }
     ctx.strokeStyle='#c8f3ff';
     const grid=gridGeometry(state.grid,position,window,speed,width,state.track?.duration_seconds ?? 0);
     for (const m of grid) {

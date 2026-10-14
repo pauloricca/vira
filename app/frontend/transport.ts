@@ -1,5 +1,5 @@
 /** A display-only source clock. Audio owns seeks, tempo and event timing. */
-export type PositionSnapshot = { position_seconds: number; speed?: number; playing: boolean; generation: number; position_epoch?: number; duration: number };
+export type PositionSnapshot = { position_seconds: number; speed?: number; playing: boolean; generation: number; position_epoch?: number; duration: number; loop_in_seconds?: number | null; loop_out_seconds?: number | null };
 export class DisplayPosition {
   private state: PositionSnapshot | null = null;
   private origin = 0;
@@ -25,7 +25,11 @@ export class DisplayPosition {
     if (!this.state.playing) return Math.min(this.state.duration, Math.max(0, this.origin));
     const elapsed = Math.max(0, Math.min(now, this.deadline) - this.atTime) / 1000;
     const value = this.origin + elapsed * (this.state.speed ?? 1) + this.correction * (1 - Math.exp(-elapsed / this.smoothing));
-    return Math.min(this.state.duration, Math.max(0, value));
+    const start = this.state.loop_in_seconds;
+    const end = this.state.loop_out_seconds;
+    const looped = start != null && end != null && end > start && value >= end
+      ? start + (value - start) % (end - start) : value;
+    return Math.min(this.state.duration, Math.max(0, looped));
   }
 }
 

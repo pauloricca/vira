@@ -38,6 +38,10 @@ struct Shared {
     playing: [AtomicBool; 2],
     cue_positions: [AtomicU64; 2],
     cue_preview: [AtomicBool; 2],
+    loop_starts: [AtomicU64; 2],
+    loop_ends: [AtomicU64; 2],
+    loop_lengths: [AtomicU64; 2],
+    slip_enabled: [AtomicBool; 2],
     gains: [AtomicU64; 2],
     meter_decks: [AtomicU64; 2],
     meter_master: [AtomicU64; 2],
@@ -98,6 +102,10 @@ impl Shared {
             playing: std::array::from_fn(|_| false.into()),
             cue_positions: std::array::from_fn(|_| 0.into()),
             cue_preview: std::array::from_fn(|_| false.into()),
+            loop_starts: std::array::from_fn(|_| u64::MAX.into()),
+            loop_ends: std::array::from_fn(|_| u64::MAX.into()),
+            loop_lengths: std::array::from_fn(|_| 0_f64.to_bits().into()),
+            slip_enabled: std::array::from_fn(|_| false.into()),
             gains: std::array::from_fn(|_| (0.8_f32.to_bits() as u64).into()),
             meter_decks: std::array::from_fn(|_| 0.into()),
             meter_master: std::array::from_fn(|_| 0.into()),
@@ -154,6 +162,21 @@ impl Shared {
                 cue_positions: std::array::from_fn(|d| self.cue_positions[d].load(Relaxed)),
                 headphone_cue: std::array::from_fn(|d| self.headphone_cue[d].load(Relaxed)),
                 cue_preview: std::array::from_fn(|d| self.cue_preview[d].load(Relaxed)),
+                loop_starts: std::array::from_fn(|d| match self.loop_starts[d].load(Relaxed) {
+                    u64::MAX => None,
+                    p => Some(p),
+                }),
+                loop_ends: std::array::from_fn(|d| match self.loop_ends[d].load(Relaxed) {
+                    u64::MAX => None,
+                    p => Some(p),
+                }),
+                loop_lengths: std::array::from_fn(|d| {
+                    match f64::from_bits(self.loop_lengths[d].load(Relaxed)) {
+                        0. => None,
+                        beats => Some(beats),
+                    }
+                }),
+                slip_enabled: std::array::from_fn(|d| self.slip_enabled[d].load(Relaxed)),
                 gains: gain,
                 mixer: std::array::from_fn(|d| {
                     let values = std::array::from_fn::<_, 5, _>(|i| {
@@ -258,17 +281,35 @@ mod tests {
         engine.metadata.lock().unwrap()[0]
             .records
             .insert(7, prepared);
+        engine.metadata.lock().unwrap()[0].waveform = Some((7, Waveform {
+            artifact_id: "artifact".into(),
+            fine_peak_frames: 240,
+            fine_peaks: vec![[0.2, 0.1]],
+            fine_features: vec![[0.3, 0.4]],
+        }));
         engine.shared.generations[0].store(7, Relaxed);
+        engine.shared.loop_starts[0].store(12000, Relaxed);
+        engine.shared.loop_ends[0].store(24000, Relaxed);
+        engine.shared.loop_lengths[0].store(0.5_f64.to_bits(), Relaxed);
+        engine.shared.slip_enabled[0].store(true, Relaxed);
         let full = engine.state_for_frontend(Some([6, 0]));
         let compact = engine.state_for_frontend(Some([7, 0]));
         assert_eq!(full["decks"][0]["track"]["title"], "Test song");
         assert_eq!(compact["decks"][0]["track_unchanged"], true);
+        assert!(full["decks"][0]["track"]["fine_peaks"].as_array().unwrap().is_empty());
+        let peak = serde_json::to_value(engine.waveform_for_generation(0, 7).unwrap()).unwrap()["fine_peaks"][0][0].as_f64().unwrap();
+        assert!((peak - 0.2).abs() < 1e-6);
+        assert_eq!(compact["decks"][0]["loop_in_seconds"], 0.25);
+        assert_eq!(compact["decks"][0]["loop_out_seconds"], 0.5);
+        assert_eq!(compact["decks"][0]["loop_length_beats"], 0.5);
+        assert_eq!(compact["decks"][0]["slip_enabled"], true);
         assert!(compact["decks"][0]["track"].is_null());
         assert!(
             serde_json::to_vec(&compact).unwrap().len()
                 < serde_json::to_vec(&full).unwrap().len() / 3
         );
         engine.shared.generations[0].store(0, Relaxed);
+        assert!(engine.waveform_for_generation(0, 7).is_err());
         let cleared = engine.state_for_frontend(Some([7, 0]));
         assert_eq!(cleared["decks"][0]["track_unchanged"], false);
         assert!(cleared["decks"][0]["track"].is_null());
@@ -307,6 +348,15 @@ struct Metadata {
     loading: bool,
     error: Option<String>,
     records: HashMap<u64, Prepared>,
+    waveform: Option<(u64, Waveform)>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct Waveform {
+    artifact_id: String,
+    fine_peak_frames: usize,
+    fine_peaks: Vec<[f32; 2]>,
+    fine_features: Vec<[f32; 2]>,
 }
 
 #[derive(Serialize)]
@@ -321,6 +371,10 @@ pub struct DeckState {
     pub playing: bool,
     pub cue_seconds: f64,
     pub cue_preview: bool,
+    pub loop_in_seconds: Option<f64>,
+    pub loop_out_seconds: Option<f64>,
+    pub loop_length_beats: Option<f64>,
+    pub slip_enabled: bool,
     pub headphone_cue: bool,
     pub gain: f32,
     pub trim_db: f32,
@@ -525,10 +579,13 @@ impl EngineHandle {
         // record while an installation travels through the output queue.
         {
             let mut meta = self.metadata.lock().unwrap();
-            prepared.fine_features.clear();
-            prepared.fine_features.shrink_to_fit();
-            prepared.fine_peaks.clear();
-            prepared.fine_peaks.shrink_to_fit();
+            let waveform = Waveform {
+                artifact_id: prepared.artifact_id.clone(),
+                fine_peak_frames: prepared.fine_peak_frames,
+                fine_peaks: std::mem::take(&mut prepared.fine_peaks),
+                fine_features: std::mem::take(&mut prepared.fine_features),
+            };
+            meta[deck].waveform = Some((generation, waveform));
             meta[deck].records.insert(generation, prepared);
         }
         self.send(Command::Install {
@@ -617,6 +674,34 @@ impl EngineHandle {
             "cue_release" => Command::CueRelease(deck, generations[deck]),
             "pause" => Command::Pause(deck, generations[deck]),
             "stop" => Command::Stop(deck, generations[deck]),
+            "loop_in" | "loop_in_snapped" => {
+                Command::LoopIn(deck, generations[deck], action == "loop_in_snapped")
+            }
+            "loop_out" | "loop_out_snapped" => {
+                Command::LoopOut(deck, generations[deck], action == "loop_out_snapped")
+            }
+            "slip" => {
+                ensure!(matches!(value, Some(0.) | Some(1.)), "Slip must be 0 or 1");
+                Command::Slip(deck, generations[deck], value == Some(1.))
+            }
+            "loop_length" | "loop_length_aligned" => {
+                let beats =
+                    value.ok_or_else(|| anyhow::anyhow!("Loop length requires a beat count"))?;
+                ensure!(
+                    [1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8., 16., 32., 64.].contains(&beats),
+                    "Unsupported loop length"
+                );
+                ensure!(
+                    snapshot.grids[deck].is_some(),
+                    "A timing grid is required for beat loops"
+                );
+                Command::LoopLength(
+                    deck,
+                    generations[deck],
+                    beats,
+                    action == "loop_length_aligned",
+                )
+            }
             "seek" | "scrub_start" | "scrub" | "scrub_pause" => {
                 let seconds = value.ok_or_else(|| anyhow::anyhow!("Seek requires a position"))?;
                 ensure!(
@@ -763,6 +848,19 @@ impl EngineHandle {
     pub fn audio_levels(&self) -> AudioLevels {
         self.shared.take_levels()
     }
+    pub fn waveform_for_generation(&self, deck: usize, generation: u64) -> Result<Waveform> {
+        ensure!(deck < 2, "Deck must be A or B");
+        ensure!(
+            self.shared.audible().generations[deck] == generation,
+            "Deck source changed while loading its waveform"
+        );
+        self.metadata.lock().unwrap()[deck]
+            .waveform
+            .as_ref()
+            .filter(|(stored, _)| *stored == generation)
+            .map(|(_, waveform)| waveform.clone())
+            .ok_or_else(|| anyhow::anyhow!("Waveform is unavailable for this deck load"))
+    }
     pub fn state_for_frontend(&self, known: Option<[u64; 2]>) -> Value {
         let snapshot = self.shared.audible();
         let Frame {
@@ -802,6 +900,10 @@ impl EngineHandle {
                     playing: playing[d] && self.shared.running.load(Acquire),
                     cue_seconds: snapshot.cue_positions[d] as f64 / RATE as f64,
                     cue_preview: snapshot.cue_preview[d],
+                    loop_in_seconds: snapshot.loop_starts[d].map(|p| p as f64 / RATE as f64),
+                    loop_out_seconds: snapshot.loop_ends[d].map(|p| p as f64 / RATE as f64),
+                    loop_length_beats: snapshot.loop_lengths[d],
+                    slip_enabled: snapshot.slip_enabled[d],
                     headphone_cue: snapshot.headphone_cue[d],
                     gain: gains[d],
                     trim_db: snapshot.mixer[d].trim,
@@ -1067,6 +1169,10 @@ fn native_output(
                     cb.playing[d].store(last.playing[d], Relaxed);
                     cb.cue_positions[d].store(last.cue_positions[d], Relaxed);
                     cb.cue_preview[d].store(last.cue_preview[d], Relaxed);
+                    cb.loop_starts[d].store(last.loop_starts[d].unwrap_or(u64::MAX), Relaxed);
+                    cb.loop_ends[d].store(last.loop_ends[d].unwrap_or(u64::MAX), Relaxed);
+                    cb.loop_lengths[d].store(last.loop_lengths[d].unwrap_or(0.).to_bits(), Relaxed);
+                    cb.slip_enabled[d].store(last.slip_enabled[d], Relaxed);
                     cb.headphone_cue[d].store(last.headphone_cue[d], Relaxed);
                     cb.gains[d].store(last.gains[d].to_bits() as u64, Relaxed);
                     let settings = last.mixer[d];

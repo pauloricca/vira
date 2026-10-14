@@ -1,4 +1,5 @@
 """Local development metadata service. Source music is always read-only."""
+import copy
 import hashlib
 import json
 import math
@@ -9,10 +10,10 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
-    from .jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json
+    from .jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json, blank
     from .prepare import Preparation
 except ImportError:
-    from jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json
+    from jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json, blank
     from prepare import Preparation
 
 SCHEMA_VERSION = 1
@@ -102,10 +103,63 @@ def scan_bin(music: Path, generated: Path) -> dict:
     return result
 
 
+def quick_snapshot(music: Path, generated: Path) -> list:
+    """Show saved rows with matching sizes before the full metadata/hash scan."""
+    if not music.is_dir():
+        raise ValueError("Music bin is unavailable. Check the read-only music mount, then Refresh.")
+    try:
+        saved = json.loads((generated / "library-v2.json").read_text(encoding="utf-8"))
+        if saved.get("schema_version") != LIBRARY_SCHEMA or not isinstance(saved.get("tracks"), list):
+            return []
+    except (OSError, ValueError, TypeError):
+        return []
+    rows = []
+    seen = set()
+    for original in saved["tracks"]:
+        try:
+            row = copy.deepcopy(original)
+            name = row["filename"]
+            if (not isinstance(name, str) or not name or name in (".", "..")
+                    or "/" in name or "\\" in name or name in seen
+                    or row["status"] not in ("ready", "unsupported", "unreadable")):
+                continue
+            seen.add(name)
+            path = music / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            stat = path.stat()
+            if stat.st_size != row["size_bytes"]:
+                continue
+            if row["status"] == "ready" and (not isinstance(row.get("source_hash"), str)
+                    or len(row["source_hash"]) != 64
+                    or any(c not in "0123456789abcdef" for c in row["source_hash"])):
+                continue
+            if str(stat.st_mtime_ns) != row["modified_ns"]:
+                row["modified_ns"] = str(stat.st_mtime_ns)
+                if row["status"] == "ready":
+                    row["id"] = hashlib.sha256(json.dumps([name, stat.st_size, row["modified_ns"], row["source_hash"]]).encode()).hexdigest()
+                    row["analysis"] = blank("stale", "File timestamp changed. Verifying in background.")
+            rows.append(row)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return rows
+
+
 def make_handler(music: Path, generated: Path):
     scan_lock = threading.Lock()
     jobs = LibraryJobs(music, generated)
     preparation = Preparation(jobs)
+
+    def scan():
+        try:
+            result = jobs.reconcile(scan_bin(music, generated)["tracks"])
+            atomic_json(generated / "library-v2.json", result)
+            jobs.scan_error = None
+        except (OSError, ValueError) as exc:
+            jobs.scan_error = str(exc)
+        finally:
+            jobs.scan_pending = False
+            scan_lock.release()
     try:
         from .timing import Timing
     except ImportError:
@@ -216,18 +270,35 @@ def make_handler(music: Path, generated: Path):
                 except (ValueError, OSError) as exc:
                     self.respond(400, {"error": str(exc)})
                 return
-            if self.path != "/v1/library/scan":
+            if self.path not in ("/v1/library/scan", "/v1/library/open"):
                 self.respond(404, {"error": "Unknown endpoint."})
                 return
             if self.headers.get("Content-Length", "0") != "0" or self.headers.get("Transfer-Encoding"):
                 self.respond(400, {"error": "Scan does not accept a request body."})
                 return
             if not scan_lock.acquire(blocking=False):
-                self.respond(409, {"error": "A library scan is already running. Try Refresh shortly."})
+                if self.path == "/v1/library/open":
+                    self.respond(200, jobs.state())
+                else:
+                    self.respond(409, {"error": "A library scan is already running. Try Refresh shortly."})
+                return
+            if self.path == "/v1/library/open":
+                try:
+                    if not jobs.revision:
+                        jobs.seed(quick_snapshot(music, generated))
+                    jobs.scan_pending = True
+                    jobs.scan_error = None
+                    value = jobs.state()
+                    threading.Thread(target=scan, daemon=True, name="library-scan").start()
+                    self.respond(200, value)
+                except (OSError, ValueError) as exc:
+                    scan_lock.release()
+                    self.respond(503, {"error": str(exc)})
                 return
             try:
                 result = jobs.reconcile(scan_bin(music, generated)["tracks"])
                 atomic_json(generated / "library-v2.json", result)
+                jobs.scan_error = None
                 self.respond(200, result)
             except (OSError, ValueError) as exc:
                 self.respond(503, {"error": str(exc)})

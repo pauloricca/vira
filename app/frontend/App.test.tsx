@@ -19,7 +19,16 @@ test('startup lists metadata and refresh reconciles removed files', async () => 
   expect(screen.getByText('Not analysed')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByText(/No files in the music bin/);
-  expect(invoke.mock.calls).toEqual([['refresh_library'], ['refresh_library']]);
+  expect(invoke.mock.calls).toEqual([['open_library'], ['refresh_library']]);
+});
+test('library track actions do not open the timing dialog', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByLabelText('Actions for Artist - Filename'));
+  expect(screen.queryByRole('button', { name: 'Timing' })).toBeNull();
+  expect(screen.queryByRole('dialog', { name: /Edit timing/ })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Analyse Artist - Filename' })).toBeTruthy();
 });
 test('unavailable service displays actionable error and Refresh retries', async () => {
   invoke.mockRejectedValueOnce('Start the preparation service: docker compose up -d preparation. Then click Refresh.')
@@ -97,14 +106,13 @@ function snapshot(state: Library['tracks'][number]['analysis']['state'], revisio
   return { ...library, revision, tracks: [{ ...library.tracks[0], analysis: { state, result, error: state === 'failed' ? 'Decode failed' : null } }] };
 }
 test('selected row queues by ID and polling fills the compact collection row', async () => {
-  vi.useFakeTimers();
-  invoke.mockImplementation((command: string) => Promise.resolve(command === 'refresh_library' ? library : command === 'analyse_track' ? snapshot('queued', 2) : snapshot('needs_review', 3, estimate)));
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'open_library' ? library : command === 'analyse_track' ? snapshot('queued', 2) : snapshot('needs_review', 3, estimate)));
   await act(async () => { render(<App />); });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Analyse Artist - Filename' })); });
   expect(invoke).toHaveBeenCalledWith('analyse_track', { trackId: 'one' });
   expect(screen.getByText('Queued', { selector: 'span' })).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Reanalyse Artist - Filename' }) as HTMLButtonElement).disabled).toBe(true);
-  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'get_library_state'), JSON.stringify(invoke.mock.calls)).toBe(true), { timeout: 2500 });
   expect(screen.getByText('121')).toBeTruthy();
   expect(screen.getByText('7A / Dmin')).toBeTruthy();
   expect(screen.getByText('Needs review')).toBeTruthy();
@@ -120,7 +128,7 @@ test('Analyse all queues only unanalysed readable tracks in the filtered view', 
   }));
   let current: Library = { ...library, tracks };
   invoke.mockImplementation((command: string, args?: { trackId: string }) => {
-    if (command === 'refresh_library') return Promise.resolve(current);
+    if (command === 'open_library' || command === 'refresh_library') return Promise.resolve(current);
     if (command === 'analyse_track') {
       current = { ...current, revision: current.revision + 1, tracks: current.tracks.map(track =>
         track.id === args?.trackId ? { ...track, analysis: { ...track.analysis, state: 'queued' } } : track) };
@@ -140,7 +148,7 @@ test('Analyse all queues only unanalysed readable tracks in the filtered view', 
 test('Analyse all waits for room in the analysis queue', async () => {
   let attempts = 0;
   invoke.mockImplementation((command: string) => {
-    if (command === 'refresh_library') return Promise.resolve(library);
+    if (command === 'open_library' || command === 'refresh_library') return Promise.resolve(library);
     if (command === 'analyse_track' && ++attempts === 1) return Promise.reject('Analysis queue is full. Wait for a job to finish and retry.');
     return Promise.resolve(snapshot('queued', 2));
   });
@@ -174,11 +182,10 @@ test('late request cannot restore a removed source after Refresh', async () => {
   expect(screen.queryByText('D minor')).toBeNull();
 });
 test('older poll responses cannot replace newer queued state', async () => {
-  vi.useFakeTimers();
   let finish!: (value: Library) => void;
-  invoke.mockImplementation((command: string) => command === 'get_library_state' ? new Promise<Library>(resolve => { finish = resolve; }) : Promise.resolve(command === 'refresh_library' ? library : snapshot('queued', 2)));
+  invoke.mockImplementation((command: string) => command === 'get_library_state' ? new Promise<Library>(resolve => { finish = resolve; }) : Promise.resolve(command === 'open_library' ? library : snapshot('queued', 2)));
   await act(async () => { render(<App />); });
-  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  await waitFor(() => expect(finish, JSON.stringify(invoke.mock.calls)).toBeTypeOf('function'), { timeout: 2500 });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Analyse Artist - Filename' })); });
   await act(async () => { finish(library); });
   expect(screen.getByText('Queued', { selector: 'span' })).toBeTruthy();
@@ -187,7 +194,7 @@ test('older poll responses cannot replace newer queued state', async () => {
 test('successful state polling cannot hide a failed metadata Refresh', async () => {
   vi.useFakeTimers();
   let scans = 0;
-  invoke.mockImplementation((command: string) => command === 'refresh_library' && ++scans > 1 ? Promise.reject('Music bin unavailable') : Promise.resolve(library));
+  invoke.mockImplementation((command: string) => command === 'refresh_library' && ++scans >= 1 ? Promise.reject('Music bin unavailable') : Promise.resolve(library));
   await act(async () => { render(<App />); });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); });
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
@@ -372,8 +379,8 @@ test('command arrows load the selected track only onto a stopped target deck', a
 test('timing shortcuts use the last touched rolling waveform with the panel closed', async () => {
   const tracks = [0, 1].map(deck => ({ ...library.tracks[0], id: `loaded-${deck}`, analysis: { state: 'needs_review' as const, result: estimate, error: null } }));
   const current = { ...library, tracks };
-  invoke.mockImplementation((command: string, args?: { trackId?: string; grid?: unknown; referenceBeats?: number[] }) => {
-    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: `artifact-${args?.trackId}`, fine_peaks: [], fine_peak_frames: 0 });
+  invoke.mockImplementation((command: string, args?: { trackId?: string; deck?: number; grid?: unknown; referenceBeats?: number[] }) => {
+    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: `artifact-${args?.deck}`, fine_peaks: [], fine_peak_frames: 0 });
     if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? { bpm: 120, downbeat_seconds: 0, reviewed: false }, reference_beats: args?.referenceBeats ?? [] });
     if (command === 'approve_track_analysis') return Promise.resolve({ ...current, revision: 2, tracks: tracks.map(track => track.id === args?.trackId ? { ...track, analysis: { ...track.analysis, state: 'approved' } } : track) });
     return Promise.resolve(current);
@@ -465,7 +472,7 @@ test('header buttons use original BPM even with adjusted tempo and locked decks'
   fireEvent.click(b);
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'drift', value: null, generation: 1 }));
 });
-test('Alt arrows select the active deck and Cmd L locks that deck without toggling off', async () => {
+test('Alt arrows select the active deck; Cmd L locks and Cmd Shift L unlocks it', async () => {
   invoke.mockResolvedValue(library);
   audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
     running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
@@ -485,13 +492,19 @@ test('Alt arrows select the active deck and Cmd L locks that deck without toggli
   expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(2);
   fireEvent.keyDown(window, { key: 'L', metaKey: true });
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'sync', value: 1, generation: 1 }));
+  fireEvent.keyDown(window, { key: 'L', metaKey: true, shiftKey: true });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'sync', value: 0, generation: 1 }));
+  fireEvent.keyDown(window, { key: 'ArrowRight', altKey: true });
+  fireEvent.keyDown(window, { key: 'L', metaKey: true, shiftKey: true });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'sync', value: 0, generation: 2 }));
   const calls = audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'sync');
   fireEvent.keyDown(window, { key: 'l', metaKey: true, repeat: true });
-  fireEvent.keyDown(window, { key: 'l', metaKey: true, shiftKey: true });
+  fireEvent.keyDown(window, { key: 'L', metaKey: true, shiftKey: true, repeat: true });
   const search = screen.getByRole('searchbox');
   fireEvent.keyDown(search, { key: 'ArrowRight', altKey: true });
   fireEvent.keyDown(search, { key: 'l', metaKey: true });
-  expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(2);
+  fireEvent.keyDown(search, { key: 'L', metaKey: true, shiftKey: true });
+  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(2);
   expect(audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'sync')).toEqual(calls);
   expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
 });
@@ -512,7 +525,7 @@ test('Shortcuts sits to the right of Settings and lists workspace and local keyb
   expect(screen.getByRole('heading', { name: 'Shortcuts' })).toBeTruthy();
   expect(tab.getAttribute('aria-current')).toBe('page');
   expect(screen.getByRole('table', { name: 'App keyboard shortcuts' })).toBeTruthy();
-  for (const key of ['Alt + ←', 'Alt + →', 'Cmd + L', 'Hold Space + ←', 'Hold Space + →', 'Cmd + B', 'Cmd + Shift + A', 'Shift + ← / →']) expect(screen.getByText(key)).toBeTruthy();
+  for (const key of ['Alt + ←', 'Alt + →', 'Cmd + L', 'Cmd + Shift + L', 'Hold Space + ←', 'Hold Space + →', 'Cmd + B', 'Cmd + Shift + A', 'Shift + ← / →']) expect(screen.getByText(key)).toBeTruthy();
   fireEvent.keyDown(window, { key: 'l', metaKey: true });
   expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'sync')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
@@ -531,6 +544,25 @@ test('Settings opens from the workspace tabs and shares waveform zoom with Decks
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
   expect((screen.getByRole('combobox', { name: 'Shared zoom' }) as HTMLSelectElement).value).toBe('4');
   expect(screen.getByRole('table')).toBeTruthy();
+});
+test('beat-grid loop alignment defaults on and can be saved in Settings', () => {
+  localStorage.removeItem('vira.align-loops');
+  localStorage.removeItem('vira.snap-loop-points');
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const option = screen.getByRole('checkbox', { name: 'Align length loops to the beat grid' }) as HTMLInputElement;
+  expect(option.checked).toBe(true);
+  fireEvent.click(option);
+  expect(option.checked).toBe(false);
+  expect(localStorage.getItem('vira.align-loops')).toBe('false');
+  const snap = screen.getByRole('checkbox', { name: 'Snap IN and OUT to nearest beat' }) as HTMLInputElement;
+  expect(snap.checked).toBe(true);
+  fireEvent.click(snap);
+  expect(snap.checked).toBe(false);
+  expect(localStorage.getItem('vira.snap-loop-points')).toBe('false');
+  localStorage.removeItem('vira.align-loops');
+  localStorage.removeItem('vira.snap-loop-points');
 });
 test('Settings saves beat or bar launch timing and sends it to the engine', async () => {
   invoke.mockResolvedValue(library);

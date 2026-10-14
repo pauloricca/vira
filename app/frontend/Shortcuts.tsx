@@ -6,6 +6,7 @@ const shortcuts = [
   ['Alt + ←', 'Make deck A active', 'Decks page; outside text fields'],
   ['Alt + →', 'Make deck B active', 'Decks page; outside text fields'],
   ['Cmd + L', 'Lock active deck to master tempo', 'Decks page; outside text fields; loaded deck with a timing grid'],
+  ['Cmd + Shift + L', 'Unlock active deck from master tempo', 'Decks page; outside text fields; loaded deck with a timing grid'],
   ['Hold Space + ←', 'Play / pause deck A', 'Decks page; loaded deck; start holding Space outside text fields'],
   ['Hold Space + →', 'Play / pause deck B', 'Decks page; loaded deck; start holding Space outside text fields'],
   ['Cmd + ←', 'Load selected library track onto deck A', 'Decks page; readable track; deck stopped'],
@@ -26,7 +27,7 @@ const shortcuts = [
 export function Shortcuts() {
   return <section className="settings-page" aria-label="Shortcuts"><div className="settings-inner">
     <div className="settings-heading"><h2>Shortcuts</h2><p>Keyboard controls · Alt is Option (⌥) and Cmd is Command (⌘) on macOS.</p></div>
-    <p className="shortcuts-help">Deck controls require the audio engine to be running and the target deck to finish loading. Workspace shortcuts pause while the library timing dialog is open. The active deck is highlighted; interacting with a deck also makes it active.</p>
+    <p className="shortcuts-help">Deck controls require the audio engine to be running and the target deck to finish loading. The active deck is highlighted; interacting with a deck also makes it active.</p>
     <table className="shortcuts-table" aria-label="App keyboard shortcuts"><thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th><th scope="col">Available when</th></tr></thead>
       <tbody>{shortcuts.map(([keys, action, context]) => <tr key={`${keys}-${action}`}><td><kbd>{keys}</kbd></td><td>{action}</td><td>{context}</td></tr>)}</tbody>
     </table>

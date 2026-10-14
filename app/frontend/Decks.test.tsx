@@ -12,13 +12,67 @@ test('controls send independent deck commands and waveform supports pointer/keyb
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={state} running loading={false} error={null} load={vi.fn()} control={control} />);
   fireEvent.click(screen.getByRole('button', { name: 'Play deck A' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Stop deck A' }));
+  expect(screen.queryByRole('button', { name: 'Stop deck A' })).toBeNull();
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck A' }), { target: { value: '.4' } });
   const wave = screen.getByRole('slider', { name: 'Waveform seek deck A' });
   vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
   fireEvent.keyDown(wave, { key: 'Home' });
   fireEvent.keyDown(wave, { key: 'ArrowRight' });
-  expect(control.mock.calls).toEqual([[0, 'play_pause'], [0, 'stop'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
+  expect(control.mock.calls).toEqual([[0, 'play_pause'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
+});
+test('compact deck shows key beside BPM and expands timing from the actions row', async () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  render(<Deck state={{ ...state, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} trackKey="A minor" running loading={false} error={null} load={vi.fn()} control={control} />);
+  const deck = screen.getByRole('article', { name: 'Deck A' });
+  expect(deck.querySelector('.deck-header .deck-key')?.textContent).toContain('A minor');
+  expect(deck.querySelector('.deck-actions .cue-button')).toBeTruthy();
+  expect(deck.querySelector('.deck-actions .play-button')).toBeTruthy();
+  expect(deck.textContent).not.toContain('FULL TRACK');
+  expect(Array.from(deck.querySelectorAll('.loop-controls button'), button => button.textContent)).toEqual(['IN', '1/32', '1/16', '1/8', '1/4', '1/2', 'SLIP', 'OUT', '1', '2', '4', '8', '16']);
+  fireEvent.click(screen.getByLabelText('Timing & tempo deck A'));
+  await waitFor(() => expect(control).toHaveBeenCalledWith(0, 'click_panel', 1));
+});
+test('loop controls toggle lengths and show in/out on the overview', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const looped = { ...state, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true }, loop_in_seconds: 10, loop_out_seconds: 10.5, loop_length_beats: 1 };
+  const { rerender } = render(<Deck state={looped} running loading={false} error={null} load={vi.fn()} control={control} />);
+  const one = screen.getByRole('button', { name: 'Loop 1/4 deck A' });
+  expect(one.getAttribute('aria-pressed')).toBe('true');
+  expect(one.getAttribute('title')).toContain('1 beat');
+  const wave = screen.getByRole('slider', { name: 'Waveform seek deck A' });
+  expect(wave.querySelector('.loop-region')?.getAttribute('width')).toBe(String(0.5 / 100 * 1024));
+  expect(wave.querySelectorAll('.loop-marker')).toHaveLength(2);
+  fireEvent.click(one);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop 1 deck A' }));
+  expect(control.mock.calls).toEqual([[0, 'loop_length_aligned', 1], [0, 'loop_length_aligned', 4]]);
+  expect(screen.getByRole('button', { name: 'Loop 1 deck A' }).getAttribute('title')).toContain('1 bar');
+  rerender(<Deck state={looped} alignLoops={false} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop 4 deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_length', 16);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop 1/32 deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_length', 1 / 8);
+  rerender(<Deck state={{ ...state, loop_in_seconds: 10 }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  expect(screen.getByRole('button', { name: 'Loop OUT deck A' }).getAttribute('disabled')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Loop OUT deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_out_snapped', undefined);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop IN deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_in_snapped', undefined);
+  rerender(<Deck state={{ ...state, loop_in_seconds: 10 }} snapLoopPoints={false} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop OUT deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_out', undefined);
+});
+test('SLIP toggles for its deck and shows native state', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const { rerender } = render(<Deck state={state} {...props} />);
+  const slip = screen.getByRole('button', { name: 'Slip deck A' });
+  expect(slip.getAttribute('aria-pressed')).toBe('false');
+  fireEvent.click(slip);
+  expect(control).toHaveBeenLastCalledWith(0, 'slip', 1);
+  rerender(<Deck state={{ ...state, slip_enabled: true }} {...props} />);
+  expect(slip.getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(slip);
+  expect(control).toHaveBeenLastCalledWith(0, 'slip', 0);
 });
 test('deck overview shows grid lines every eight bars from the downbeat', () => {
   render(<Deck state={{ ...state, grid: { bpm: 120, downbeat_seconds: 2, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} />);
@@ -140,6 +194,7 @@ test('reference edits load saved flags, save source timing, and replace the olde
   }
   render(<Harness />);
   await waitFor(() => expect(screen.getByTestId('references').textContent).toBe('[10]'));
+  expect(invoke).toHaveBeenCalledWith('timing_waveform', { deck: 0, generation: 1 });
   fireEvent.click(screen.getByText('Second flag'));
   await waitFor(() => expect(screen.getByTestId('references').textContent).toBe('[10,18]'));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: expect.objectContaining({ bpm: 120, downbeat_seconds: 0 }), referenceBeats: [10, 18] });
@@ -237,15 +292,25 @@ test('mixer changes the selected native deck gain with immediate feedback', () =
   render(<Mixer audio={{ running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={control} />);
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '.35' } });
   expect(control.mock.calls).toEqual([[1, 'gain', .35]]);
-  expect(screen.getByText('-9.1 dB')).toBeTruthy();
   expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('-9.1 dB');
   expect(screen.getByRole('meter', { name: 'Deck B level' }).parentElement).toBe(screen.getByRole('slider', { name: 'Volume deck B' }).parentElement);
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '0' } });
-  expect(screen.getByText('−∞ dB')).toBeTruthy();
+  expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('−∞ dB');
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '1' } });
-  expect(screen.getByText('0.0 dB')).toBeTruthy();
+  expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('0.0 dB');
+  expect(screen.queryByText('0.0 dB')).toBeNull();
   expect(screen.getByLabelText('Stereo master meters')).toBeTruthy();
   expect((screen.getByRole('slider', { name: 'Crossfader' }) as HTMLInputElement).disabled).toBe(false);
+});
+
+test('channel controls sit with their decks and centre mixer has no A, B or master heading', () => {
+  const audio = { running: true, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] };
+  render(<Mixer audio={audio} control={vi.fn()} deckA={<div data-testid="deck-a" />} deckB={<div data-testid="deck-b" />} />);
+  expect(screen.getByTestId('deck-a').parentElement?.querySelector('[aria-label="Deck A mixer controls"]')).toBeTruthy();
+  expect(screen.getByTestId('deck-b').parentElement?.querySelector('[aria-label="Deck B mixer controls"]')).toBeTruthy();
+  const centre = screen.getByRole('region', { name: 'Mixer' });
+  expect(centre.textContent).toBe('LR');
+  expect(centre.querySelectorAll('.mixer-channel')).toHaveLength(0);
 });
 
 test('meters refresh independently at 30 Hz without React commits or transport requests', async () => {

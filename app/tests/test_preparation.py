@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
-from preparation.service import make_handler, scan_bin
+from preparation.service import make_handler, quick_snapshot, scan_bin
 
 
 class MetadataTests(unittest.TestCase):
@@ -89,6 +89,63 @@ class MetadataTests(unittest.TestCase):
         self.audio("two.wav")
         path.unlink()
         self.assertEqual([r["filename"] for r in self.scan()], ["two.wav"])
+
+    def test_quick_snapshot_uses_size_and_background_scan_verifies_hash(self):
+        self.audio("one.wav")
+        first_handler = make_handler(self.music, self.generated)
+        first_server = ThreadingHTTPServer(("127.0.0.1", 0), first_handler)
+        first_worker = threading.Thread(target=first_server.serve_forever, daemon=True)
+        first_worker.start()
+        try:
+            request = urllib.request.Request(f"http://127.0.0.1:{first_server.server_port}/v1/library/scan", method="POST")
+            original = json.load(urllib.request.urlopen(request))["tracks"][0]
+        finally:
+            first_server.shutdown()
+            first_server.server_close()
+            first_worker.join()
+            first_handler.jobs.close()
+        self.assertEqual(quick_snapshot(self.music, self.generated)[0]["id"], original["id"])
+        path = self.music / "one.wav"
+        contents = path.read_bytes()
+        path.write_bytes(contents[:-1] + bytes([contents[-1] ^ 1]))
+        import os
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, int(original["modified_ns"])))
+        self.assertEqual(quick_snapshot(self.music, self.generated)[0]["id"], original["id"])
+        entered = threading.Event()
+        release = threading.Event()
+        from preparation.jobs import source_hash
+        def delayed_hash(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return source_hash(*args, **kwargs)
+        with patch("preparation.jobs.source_hash", side_effect=delayed_hash):
+            handler = make_handler(self.music, self.generated)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                opened = json.load(urllib.request.urlopen(urllib.request.Request(url + "/v1/library/open", method="POST")))
+                self.assertEqual(opened["tracks"][0]["id"], original["id"])
+                self.assertTrue(opened["scan_pending"])
+                self.assertTrue(entered.wait(5))
+                release.set()
+                import time
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    verified = json.load(urllib.request.urlopen(url + "/v1/library/state"))
+                    if not verified["scan_pending"]:
+                        break
+                    time.sleep(.02)
+                self.assertFalse(verified["scan_pending"])
+                self.assertNotEqual(verified["tracks"][0]["id"], original["id"])
+            finally:
+                release.set()
+                server.shutdown()
+                server.server_close()
+                worker.join()
+                handler.jobs.close()
 
     def test_pcm_only_and_direct_children_and_symlinks(self):
         self.audio("compressed.wav", codec="adpcm_ima_wav")

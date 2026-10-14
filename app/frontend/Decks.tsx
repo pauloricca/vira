@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { waveformColour } from './waveform';
 import { useScrub } from './scrub';
@@ -14,8 +14,9 @@ import { PeakMeter } from './meter';
 
 export const TRACK_MIME = 'application/x-vira-track-id';
 export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
-export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
-export type AudioState = { routing?: { master: string | null; cue: string | null; cue_running: boolean; cue_error: string | null }; crossfader?: number; crossfader_enabled?: boolean; master_bpm?: number; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number } };
+type FineWaveform = Pick<Prepared, 'artifact_id' | 'fine_peak_frames' | 'fine_peaks' | 'fine_features'>;
+export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
+export type AudioState = { routing?: { master: string | null; cue: string | null; cue_running: boolean; cue_error: string | null }; crossfader?: number; crossfader_enabled?: boolean; master_bpm?: number; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number; resources?: { process_cpu_seconds?: number } } };
 const empty = (deck: number): DeckState => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 });
 
 export function useDecks() {
@@ -48,7 +49,7 @@ export function useDecks() {
     referenceLoads.current[state.deck] = { key, promise };
     return promise;
   }
-  const fineCache = useRef(new Map<string, Prepared>());
+  const fineCache = useRef(new Map<string, FineWaveform>());
   const finePending = useRef(new Set<string>());
   useEffect(() => {
     const active = new Set(audio.decks.map(d => d.track?.artifact_id).filter(Boolean));
@@ -58,7 +59,7 @@ export function useDecks() {
       if (track) void loadReferences(d);
       if (!track || fineCache.current.has(track.artifact_id) || finePending.current.has(track.artifact_id)) continue;
       finePending.current.add(track.artifact_id);
-      void invoke<Prepared>('timing_waveform', { trackId: track.track_id }).then(value => {
+      void invoke<FineWaveform>('timing_waveform', { deck: d.deck, generation: d.generation }).then(value => {
         if (!currentAudio.current.decks.some(deck => deck.track?.artifact_id === value.artifact_id)) return;
         fineCache.current.set(value.artifact_id, value);
         setAudio(previous => ({ ...previous, decks: previous.decks.map(deck => deck.track?.artifact_id === value.artifact_id ? { ...deck, track: { ...deck.track, fine_features: value.fine_features, fine_peaks: value.fine_peaks, fine_peak_frames: value.fine_peak_frames } } : deck) }));
@@ -156,7 +157,7 @@ export function time(seconds: number) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}.${Math.floor((seconds - whole) * 10)}`;
 }
 
-export function Deck({ state, running, loading, loadingTitle, error, load, control, showVolume = true, syncQuantum = 4, onTimingOpenChange, onInteract, registerPosition, active = false, analysisState, approveAnalysis, approving = false, approvalError }: { showVolume?: boolean; syncQuantum?: number; onTimingOpenChange?: (deck: number, open: boolean) => void; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; approveAnalysis?: () => void; approving?: boolean; approvalError?: string; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function Deck({ state, running, loading, loadingTitle, error, load, control, showVolume = true, syncQuantum = 4, alignLoops = true, snapLoopPoints = true, onTimingOpenChange, onInteract, registerPosition, active = false, analysisState, approveAnalysis, approving = false, approvalError, trackKey }: { showVolume?: boolean; syncQuantum?: number; alignLoops?: boolean; snapLoopPoints?: boolean; onTimingOpenChange?: (deck: number, open: boolean) => void; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; approveAnalysis?: () => void; approving?: boolean; approvalError?: string; trackKey?: string | null; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
   const name = state.deck === 0 ? 'A' : 'B';
   const total = state.track?.duration_seconds ?? 0;
   const [timingOpen, setTimingOpen] = useState(false);
@@ -214,17 +215,15 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     <path key={m.seconds} d={`M${m.seconds / total * 1024},0V120`} stroke="currentColor" opacity={state.grid?.reviewed ? .6 : .25} />),
     [state.grid?.bpm, state.grid?.downbeat_seconds, state.grid?.reviewed, total]);
   const ready = Boolean(state.track && running);
+  const loopIn = state.loop_in_seconds;
+  const loopOut = state.loop_out_seconds;
   const cue = useCue(state.deck, state.generation, ready, control);
   const preparing = loading || state.loading;
   const dragTempo = useTempoDrag(state.target_bpm ?? state.grid?.bpm ?? 120, (state.grid?.bpm ?? 120) * .5, (state.grid?.bpm ?? 120) * 2, !ready || loading || state.loading || !state.grid || !!state.synced, value => control(state.deck, 'tempo', value), state.generation);
   return <article className={`deck deck-${state.deck}${preparing ? ' is-loading' : ''}`} aria-label={`Deck ${name}`} aria-busy={preparing} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)} onDragOver={event => { if (event.dataTransfer.types.includes(TRACK_MIME)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }}
     onDrop={event => { const id = event.dataTransfer.getData(TRACK_MIME); if (/^[a-f0-9]{64}$/.test(id)) { event.preventDefault(); void load(state.deck, id); } }}>
-    <div className="deck-header"><h2 className={`deck-badge${active ? " active" : ""}`} title={`Deck ${name}${active ? " · active" : ""}`}>{name}</h2>{state.track ? <TrackArtwork trackId={state.track.track_id} className="track-art" fallback="♫" alt={`${state.track.title} cover`} /> : <span className="track-art" aria-hidden="true">♫</span>}<div className="track-meta"><div className="deck-title">{state.track?.title ?? 'No track loaded'}</div><p>{state.track?.artist ?? 'Drop a track to load'}</p></div><div className={`deck-tempo${state.synced ? ' locked' : ''}`}><span className="tempo-drag" aria-disabled={!ready || loading || state.loading || !state.grid || !!state.synced} aria-label={`BPM deck ${name}`} onPointerDown={dragTempo} title="Double-click to unlock and restore original tempo" onDoubleClick={() => { if (!ready || !state.grid) return; void (async () => { if (state.synced) await control(state.deck, 'sync', 0); await control(state.deck, 'tempo', state.grid!.bpm); })(); }}>{state.target_bpm ? state.target_bpm.toFixed(1) : '—'}</span><button className={state.synced ? 'tempo-lock active' : 'tempo-lock'} aria-label={`${state.synced ? 'Unlock' : 'Lock'} deck ${name} to master tempo`} aria-pressed={!!state.synced} title={state.synced ? 'Unlock from master BPM' : 'Lock to master BPM'} disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'sync', state.synced ? 0 : 1)}><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path className="lock-shackle" d={state.synced ? 'M5.5 9V6.5a4.5 4.5 0 0 1 9 0V9' : 'M5.5 9V6.5a4.5 4.5 0 0 1 8.5-2'} /><rect x="3.5" y="8.5" width="13" height="9" rx="1.5" /><path className="lock-slot" d="M10 11.5v3" /></svg></button><small>{state.launch_pending ? syncQuantum === 1 ? 'WAITING FOR BEAT' : 'WAITING FOR BAR 1' : state.synced ? 'LOCKED TO MASTER' : 'INDEPENDENT'}</small></div></div>
-    <div className="deck-main"><div className="transport">
-      <button className={`cue-button${cue.pressed || state.cue_preview ? ' pressed' : !state.playing && Math.abs(state.position_seconds - (state.cue_seconds ?? 0)) < 1 / 48000 ? ' at-cue' : ''}`} disabled={!ready} aria-label={`Cue deck ${name}`} title="Paused: set Cue. Playing: return to Cue. Hold at Cue to preview; press Play to continue." {...cue.handlers}>CUE</button>
-      <button className="play-button" aria-label={`${state.playing && !state.cue_preview ? 'Pause' : 'Play'} deck ${name}`} disabled={!ready} onClick={() => void control(state.deck, 'play_pause')}>{state.playing ? 'Ⅱ' : '▶'}</button>
-      <button aria-label={`Stop deck ${name}`} disabled={!ready} onClick={() => void control(state.deck, 'stop')}>Stop</button>
-    </div><div className="deck-overview">
+    <div className="deck-header"><h2 className={`deck-badge${active ? " active" : ""}`} title={`Deck ${name}${active ? " · active" : ""}`}>{name}</h2>{state.track ? <TrackArtwork trackId={state.track.track_id} className="track-art" fallback="♫" alt={`${state.track.title} cover`} /> : <span className="track-art" aria-hidden="true">♫</span>}<div className="track-meta"><div className="deck-title">{state.track?.title ?? 'No track loaded'}</div><p>{state.track?.artist ?? 'Drop a track to load'}</p></div><div className={`deck-tempo${state.synced ? ' locked' : ''}`}><div className="deck-tempo-value"><span className="tempo-drag" aria-disabled={!ready || loading || state.loading || !state.grid || !!state.synced} aria-label={`BPM deck ${name}`} onPointerDown={dragTempo} title="Double-click to unlock and restore original tempo" onDoubleClick={() => { if (!ready || !state.grid) return; void (async () => { if (state.synced) await control(state.deck, 'sync', 0); await control(state.deck, 'tempo', state.grid!.bpm); })(); }}>{state.target_bpm ? state.target_bpm.toFixed(1) : '—'}</span><button className={state.synced ? 'tempo-lock active' : 'tempo-lock'} aria-label={`${state.synced ? 'Unlock' : 'Lock'} deck ${name} to master tempo`} aria-pressed={!!state.synced} title={state.synced ? 'Unlock from master BPM' : 'Lock to master BPM'} disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'sync', state.synced ? 0 : 1)}><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path className="lock-shackle" d={state.synced ? 'M5.5 9V6.5a4.5 4.5 0 0 1 9 0V9' : 'M5.5 9V6.5a4.5 4.5 0 0 1 8.5-2'} /><rect x="3.5" y="8.5" width="13" height="9" rx="1.5" /><path className="lock-slot" d="M10 11.5v3" /></svg></button></div><small>{state.launch_pending ? syncQuantum === 1 ? 'WAITING FOR BEAT' : 'WAITING FOR BAR 1' : state.synced ? 'LOCKED TO MASTER' : 'BPM'}</small></div><div className="deck-key"><span>{trackKey ?? '—'}</span><small>KEY</small></div></div>
+    <div className="deck-main"><div className="deck-overview">
     <svg ref={overview} viewBox="0 0 1024 120" preserveAspectRatio="none" className="waveform" role="slider" tabIndex={-1} aria-label={`Waveform seek deck ${name}`} aria-valuemin={0} aria-valuemax={total} aria-valuenow={state.position_seconds} aria-disabled={!ready}
       {...scrubHandlers}
       onKeyDown={event => { if (!ready || event.metaKey || event.ctrlKey || event.altKey) return; const cursor=clock.current.at(performance.now()); let value: number | undefined;
@@ -235,17 +234,21 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
         if (value !== undefined) { event.preventDefault(); void control(state.deck, 'seek', value); }
       }}>
       {overviewBars}
+      {total > 0 && loopIn != null && loopOut != null && <rect className="loop-region" x={loopIn / total * 1024} y="0" width={(loopOut - loopIn) / total * 1024} height="120" />}
       {timingOpen && state.reference_beats?.map((seconds, index) => <path key={`${index}-${seconds}`} className="reference-beat" d={`M${seconds / total * 1024},0V120`} />)}
       <path d="M0,60H1024" stroke="#303943" />{wave}
+      {total > 0 && loopIn != null && <path className="loop-marker loop-in" aria-label={`Loop in deck ${name}`} d={`M${loopIn / total * 1024},0V120`}><title>{`Loop in ${time(loopIn)}`}</title></path>}
+      {total > 0 && loopOut != null && <path className="loop-marker loop-out" aria-label={`Loop out deck ${name}`} d={`M${loopOut / total * 1024},0V120`}><title>{`Loop out ${time(loopOut)}`}</title></path>}
       {state.track && <path className="cue-marker" aria-label={`Cue point deck ${name}`} d={`M${(state.cue_seconds ?? 0) / total * 1024},0v120`}><title>{`Cue ${time(state.cue_seconds ?? 0)}`}</title></path>}
       <path ref={playhead} d={`M${total ? state.position_seconds / total * 1024 : 0},0V120`} stroke="#f2f5f6" strokeWidth="3" />
     </svg>
     {!state.track && <span className="waveform-empty">Drag a track from the library</span>}
-    <div className="overview-footer"><span>FULL TRACK</span>
-      <output ref={timeLabel} className="numeric" aria-label={`Time deck ${name}`}>{time(state.position_seconds)} / {time(total)}</output>
-    </div></div></div>
-    <div className="loop-controls" aria-label={`Future loop controls deck ${name}`}>{['IN', 'OUT', '↶', '›', '2', '4', '8', '16'].map(label => <button disabled key={label} title="Looping is coming later">{label}</button>)}</div>
-    <details className="deck-settings" onToggle={event => { const open = event.currentTarget.open; setTimingOpen(open); onTimingOpenChange?.(state.deck, open); if (open) { const deck = event.currentTarget.closest<HTMLElement>('.deck'); requestAnimationFrame(() => { if (deck) deck.scrollTop = deck.scrollHeight; }); } }}><summary>Timing & tempo <span>{state.grid ? `${state.grid.reviewed ? 'Reviewed' : 'Draft'} grid · ${(state.speed ?? 1).toFixed(3)}×` : 'No timing grid'}</span></summary><div className="timing-controls">
+    </div></div>
+    <div className="deck-actions"><div className="transport">
+      <button className={`cue-button${cue.pressed || state.cue_preview ? ' pressed' : !state.playing && Math.abs(state.position_seconds - (state.cue_seconds ?? 0)) < 1 / 48000 ? ' at-cue' : ''}`} disabled={!ready} aria-label={`Cue deck ${name}`} title="Paused: set Cue. Playing: return to Cue. Hold at Cue to preview; press Play to continue." {...cue.handlers}>CUE</button>
+      <button className="play-button" aria-label={`${state.playing && !state.cue_preview ? 'Pause' : 'Play'} deck ${name}`} disabled={!ready} onClick={() => void control(state.deck, 'play_pause')}><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">{state.playing ? <><rect x="5" y="3" width="3" height="14" /><rect x="12" y="3" width="3" height="14" /></> : <path d="M6 3.5 17 10 6 16.5Z" />}</svg></button>
+    </div>
+    <details className="deck-settings" onToggle={event => { const open = event.currentTarget.open; setTimingOpen(open); onTimingOpenChange?.(state.deck, open); if (open) { const deck = event.currentTarget.closest<HTMLElement>('.deck'); requestAnimationFrame(() => { if (deck) deck.scrollTop = deck.scrollHeight; }); } }}><summary aria-label={`Timing & tempo deck ${name}`} title="Timing & tempo">•••<span className="sr-only">Timing & tempo</span></summary><div className="timing-controls">
       {showVolume && <label>Volume <input type="range" min="0" max="1" step="0.01" value={gain} disabled={!ready} aria-label={`Volume deck ${name}`} onChange={event => {gainInput.current=performance.now();setGain(Number(event.target.value));void control(state.deck,'gain',Number(event.target.value));}} /></label>}
       <button disabled={!ready || state.playing || !state.grid} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / 48000)))}>Set reference beat</button>
       <div className="shift-bar-row"><span>Shift bar start</span><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', -1)}>Back</button><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', 1)}>Forward</button></div>
@@ -261,6 +264,15 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       <span>Speed {(state.speed ?? 1).toFixed(3)}× · supported 0.5–2.0× · pitch preserved</span>
       <label>Click volume (0 = off) <input type="range" min="0" max="1" step=".01" value={clickGain} disabled={!ready || !state.grid} onChange={e => {clickInput.current=performance.now();setClickGain(Number(e.target.value));void control(state.deck,'click',Number(e.target.value));}} /></label>
     </div></details>
+    <div className="loop-controls" aria-label={`Loop controls deck ${name}`}>{['IN', '1/32', '1/16', '1/8', '1/4', '1/2', 'SLIP', 'OUT', '1', '2', '4', '8', '16'].map(label => {
+      if (label === 'SLIP') return <button key={label} disabled={!ready} className={state.slip_enabled ? 'active' : undefined} aria-pressed={!!state.slip_enabled} aria-label={`Slip deck ${name}`} title="Keep a background playhead moving through loops; return to it when the loop is released" onClick={() => void control(state.deck, 'slip', state.slip_enabled ? 0 : 1)}>SLIP</button>;
+      // Button labels are musical bar lengths; the engine measures grid beats.
+      const beats = label === 'IN' || label === 'OUT' ? null : 4 * (label.includes('/') ? Number(label.split('/')[0]) / Number(label.split('/')[1]) : Number(label));
+      const active = beats != null ? loopOut != null && state.loop_length_beats === beats : label === 'IN' ? loopIn != null : loopOut != null && state.loop_length_beats == null;
+      const lengthName = label === '1/4' ? '1 beat' : label === '1' ? '1 bar' : `${label} bars`;
+      return <button key={label} disabled={!ready || (beats != null && !state.grid) || (label === 'OUT' && loopIn == null)} className={active ? 'active' : undefined} aria-pressed={active} aria-label={`Loop ${label} deck ${name}`} title={beats != null ? `${lengthName} loop · press again to release` : label === 'IN' ? `Set loop start ${snapLoopPoints && state.grid ? 'at nearest beat' : 'at playhead'}` : `Set loop end ${snapLoopPoints && state.grid ? 'at nearest beat' : 'at playhead'}`} onClick={() => void control(state.deck, beats != null ? alignLoops ? 'loop_length_aligned' : 'loop_length' : label === 'IN' ? snapLoopPoints ? 'loop_in_snapped' : 'loop_in' : snapLoopPoints ? 'loop_out_snapped' : 'loop_out', beats ?? undefined)}>{label}</button>;
+    })}</div>
+    <output ref={timeLabel} className="numeric deck-time" aria-label={`Time deck ${name}`}>{time(state.position_seconds)} / {time(total)}</output></div>
     {!!state.reposition_seconds && <p>Last master alignment: {state.reposition_seconds > 0 ? '+' : ''}{state.reposition_seconds.toFixed(3)} s</p>}
     {state.timing_error && <p role="alert" className="row-error">{state.timing_error}</p>}
     {preparing && <p className="deck-load-status" role="status">Loading {loadingTitle ?? 'track'}</p>}
@@ -328,17 +340,16 @@ function ChannelFader({ state, running, control, meter }: { state: DeckState; ru
     if (generation.current !== state.generation || performance.now() - inputAt.current > 500) setGain(state.gain);
     generation.current = state.generation;
   }, [state]);
-  return <div className={`mixer-channel deck-${state.deck}`}>
-    <span className="mixer-channel-name">{name}</span>
+  return <div className={`mixer-channel deck-${state.deck}`} aria-label={`Deck ${name} mixer controls`}>
     <div className="mixer-channel-top"><MixerDial label="GN" state={state} running={running} control={control} /><button className={`mixer-headphones${state.headphone_cue ? ' active' : ''}`} disabled={!running} aria-pressed={!!state.headphone_cue} aria-label={`Headphone cue deck ${name}`} title="Send this deck to cue headphones before the channel fader" onClick={() => void control(state.deck, 'headphone_cue', state.headphone_cue ? 0 : 1)}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v7H5a2 2 0 0 1-2-2v-3a2 2 0 0 0-1-2Zm16 0h-3v7h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-1-2Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg></button></div>
     <div className="mixer-channel-body">
       <div className="mixer-eq" aria-label={`EQ and filter deck ${name}`}>{(['HI', 'MD', 'LO', 'FL'] as const).map(label => <div className="mixer-eq-row" key={label}><MixerDial label={label} state={state} running={running} control={control} /></div>)}</div>
-      <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><input className="vertical-fader" type="range" min="0" max="1" step=".01" value={gain} disabled={!state.track || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div><output>{gainLabel}</output></div>
+      <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><input className="vertical-fader" type="range" min="0" max="1" step=".01" value={gain} disabled={!state.track || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
     </div>
   </div>;
 }
 
-export function Mixer({ audio, control, showCrossfader = true }: { showCrossfader?: boolean; audio: AudioState; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function Mixer({ audio, control, showCrossfader = true, deckA, deckB }: { showCrossfader?: boolean; deckA?: ReactNode; deckB?: ReactNode; audio: AudioState; control: (deck: number, action: string, value?: number) => Promise<void> }) {
   const meters = useMeterFeed(audio.running);
   const [position, setPosition] = useState(audio.crossfader ?? 0);
   const inputAt = useRef(-Infinity);
@@ -350,5 +361,9 @@ export function Mixer({ audio, control, showCrossfader = true }: { showCrossfade
     setPosition(value);
     void control(0, 'crossfader', value);
   };
-  return <section className="mixer" aria-label="Mixer"><div className="mixer-channels"><ChannelFader state={audio.decks[0]} running={audio.running} control={control} meter={meters[0]} /><div className="mixer-master"><span>MASTER</span><div className="stereo-meters" aria-label="Stereo master meters"><LevelMeter meter={meters[2]} label="Master left level" /><LevelMeter meter={meters[3]} label="Master right level" /></div><div className="mixer-stereo-labels"><span>L</span><span>R</span></div></div><ChannelFader state={audio.decks[1]} running={audio.running} control={control} meter={meters[1]} /></div>{showCrossfader && <div className="mixer-crossfader"><span>A</span><input className="crossfader" type="range" min="-1" max="1" step=".01" value={position} disabled={!audio.running} aria-label="Crossfader" aria-valuetext={position === 0 ? 'Centre · equal power' : `${Math.round(Math.abs(position) * 100)}% toward deck ${position < 0 ? 'A' : 'B'}`} title="Equal power · double-click to centre" onChange={event => moveCrossfader(Number(event.target.value))} onDoubleClick={() => moveCrossfader(0)} /><span>B</span></div>}</section>;
+  return <section className="decks" aria-label="Decks">
+    <div className="deck-unit deck-0">{deckA}<ChannelFader state={audio.decks[0]} running={audio.running} control={control} meter={meters[0]} /></div>
+    <section className="mixer" aria-label="Mixer"><div className="mixer-master"><div className="stereo-meters" aria-label="Stereo master meters"><LevelMeter meter={meters[2]} label="Master left level" /><LevelMeter meter={meters[3]} label="Master right level" /></div><div className="mixer-stereo-labels"><span>L</span><span>R</span></div></div>{showCrossfader && <div className="mixer-crossfader"><input className="crossfader" type="range" min="-1" max="1" step=".01" value={position} disabled={!audio.running} aria-label="Crossfader" aria-valuetext={position === 0 ? 'Centre · equal power' : `${Math.round(Math.abs(position) * 100)}% toward deck ${position < 0 ? 'A' : 'B'}`} title="Equal power · double-click to centre" onChange={event => moveCrossfader(Number(event.target.value))} onDoubleClick={() => moveCrossfader(0)} /></div>}</section>
+    <div className="deck-unit deck-1"><ChannelFader state={audio.decks[1]} running={audio.running} control={control} meter={meters[1]} />{deckB}</div>
+  </section>;
 }
