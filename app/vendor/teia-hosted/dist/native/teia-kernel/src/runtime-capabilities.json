@@ -1,0 +1,74 @@
+{
+  "apiVersion": 1,
+  "executionRevision": 4,
+  "validation": "shared Rust program validator",
+  "channels": 2,
+  "maxBlockFrames": 2048,
+  "maxEventsPerBlock": 256,
+  "sampleRate": {
+    "min": 8000,
+    "max": 384000
+  },
+  "midiInputKinds": [
+    "note on",
+    "note off",
+    "control change",
+    "pitch bend"
+  ],
+  "midiOutputKinds": [
+    "note on",
+    "note off",
+    "control change"
+  ],
+  "hostTimeline": true,
+  "maxMusicalBeat": 1000000,
+  "timelineContinuityTolerance": 1e-08,
+  "maxHeldNotes": 2048,
+  "maxMidiOutputEvents": 4096,
+  "media": true,
+  "nativeAnalysis": false,
+  "maxOperations": 4096,
+  "maxRegisters": 4096,
+  "maxValues": 2048,
+  "maxStates": 4096,
+  "maxRepeatCapacity": 1024,
+  "repeatPolicy": "explicit finite hierarchical pools required for native; WASM opts in with prepareDspRealtime; standalone legacy dynamic policy remains the default",
+  "feedbackKinds": [
+    "peak",
+    "tempo",
+    "parameters",
+    "repeat exhaustion",
+    "meters",
+    "signed meters",
+    "scopes",
+    "sample playheads",
+    "buffer previews",
+    "observation drops",
+    "queued notes"
+  ],
+  "maxRepeatDepth": 4,
+  "maxTotalRepeatItems": 1024,
+  "repeatBudgetScope": "all preallocated items across all nested parent contexts, including inactive capacity; heap payload capacities counted, allocator overhead excluded",
+  "midiPulsePolicy": "ordered bounded FIFO, one note event every two samples including mono state; intervening blank samples; no simultaneous scalar pulse fidelity",
+  "maxQueuedNoteEvents": 4096,
+  "maxQueuedNoteLatencyFrames": 8191,
+  "midiInputOverflow": "native rejects incoming block atomically; standalone queue rejects newest and increments dspMidiInputOverflows",
+  "observation": {
+    "maxRequests": 128,
+    "maxScopes": 32,
+    "maxScopePoints": 1024,
+    "scopeSeconds": {
+      "min": 0.01,
+      "max": 30
+    },
+    "maxPlayheadsPerRequest": 128,
+    "bufferPreview": "point samples, not full-bin extrema",
+    "generationAndLayout": true
+  },
+  "bufferTransfer": {
+    "maxChunkSamples": 1024,
+    "maxSamples": 960000,
+    "capture": "freeze writes only; exclusive render-owner chunk copies; explicit finish/cancel; reset and replacement invalidate",
+    "repeated": "concrete template/item path, maximum depth 4; active items only; tokens follow storage while indices move"
+  }
+}

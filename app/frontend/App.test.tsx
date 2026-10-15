@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App, Library, duration } from './App';
 const { invoke, audioInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
 beforeEach(() => { audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); });
 const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', music_bin: '/fixed/music', tracks: [{
@@ -636,7 +636,6 @@ test('Routing keeps an unapplied patch and undo history across workspace pages',
   fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
   await screen.findByRole('button', { name: 'a-player output audio' });
   fireEvent.doubleClick(document.querySelector('.routing-canvas')!, { clientX: 400, clientY: 400 });
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Effects ›' }));
   fireEvent.click(screen.getByRole('menuitem', { name: 'Compressor' }));
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   fireEvent.keyDown(window, { key: 'Backspace' });
@@ -645,8 +644,33 @@ test('Routing keeps an unapplied patch and undo history across workspace pages',
   expect((screen.getByRole('button', { name: 'Apply routing' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.keyDown(window, { key: 'z', metaKey: true });
   expect(screen.queryByRole('button', { name: /input sidechain/ })).toBeNull();
-  expect(invoke.mock.calls.filter(([command]) => command === 'get_routing_graph')).toHaveLength(1);
+  expect(invoke.mock.calls.filter(([command]) => command === 'get_routing_graph')).toHaveLength(2);
   expect(invoke.mock.calls.some(([command]) => command === 'set_routing_graph')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'SHORTCUTS' }));
-  for (const key of ['Delete / Backspace', 'Cmd + Z', 'Cmd + Shift + Z', 'Escape']) expect(screen.getByText(key)).toBeTruthy();
+  for (const key of ['Delete / Backspace', 'Cmd + Z', 'Cmd + Shift + Z', 'Escape']) expect(screen.getAllByText(key).length).toBeGreaterThan(0);
+});
+
+test('deck key menus keep focus through the app focus policy and follow shifted native keys', async () => {
+  let pitch = 0;
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'open_library'
+    ? { ...library, tracks: [{ ...library.tracks[0], analysis: { state: 'analysed', error: null, result: { ...estimate, keys: [{ key: 'D minor', correlation: .9 }] } } }] }
+    : {}));
+  audioInvoke.mockImplementation((command: string, args?: { action: string; value: number }) => {
+    if (command === 'deck_control' && args?.action === 'pitch') pitch = args.value;
+    return Promise.resolve(command === 'get_audio_state' ? { running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: deck === 0 ? { track_id: 'one', artifact_id: 'artifact', title: 'Song', artist: '', filename: '', duration_seconds: 1, frames: 48000, peak_frames: 0, peaks: [] } : null,
+      position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, pitch_semitones: deck === 0 ? pitch : 0,
+    })) } : undefined);
+  });
+  render(<App />);
+  const trigger = await screen.findByRole('button', { name: 'Key deck A: D minor' });
+  fireEvent.click(trigger);
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: /D minor/ }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Eb minor' }));
+  act(() => screen.getByRole('menuitemradio', { name: 'E minor' }).focus());
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'E minor' }));
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'pitch', value: 2, generation: 1 }));
+  const shifted = await screen.findByRole('button', { name: 'Key deck A: E minor, shifted' });
+  expect(shifted.textContent).toContain('E minor*');
 });

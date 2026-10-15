@@ -8,13 +8,22 @@ mod dsp;
 mod metrics;
 mod mixer;
 pub mod native_check;
+pub mod paths;
 pub mod routing;
 pub mod runtime;
 mod scheduling;
 pub mod source;
+pub mod teia;
+pub mod teia_audio;
+mod teia_bridge;
+pub mod teia_facilities;
+pub mod teia_midi;
+pub mod teia_resources;
+#[cfg(target_os = "macos")]
+mod teia_window;
 pub mod timing;
 
-// The single application configuration constant; never derive the bin from cwd.
+// Default location for existing installations; selected roots live in paths.json.
 pub const MUSIC_BIN: &str = "/Users/pauloricca/Desktop/projects/vira/music";
 const SERVICE_URL: &str = "http://127.0.0.1:47831";
 const START_SERVICE: &str = "Start the preparation service: cd /Users/pauloricca/Desktop/projects/vira/app && docker compose up -d preparation. Then click Refresh.";
@@ -114,16 +123,18 @@ impl Library {
                 return Err("Preparation service returned invalid track metadata.".into());
             }
         }
-        self.music_bin = MUSIC_BIN.into();
+        self.music_bin = paths::active().music.to_string_lossy().into_owned();
         Ok(self)
     }
 }
 
 pub fn scan_library() -> Result<Library, String> {
+    paths::ensure_music_mount().map_err(|e| format!("{e:#}"))?;
     service_request("/v1/library/scan", None, true)
 }
 
 pub fn open_library() -> Result<Library, String> {
+    paths::ensure_music_mount().map_err(|e| format!("{e:#}"))?;
     service_request("/v1/library/open", None, true)
 }
 
@@ -326,7 +337,9 @@ pub fn run() {
     ) -> Result<(), String> {
         let engine = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
-            engine.set_routing_graph(graph).map_err(|e| e.to_string())
+            engine
+                .apply_session_routing(graph)
+                .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| e.to_string())?
@@ -493,9 +506,39 @@ pub fn run() {
         .await
         .map_err(|e| e.to_string())?
     }
+    #[tauri::command]
+    async fn get_path_settings(window: tauri::WebviewWindow) -> Result<paths::Settings, String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(|| paths::settings().map_err(|e| format!("{e:#}")))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn choose_library_folder(
+        window: tauri::WebviewWindow,
+        kind: String,
+    ) -> Result<Option<paths::Settings>, String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            let prompt = match kind.as_str() { "music" => "Choose VIRA's music folder", "patches" => "Choose VIRA's Teia patch folder", _ => return Err("Unknown library folder".into()) };
+            // Static AppleScript with an argument; folder names never become code.
+            let output = std::process::Command::new("/usr/bin/osascript").args(["-e", "on run argv\ntry\nreturn POSIX path of (choose folder with prompt (item 1 of argv))\non error number -128\nreturn \"\"\nend try\nend run", prompt]).output().map_err(|e| e.to_string())?;
+            if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).into_owned()); }
+            let path = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+            let path = path.trim_end_matches('\n');
+            if path.is_empty() { return Ok(None); }
+            paths::select(&kind, std::path::Path::new(path)).map(Some).map_err(|e| format!("{e:#}"))
+        }).await.map_err(|e| e.to_string())?
+    }
     tauri::Builder::default()
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
+            get_path_settings,
+            choose_library_folder,
             open_library,
             refresh_library,
             get_library_state,
@@ -514,7 +557,25 @@ pub fn run() {
             track_timing,
             apply_timing,
             timing_waveform,
-            record_render_metrics
+            record_render_metrics,
+            teia_window::patches_state,
+            teia_window::patches_add,
+            teia_window::patches_control,
+            teia_window::patches_remove,
+            teia_window::teia_library,
+            teia_window::teia_read,
+            teia_window::teia_import,
+            teia_window::teia_load,
+            teia_window::teia_state,
+            teia_window::teia_control,
+            teia_window::teia_open_editor,
+            teia_window::teia_editor_init,
+            teia_window::teia_feedback,
+            teia_window::teia_request,
+            teia_window::teia_import_media,
+            teia_window::teia_media_preview,
+            teia_window::teia_midi_configure,
+            teia_window::teia_load_draft
         ])
         .run(tauri::generate_context!())
         .expect("Unable to start VIRA");
@@ -533,8 +594,11 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn validates_identity_and_fixed_bin() {
-        assert_eq!(library("test.wav").validate().unwrap().music_bin, MUSIC_BIN);
+    fn validates_identity_and_configured_bin() {
+        assert_eq!(
+            library("test.wav").validate().unwrap().music_bin,
+            paths::active().music.to_string_lossy()
+        );
         assert!(library("../test.wav").validate().is_err());
         let mut bad = library("test.wav");
         bad.tracks[0].duration_seconds = None;

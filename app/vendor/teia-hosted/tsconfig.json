@@ -1,0 +1,5 @@
+{
+  "extends": "../editor/tsconfig.json",
+  "compilerOptions": { "noEmit": false, "declaration": true, "emitDeclarationOnly": true, "rootDir": "../editor/src", "outDir": "dist/types" },
+  "include": ["../editor/src/hosted", "../editor/src/vite-env.d.ts"]
+}

@@ -1,0 +1,326 @@
+/*
+ * Theme tokens
+ *
+ * Add matching :root[data-theme='name'] and .teia-themed-editor[data-theme='name']
+ * selectors for standalone and embedded themes. Keep token names stable.
+ */
+:root,
+.teia-themed-editor {
+  --font-main: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-main: #f5f5f5;
+  --color-background: #000;
+  --color-background-42: rgba(0, 0, 0, 0.42);
+  --color-background-54: rgba(0, 0, 0, 0.54);
+  --color-background-62: rgba(0, 0, 0, 0.62);
+  --color-background-72: rgba(0, 0, 0, 0.72);
+  --color-background-82: rgba(0, 0, 0, 0.82);
+  --color-background-90: rgba(0, 0, 0, 0.9);
+  --color-surface: var(--color-background-72);
+  --color-control: var(--color-background-62);
+  --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+
+  --color-foreground: #fff;
+  --color-foreground-08: rgba(255, 255, 255, 0.08);
+  --color-foreground-10: rgba(255, 255, 255, 0.1);
+  --color-foreground-12: rgba(255, 255, 255, 0.12);
+  --color-foreground-15: rgba(255, 255, 255, 0.15);
+  --color-foreground-18: rgba(255, 255, 255, 0.18);
+  --color-foreground-20: rgba(255, 255, 255, 0.2);
+  --color-foreground-28: rgba(255, 255, 255, 0.28);
+  --color-foreground-32: rgba(255, 255, 255, 0.32);
+  --color-foreground-34: rgba(255, 255, 255, 0.34);
+  --color-foreground-44: rgba(255, 255, 255, 0.44);
+  --color-foreground-52: rgba(255, 255, 255, 0.52);
+  --color-foreground-56: rgba(255, 255, 255, 0.56);
+  --color-foreground-62: rgba(255, 255, 255, 0.62);
+  --color-foreground-66: rgba(255, 255, 255, 0.66);
+  --color-foreground-72: rgba(255, 255, 255, 0.72);
+  --color-foreground-76: rgba(255, 255, 255, 0.76);
+  --color-foreground-82: rgba(255, 255, 255, 0.82);
+  --color-foreground-85: rgba(255, 255, 255, 0.85);
+  --color-foreground-86: rgba(255, 255, 255, 0.86);
+  --color-foreground-90: rgba(255, 255, 255, 0.9);
+  --color-foreground-95: rgba(255, 255, 255, 0.95);
+
+  --color-frame: var(--color-foreground);
+  --color-node-title-background: var(--color-foreground);
+  --color-node-title-text: var(--color-background);
+  --color-node-selection-outline: var(--color-foreground);
+  --color-border-subtle: #333;
+  --color-text-muted: #777;
+  --color-accent: #2fd061;
+  --color-accent-glow: rgba(47, 208, 97, 0.38);
+  --color-selection: #ffff8a;
+  --color-record: #ff4e64;
+  --color-warning: #ffff9a;
+  --color-error: #ff7474;
+  --color-error-bright: #ff7a7a;
+  --color-error-text: #ffb0b0;
+
+  --color-add-link: #7db7ff;
+  --color-add-link-active: #8fdcff;
+  --color-add-link-end: #ffd27a;
+  --color-sample-boundary-start: #7db7ff;
+  --color-sample-boundary-end: #ffd27a;
+  --color-sample-phase-attack: #7db7ff;
+  --color-link-set: #fff;
+  --color-link-add: #ffe45c;
+  --color-link-multiply: #8fdcff;
+  --color-link-bend: #c084fc;
+  --color-edge-underlay: #0b0b0b;
+  --color-edge-error-underlay: #2a0505;
+}
+
+:root[data-theme='console'],
+.teia-themed-editor[data-theme='console'] {
+  --font-main: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-main: #d6f5d2;
+  --color-background: #061006;
+  --color-background-42: rgba(6, 16, 6, 0.42);
+  --color-background-54: rgba(6, 16, 6, 0.54);
+  --color-background-62: rgba(6, 16, 6, 0.62);
+  --color-background-72: rgba(6, 16, 6, 0.72);
+  --color-background-82: rgba(6, 16, 6, 0.82);
+  --color-background-90: rgba(6, 16, 6, 0.9);
+  --color-surface: var(--color-background-72);
+  --color-control: var(--color-background-62);
+  --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23d6f5d2' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23061006' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+
+  --color-foreground: #d6f5d2;
+  --color-foreground-08: rgba(214, 245, 210, 0.08);
+  --color-foreground-10: rgba(214, 245, 210, 0.1);
+  --color-foreground-12: rgba(214, 245, 210, 0.12);
+  --color-foreground-15: rgba(214, 245, 210, 0.15);
+  --color-foreground-18: rgba(214, 245, 210, 0.18);
+  --color-foreground-20: rgba(214, 245, 210, 0.2);
+  --color-foreground-28: rgba(214, 245, 210, 0.28);
+  --color-foreground-32: rgba(214, 245, 210, 0.32);
+  --color-foreground-34: rgba(214, 245, 210, 0.34);
+  --color-foreground-44: rgba(214, 245, 210, 0.44);
+  --color-foreground-52: rgba(214, 245, 210, 0.52);
+  --color-foreground-56: rgba(214, 245, 210, 0.56);
+  --color-foreground-62: rgba(214, 245, 210, 0.62);
+  --color-foreground-66: rgba(214, 245, 210, 0.66);
+  --color-foreground-72: rgba(214, 245, 210, 0.72);
+  --color-foreground-76: rgba(214, 245, 210, 0.76);
+  --color-foreground-82: rgba(214, 245, 210, 0.82);
+  --color-foreground-85: rgba(214, 245, 210, 0.85);
+  --color-foreground-86: rgba(214, 245, 210, 0.86);
+  --color-foreground-90: rgba(214, 245, 210, 0.9);
+  --color-foreground-95: rgba(214, 245, 210, 0.95);
+
+  --color-border-subtle: #315235;
+  --color-text-muted: #78a87c;
+  --color-accent: #45f06d;
+  --color-accent-glow: rgba(69, 240, 109, 0.4);
+  --color-selection: #b9ff70;
+  --color-record: #ff6b72;
+  --color-warning: #f4df72;
+  --color-error: #ff7f7f;
+  --color-error-bright: #ff9090;
+  --color-error-text: #ffc0c0;
+
+  --color-add-link: #77d7ff;
+  --color-add-link-active: #a2e8ff;
+  --color-add-link-end: #ffd98a;
+  --color-edge-underlay: #020702;
+  --color-edge-error-underlay: #2a0808;
+}
+
+:root[data-theme='amber'],
+.teia-themed-editor[data-theme='amber'] {
+  --font-main: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-main: #ffe0b0;
+  --color-background: #1a0d05;
+  --color-background-42: rgba(26, 13, 5, 0.42);
+  --color-background-54: rgba(26, 13, 5, 0.54);
+  --color-background-62: rgba(26, 13, 5, 0.62);
+  --color-background-72: rgba(26, 13, 5, 0.72);
+  --color-background-82: rgba(26, 13, 5, 0.82);
+  --color-background-90: rgba(26, 13, 5, 0.9);
+  --color-surface: var(--color-background-72);
+  --color-control: var(--color-background-62);
+  --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23ffe0b0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%231a0d05' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+
+  --color-foreground: #ffe0b0;
+  --color-foreground-08: rgba(255, 224, 176, 0.08);
+  --color-foreground-10: rgba(255, 224, 176, 0.1);
+  --color-foreground-12: rgba(255, 224, 176, 0.12);
+  --color-foreground-15: rgba(255, 224, 176, 0.15);
+  --color-foreground-18: rgba(255, 224, 176, 0.18);
+  --color-foreground-20: rgba(255, 224, 176, 0.2);
+  --color-foreground-28: rgba(255, 224, 176, 0.28);
+  --color-foreground-32: rgba(255, 224, 176, 0.32);
+  --color-foreground-34: rgba(255, 224, 176, 0.34);
+  --color-foreground-44: rgba(255, 224, 176, 0.44);
+  --color-foreground-52: rgba(255, 224, 176, 0.52);
+  --color-foreground-56: rgba(255, 224, 176, 0.56);
+  --color-foreground-62: rgba(255, 224, 176, 0.62);
+  --color-foreground-66: rgba(255, 224, 176, 0.66);
+  --color-foreground-72: rgba(255, 224, 176, 0.72);
+  --color-foreground-76: rgba(255, 224, 176, 0.76);
+  --color-foreground-82: rgba(255, 224, 176, 0.82);
+  --color-foreground-85: rgba(255, 224, 176, 0.85);
+  --color-foreground-86: rgba(255, 224, 176, 0.86);
+  --color-foreground-90: rgba(255, 224, 176, 0.9);
+  --color-foreground-95: rgba(255, 224, 176, 0.95);
+
+  --color-border-subtle: #754326;
+  --color-text-muted: #c48554;
+  --color-accent: #ff9d2e;
+  --color-accent-glow: rgba(255, 157, 46, 0.42);
+  --color-selection: #ffe173;
+  --color-record: #ff6f45;
+  --color-warning: #ffcc66;
+  --color-error: #ff7b5c;
+  --color-error-bright: #ff9273;
+  --color-error-text: #ffc1ae;
+
+  --color-add-link: #ffb45c;
+  --color-add-link-active: #ffd08a;
+  --color-add-link-end: #ffe38a;
+  --color-edge-underlay: #0d0602;
+  --color-edge-error-underlay: #341007;
+}
+
+:root[data-theme='ocean'],
+.teia-themed-editor[data-theme='ocean'] {
+  --font-main: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-main: #d3f1ff;
+  --color-background: #041520;
+  --color-background-42: rgba(4, 21, 32, 0.42);
+  --color-background-54: rgba(4, 21, 32, 0.54);
+  --color-background-62: rgba(4, 21, 32, 0.62);
+  --color-background-72: rgba(4, 21, 32, 0.72);
+  --color-background-82: rgba(4, 21, 32, 0.82);
+  --color-background-90: rgba(4, 21, 32, 0.9);
+  --color-surface: var(--color-background-72);
+  --color-control: var(--color-background-62);
+  --color-menu: var(--color-background-90);
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23d3f1ff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23041520' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+
+  --color-foreground: #d3f1ff;
+  --color-foreground-08: rgba(211, 241, 255, 0.08);
+  --color-foreground-10: rgba(211, 241, 255, 0.1);
+  --color-foreground-12: rgba(211, 241, 255, 0.12);
+  --color-foreground-15: rgba(211, 241, 255, 0.15);
+  --color-foreground-18: rgba(211, 241, 255, 0.18);
+  --color-foreground-20: rgba(211, 241, 255, 0.2);
+  --color-foreground-28: rgba(211, 241, 255, 0.28);
+  --color-foreground-32: rgba(211, 241, 255, 0.32);
+  --color-foreground-34: rgba(211, 241, 255, 0.34);
+  --color-foreground-44: rgba(211, 241, 255, 0.44);
+  --color-foreground-52: rgba(211, 241, 255, 0.52);
+  --color-foreground-56: rgba(211, 241, 255, 0.56);
+  --color-foreground-62: rgba(211, 241, 255, 0.62);
+  --color-foreground-66: rgba(211, 241, 255, 0.66);
+  --color-foreground-72: rgba(211, 241, 255, 0.72);
+  --color-foreground-76: rgba(211, 241, 255, 0.76);
+  --color-foreground-82: rgba(211, 241, 255, 0.82);
+  --color-foreground-85: rgba(211, 241, 255, 0.85);
+  --color-foreground-86: rgba(211, 241, 255, 0.86);
+  --color-foreground-90: rgba(211, 241, 255, 0.9);
+  --color-foreground-95: rgba(211, 241, 255, 0.95);
+
+  --color-border-subtle: #28566b;
+  --color-text-muted: #76a9bd;
+  --color-accent: #4bd7ff;
+  --color-accent-glow: rgba(75, 215, 255, 0.4);
+  --color-selection: #8bf0ff;
+  --color-record: #ff7189;
+  --color-warning: #ffd36e;
+  --color-error: #ff8291;
+  --color-error-bright: #ff9aa7;
+  --color-error-text: #ffc1c9;
+
+  --color-add-link: #5caeff;
+  --color-add-link-active: #8fdcff;
+  --color-add-link-end: #95f2ff;
+  --color-sample-boundary-start: #57f287;
+  --color-sample-phase-attack: #57f287;
+  --color-edge-underlay: #02090e;
+  --color-edge-error-underlay: #2b0910;
+}
+
+/* Vira: blue-black instrument panels, cyan deck A and orange deck B. */
+:root[data-theme='vira'],
+.teia-themed-editor[data-theme='vira'] {
+  color-scheme: dark;
+  --font-main: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --color-main: #c8d2d6;
+  --color-background: #0e191e;
+  --color-background-42: rgba(14, 25, 30, 0.42);
+  --color-background-54: rgba(14, 25, 30, 0.54);
+  --color-background-62: rgba(14, 25, 30, 0.62);
+  --color-background-72: rgba(14, 25, 30, 0.72);
+  --color-background-82: rgba(14, 25, 30, 0.82);
+  --color-background-90: rgba(14, 25, 30, 0.9);
+  --color-surface: #121e24;
+  --color-control: #152329;
+  --color-menu: #17262d;
+  --select-arrow-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%23c8d2d6' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+  --select-arrow-icon-hover: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M1 1 4 4 7 1' fill='none' stroke='%230e191e' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.25'/%3E%3C/svg%3E");
+
+  --color-foreground: #c8d2d6;
+  --color-foreground-08: rgba(200, 210, 214, 0.08);
+  --color-foreground-10: rgba(200, 210, 214, 0.1);
+  --color-foreground-12: rgba(200, 210, 214, 0.12);
+  --color-foreground-15: rgba(200, 210, 214, 0.15);
+  --color-foreground-18: rgba(200, 210, 214, 0.18);
+  --color-foreground-20: rgba(200, 210, 214, 0.2);
+  --color-foreground-28: rgba(200, 210, 214, 0.28);
+  --color-foreground-32: rgba(200, 210, 214, 0.32);
+  --color-foreground-34: rgba(200, 210, 214, 0.34);
+  --color-foreground-44: rgba(200, 210, 214, 0.44);
+  --color-foreground-52: rgba(200, 210, 214, 0.52);
+  --color-foreground-56: rgba(200, 210, 214, 0.56);
+  --color-foreground-62: rgba(200, 210, 214, 0.62);
+  --color-foreground-66: rgba(200, 210, 214, 0.66);
+  --color-foreground-72: rgba(200, 210, 214, 0.72);
+  --color-foreground-76: rgba(200, 210, 214, 0.76);
+  --color-foreground-82: rgba(200, 210, 214, 0.82);
+  --color-foreground-85: rgba(200, 210, 214, 0.85);
+  --color-foreground-86: rgba(200, 210, 214, 0.86);
+  --color-foreground-90: rgba(200, 210, 214, 0.9);
+  --color-foreground-95: rgba(200, 210, 214, 0.95);
+
+  --color-frame: var(--color-foreground);
+  --color-node-title-background: #192a32;
+  --color-node-title-text: #fff;
+  --color-node-selection-outline: #5ec8e9;
+  --color-border-subtle: #2d414a;
+  --color-text-muted: #8ba0aa;
+  --color-accent: #5ec8e9;
+  --color-accent-glow: rgba(94, 200, 233, 0.24);
+  --color-selection: #5ec8e9;
+  --color-record: #ef7c83;
+  --color-warning: #f4a259;
+  --color-error: #f08289;
+  --color-error-bright: #ff9ca2;
+  --color-error-text: #ffc4c8;
+
+  --color-add-link: #5ec8e9;
+  --color-add-link-active: #a0e5f6;
+  --color-add-link-end: #f4a259;
+  --color-sample-boundary-start: #5ec8e9;
+  --color-sample-boundary-end: #f4a259;
+  --color-sample-phase-attack: #5ec8e9;
+  --color-link-set: #b4c8d1;
+  --color-link-add: #f4a259;
+  --color-link-multiply: #5ec8e9;
+  --color-link-bend: #be9bd9;
+  --color-edge-underlay: #0b1418;
+  --color-edge-error-underlay: #32191f;
+}

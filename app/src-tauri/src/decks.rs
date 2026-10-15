@@ -31,6 +31,7 @@ pub struct Voice {
     scrub: Option<(f64, f64, usize)>,
     pub grid: Option<Grid>,
     pub target_bpm: f64,
+    pub pitch_semitones: f64,
     pub click_gain: f32,
     pub click_panel_open: bool,
     pub synced: bool,
@@ -44,6 +45,7 @@ pub struct Voice {
     last_sample: [f32; 2],
     pre_fader: [f32; 2],
     pub source: Arc<Source>,
+    start: usize,
     input: usize,
     pub position: usize,
     pub playing: bool,
@@ -52,6 +54,8 @@ pub struct Voice {
     pub loop_start: Option<usize>,
     pub loop_end: Option<usize>,
     pub loop_length: Option<f64>,
+    loop_phase_offset: Option<f64>,
+    loop_release_beat: Option<f64>,
     pub slip_enabled: bool,
     slip_position: Option<f64>,
     pub gain: f32,
@@ -77,6 +81,7 @@ impl Voice {
             scrub: None,
             grid: None,
             target_bpm: 0.,
+            pitch_semitones: 0.,
             click_gain: 0.,
             click_panel_open: false,
             synced: false,
@@ -94,6 +99,7 @@ impl Voice {
             last_sample: [0.; 2],
             pre_fader: [0.; 2],
             source,
+            start: 0,
             input: 0,
             position: 0,
             playing: false,
@@ -102,6 +108,8 @@ impl Voice {
             loop_start: None,
             loop_end: None,
             loop_length: None,
+            loop_phase_offset: None,
+            loop_release_beat: None,
             slip_enabled: false,
             slip_position: None,
             gain: 0.8,
@@ -116,6 +124,12 @@ impl Voice {
             available: 0,
         }
     }
+    pub fn set_start(&mut self, seconds: f64) {
+        self.start = (seconds * 48000.).round() as usize;
+        self.start = self.start.min(self.source.len().saturating_sub(1));
+        self.cue_position = self.start;
+        self.seek(self.start);
+    }
     pub fn seek(&mut self, position: usize) {
         // Retain the accepted reset path; no replacement-stretcher shortcut.
         self.scrub = None;
@@ -124,7 +138,7 @@ impl Voice {
         self.mixer.reset();
         self.launch_beat = None;
         self.position_epoch += 1;
-        self.input = position.min(self.source.len());
+        self.input = position.clamp(self.start, self.source.len());
         self.position = self.input;
         self.clock = Transport {
             output: self.output,
@@ -145,7 +159,10 @@ impl Voice {
         }
     }
     pub fn seconds(&self) -> f64 {
-        self.clock.at(self.output).min(self.source.len() as f64) / 48000.
+        self.clock
+            .at(self.output)
+            .clamp(self.start as f64, self.source.len() as f64)
+            / 48000.
     }
     fn loop_point(&self, snap: bool) -> usize {
         let seconds = self.seconds();
@@ -155,7 +172,29 @@ impl Voice {
         } else {
             seconds
         };
-        (seconds * 48000.).round().max(0.) as usize
+        ((seconds * 48000.).round().max(0.) as usize).max(self.start)
+    }
+    pub fn pitch(&mut self, semitones: f64) -> Result<()> {
+        if !semitones.is_finite() || !(-6.0..=6.0).contains(&semitones) || semitones.fract() != 0. {
+            bail!("Pitch must be a whole semitone between -6 and 6");
+        }
+        if self.pitch_semitones == semitones {
+            return Ok(());
+        }
+        let position = self.clock.at(self.output);
+        let slip = self.slip_position;
+        let launch = self.launch_beat;
+        let epoch = self.position_epoch;
+        let preview = self.cue_preview;
+        self.pitch_semitones = semitones;
+        self.dsp.ratios(self.clock.speed, semitones);
+        self.seek(position.round() as usize);
+        self.clock.source = position;
+        self.slip_position = slip;
+        self.launch_beat = launch;
+        self.position_epoch = epoch;
+        self.cue_preview = preview;
+        Ok(())
     }
     pub fn tempo(&mut self, target: f64) -> Result<()> {
         let speed = self
@@ -173,7 +212,7 @@ impl Voice {
         };
         // Discard prepared DSP output at this render boundary; re-prime at the new
         // ratio so all subsequent samples and click positions use the same anchor.
-        self.dsp.ratios(speed, 0.);
+        self.dsp.ratios(speed, self.pitch_semitones);
         let epoch = self.position_epoch;
         let launch = self.launch_beat;
         self.seek(position.round() as usize);
@@ -185,10 +224,7 @@ impl Voice {
     }
     pub fn apply_grid(&mut self, grid: Grid) {
         self.grid = Some(grid);
-        self.loop_start = None;
-        self.loop_end = None;
-        self.loop_length = None;
-        self.slip_position = None;
+        self.clear_loop();
         self.synced = false;
         self.launch_beat = None;
         let _ = self.tempo(grid.bpm);
@@ -204,6 +240,7 @@ impl Voice {
     }
     pub fn stop(&mut self) {
         self.playing = false;
+        self.loop_release_beat = None;
         self.seek(0);
     }
     fn set_slip(&mut self, enabled: bool) {
@@ -223,10 +260,57 @@ impl Voice {
             self.seek(position.round() as usize);
         }
     }
+    fn remember_loop_phase(&mut self, global_beat: f64) {
+        if self.loop_phase_offset.is_none() {
+            self.loop_phase_offset = self.grid.map(|g| global_beat - g.beat(self.seconds()));
+        }
+        self.loop_release_beat = None;
+    }
+    fn request_loop_release(&mut self, global_beat: f64, quantum: u8) {
+        if self.synced && self.playing && self.slip_position.is_none() {
+            if let (Some(grid), Some(end)) = (self.grid, self.loop_end) {
+                // Wait for the master's matching phase at OUT, then continue
+                // from OUT itself. Only SLIP follows the background playhead.
+                let offset = self
+                    .loop_phase_offset
+                    .unwrap_or(global_beat - grid.beat(self.seconds()));
+                let out_phase = grid.beat(end as f64 / 48000.) + offset;
+                self.loop_release_beat.get_or_insert_with(|| {
+                    let quantum = f64::from(quantum);
+                    out_phase + ((global_beat - out_phase - 1e-9) / quantum).ceil() * quantum
+                });
+                return;
+            }
+        }
+        self.release_loop();
+    }
+    fn finish_loop_release(&mut self, global_beat: f64, beat_step: f64) {
+        if !self.playing || self.launch_beat.is_some() {
+            return;
+        }
+        if !self.synced && self.loop_release_beat.is_some() {
+            self.release_loop();
+            return;
+        }
+        // Decks advances the master before rendering this sample; the voice's
+        // current position belongs to the beginning of that same sample.
+        let now = global_beat - beat_step;
+        if let Some(release) = self.loop_release_beat.filter(|beat| now + 1e-9 >= *beat) {
+            if let (Some(grid), Some(end)) = (self.grid, self.loop_end) {
+                // Account only for the fraction of a sample past the deadline,
+                // never for the time the track spent looping.
+                let position = end as f64 + (now - release).max(0.) * 60. / grid.bpm * 48000.;
+                self.clear_loop();
+                self.seek(position.round().max(0.) as usize);
+            }
+        }
+    }
     fn clear_loop(&mut self) {
         self.loop_start = None;
         self.loop_end = None;
         self.loop_length = None;
+        self.loop_phase_offset = None;
+        self.loop_release_beat = None;
         self.slip_position = None;
     }
     pub fn next(&mut self) -> Result<[f32; 2]> {
@@ -390,6 +474,7 @@ pub enum Command {
     Remove(usize, u64),
     Grid(usize, u64, Grid),
     Tempo(usize, [u64; 2], f64),
+    Pitch(usize, u64, f64),
     Click(usize, u64, f32),
     ClickPanel(usize, u64, bool),
     MasterTempo(f64),
@@ -404,6 +489,9 @@ pub enum Command {
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Frame {
+    pub routing_players: [[f32; 2]; 2],
+    pub routing_cross: [f32; 2],
+    pub routing_cue: [f32; 2],
     pub crossfader: f32,
     pub crossfader_enabled: bool,
     pub samples: [f32; 2],
@@ -419,11 +507,13 @@ pub struct Frame {
     pub loop_starts: [Option<u64>; 2],
     pub loop_ends: [Option<u64>; 2],
     pub loop_lengths: [Option<f64>; 2],
+    pub loop_release_pending: [bool; 2],
     pub slip_enabled: [bool; 2],
     pub gains: [f32; 2],
     pub mixer: [crate::mixer::Settings; 2],
     pub grids: [Option<Grid>; 2],
     pub targets: [f64; 2],
+    pub pitches: [f64; 2],
     pub synced: [bool; 2],
     pub launch_pending: [bool; 2],
     pub clicks: [f32; 2],
@@ -500,9 +590,10 @@ impl Decks {
             .ok_or_else(|| anyhow::anyhow!("Apply a timing grid before locking"))?;
         grid.speed(self.master_bpm)?;
         let position = if voice.playing {
-            Some(grid.align_quantum(
+            Some(grid.align_quantum_from(
                 voice.seconds(),
                 self.global_beat,
+                voice.start as f64 / 48000.,
                 voice.source.len() as f64 / 48000.,
                 f64::from(self.sync_quantum),
             )?)
@@ -535,9 +626,10 @@ impl Decks {
         // may lie just before its detected downbeat, so align its actual grid
         // phase rather than requiring it to start precisely on beat 1.
         let immediate_position = if self.sync_quantum == 4 && master_phase < 1. {
-            grid.align_quantum(
+            grid.align_quantum_from(
                 voice.seconds(),
                 self.global_beat,
+                voice.start as f64 / 48000.,
                 voice.source.len() as f64 / 48000.,
                 quantum,
             )
@@ -690,6 +782,16 @@ impl Decks {
                         v.synced = false;
                         v.timing_error = 3;
                     }
+                    let v = self.voices[d].as_mut().unwrap();
+                    if v.loop_end.is_some() {
+                        let pending = v.loop_release_beat.is_some();
+                        let start = v.launch_beat.unwrap_or(self.global_beat);
+                        v.loop_phase_offset = v.grid.map(|grid| start - grid.beat(v.seconds()));
+                        if pending {
+                            v.loop_release_beat = None;
+                            v.request_loop_release(start, self.sync_quantum);
+                        }
+                    }
                 }
             }
             Command::Pause(d, g) => {
@@ -708,6 +810,13 @@ impl Decks {
                     }
                 }
             }
+            Command::Pitch(d, g, semitones) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g {
+                        let _ = v.pitch(semitones);
+                    }
+                }
+            }
             Command::Slip(d, g, enabled) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
@@ -719,8 +828,13 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
                         if v.loop_end.is_some() {
-                            v.release_loop();
+                            v.request_loop_release(self.global_beat, self.sync_quantum);
+                            if v.loop_release_beat.is_some() {
+                                return None;
+                            }
                         }
+                        v.loop_phase_offset = None;
+                        v.remember_loop_phase(self.global_beat);
                         v.loop_start =
                             Some(v.loop_point(snap).min(v.source.len().saturating_sub(1)));
                         v.loop_end = None;
@@ -731,13 +845,14 @@ impl Decks {
             Command::LoopOut(d, g, snap) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
-                        if v.loop_end.is_some() && v.loop_length.is_none() {
-                            v.release_loop();
+                        if v.loop_end.is_some() {
+                            v.request_loop_release(self.global_beat, self.sync_quantum);
                             return None;
                         }
                         if let Some(start) = v.loop_start {
                             let end = v.loop_point(snap).min(v.source.len());
                             if end > start {
+                                v.remember_loop_phase(self.global_beat);
                                 v.loop_end = Some(end);
                                 v.loop_length = None;
                                 v.begin_slip_if_needed();
@@ -750,15 +865,19 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
                         if v.loop_end.is_some() && v.loop_length == Some(beats) {
-                            v.release_loop();
+                            v.request_loop_release(self.global_beat, self.sync_quantum);
                         } else if let Some(grid) = v.grid {
                             let now = (v.seconds() * 48000.).round() as usize;
                             let (start, end) = if align {
                                 let first_beat = (grid.beat(v.seconds()) / beats).floor() * beats;
-                                let first =
-                                    (grid.seconds(first_beat) * 48000.).round().max(0.) as usize;
-                                let last =
-                                    (grid.seconds(first_beat + beats) * 48000.).round() as usize;
+                                // Track time zero is the earliest loop start. If the
+                                // containing grid segment begins outside the source,
+                                // move the whole loop forward, preserving its length.
+                                let first_seconds =
+                                    grid.seconds(first_beat).max(v.start as f64 / 48000.);
+                                let first = (first_seconds * 48000.).round() as usize;
+                                let last = ((first_seconds + beats * 60. / grid.bpm) * 48000.)
+                                    .round() as usize;
                                 (first, last.min(v.source.len()))
                             } else {
                                 let first = v.loop_start.unwrap_or(now);
@@ -767,6 +886,7 @@ impl Decks {
                                 (first, first.saturating_add(frames).min(v.source.len()))
                             };
                             if end > start {
+                                v.remember_loop_phase(self.global_beat);
                                 v.loop_start = Some(start);
                                 v.loop_end = Some(end);
                                 v.loop_length = Some(beats);
@@ -788,13 +908,14 @@ impl Decks {
                         if v.playing && v.launch_beat.is_none() {
                             // Resolve against the deck's current phase at the render boundary.
                             let target = if let Some(grid) = v.grid {
-                                match grid.align_quantum(
+                                match grid.align_quantum_from(
                                     p as f64 / 48000.,
                                     if looping && v.synced {
                                         self.global_beat
                                     } else {
                                         grid.beat(v.seconds())
                                     },
+                                    v.start as f64 / 48000.,
                                     v.source.len() as f64 / 48000.,
                                     f64::from(self.sync_quantum),
                                 ) {
@@ -830,7 +951,7 @@ impl Decks {
                     if v.generation == g && !v.playing && v.scrub.is_some() {
                         if moving {
                             let from = v.seconds() * 48000.;
-                            v.scrub = Some((from, p.min(v.source.len()) as f64, 1920));
+                            v.scrub = Some((from, p.clamp(v.start, v.source.len()) as f64, 1920));
                             v.position_epoch += 1;
                         } else {
                             v.seek(p);
@@ -947,6 +1068,9 @@ impl Decks {
         None
     }
     pub fn next(&mut self) -> Result<Frame> {
+        self.next_inner(false)
+    }
+    fn next_inner(&mut self, deferred: bool) -> Result<Frame> {
         let mut frame = Frame {
             headphone_cue: self.headphone_cue,
             crossfader: self.crossfader,
@@ -1042,6 +1166,7 @@ impl Decks {
                         voice.timing_error = 2;
                     }
                 }
+                voice.finish_loop_release(self.global_beat, self.master_bpm / (60. * 48000.));
                 let sample = if routed {
                     voice.next_mode::<true>()?
                 } else {
@@ -1067,11 +1192,13 @@ impl Decks {
                 frame.loop_starts[d] = voice.loop_start.map(|p| p as u64);
                 frame.loop_ends[d] = voice.loop_end.map(|p| p as u64);
                 frame.loop_lengths[d] = voice.loop_length;
+                frame.loop_release_pending[d] = voice.loop_release_beat.is_some();
                 frame.slip_enabled[d] = voice.slip_enabled;
                 frame.gains[d] = voice.gain;
                 frame.mixer[d] = voice.mixer.settings;
                 frame.grids[d] = voice.grid;
                 frame.targets[d] = voice.target_bpm;
+                frame.pitches[d] = voice.pitch_semitones;
                 frame.synced[d] = voice.synced;
                 frame.launch_pending[d] = voice.launch_beat.is_some();
                 frame.clicks[d] = voice.click_gain;
@@ -1079,7 +1206,10 @@ impl Decks {
                 frame.reposition[d] = voice.reposition_seconds;
             }
         }
-        if routed {
+        frame.routing_players = players;
+        frame.routing_cross = self.crossfader_current;
+        frame.routing_cue = self.cue_current;
+        if routed && !deferred {
             let (outputs, meters) = self.routing.render(
                 players,
                 frame.mixer,
@@ -1091,6 +1221,13 @@ impl Decks {
             frame.cue_samples = outputs[1];
             frame.deck_samples = meters;
         }
+        if deferred {
+            return Ok(frame);
+        }
+        self.finish_routing(&mut frame);
+        Ok(frame)
+    }
+    fn finish_routing(&mut self, frame: &mut Frame) {
         if self.route_transition > 0 {
             let blend = 1. - self.route_transition as f32 / 240.;
             for (output, previous) in [&mut frame.samples, &mut frame.cue_samples]
@@ -1107,7 +1244,34 @@ impl Decks {
         for sample in frame.samples.iter_mut().chain(frame.cue_samples.iter_mut()) {
             *sample = sample.clamp(-1., 1.);
         }
-        Ok(frame)
+    }
+    pub fn next_block(
+        &mut self,
+        block: &mut [Frame; PRODUCER_FRAMES],
+        drivers: &mut [crate::teia_audio::Driver],
+    ) -> Result<()> {
+        let routed = !self.routing.conventional;
+        for frame in block.iter_mut() {
+            *frame = self.next_inner(routed)?;
+        }
+        if routed {
+            self.routing.render_block(block, drivers);
+            for frame in block.iter_mut() {
+                self.finish_routing(frame);
+            }
+        }
+        // Inactive hosts must still acknowledge commands (including installation).
+        for (slot, driver) in drivers.iter_mut().enumerate() {
+            if !self.routing.has_patch(slot) && driver.needs_process() {
+                let mut silent = *block;
+                for frame in &mut silent {
+                    frame.samples = [0.; 2];
+                    frame.cue_samples = [0.; 2];
+                }
+                driver.process(&mut silent);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1548,6 +1712,90 @@ mod tests {
         assert!((frame.positions[0] as i64 - (looped + 1) as i64).abs() <= 1);
     }
     #[test]
+    fn playable_zero_is_the_first_beat_for_locked_and_unlocked_transport() {
+        for locked in [false, true] {
+            let mut decks = Decks::new();
+            let source = Arc::new(Source {
+                left: vec![0.1; 48000 * 5],
+                right: vec![0.1; 48000 * 5],
+            });
+            install(&mut decks, 0, 1, source);
+            let voice = decks.voices[0].as_mut().unwrap();
+            voice.apply_grid(Grid {
+                bpm: 120.,
+                downbeat_seconds: 0.1,
+                reviewed: true,
+            });
+            voice.set_start(0.1);
+            decks.command(Command::Sync(0, [1, 0], locked), [1, 0]);
+            let frame = decks.next().unwrap();
+            assert_eq!(frame.positions[0], 4800);
+            assert_eq!(frame.cue_positions[0], 4800);
+            assert_eq!(frame.synced[0], locked);
+            assert!(!frame.playing[0]);
+            decks.command(Command::LoopLength(0, 1, 4., true), [1, 1]);
+            let frame = decks.next().unwrap();
+            assert_eq!(
+                (frame.loop_starts[0], frame.loop_ends[0]),
+                (Some(4800), Some(100800))
+            );
+            decks.command(Command::Play(0, 1), [1, 1]);
+            for _ in 0..100810 {
+                let frame = decks.next().unwrap();
+                assert!((4800..=100800).contains(&frame.positions[0]));
+            }
+            assert!(decks.next().unwrap().positions[0] < 10000);
+            decks.command(Command::Stop(0, 1), [1, 1]);
+            assert_eq!(decks.next().unwrap().positions[0], 4800);
+            decks.command(Command::Seek(0, 1, 0), [1, 1]);
+            assert_eq!(decks.next().unwrap().positions[0], 4800);
+            decks.command(Command::ScrubStart(0, 1, 4800), [1, 1]);
+            decks.command(Command::Scrub(0, 1, 0, true), [1, 1]);
+            for _ in 0..1921 {
+                assert_eq!(decks.next().unwrap().positions[0], 4800);
+            }
+            decks.command(Command::Scrub(0, 1, 0, false), [1, 1]);
+            decks.command(Command::Seek(0, 1, usize::MAX), [1, 1]);
+            assert_eq!(decks.next().unwrap().positions[0], 240000);
+            decks.command(Command::Play(0, 1), [1, 1]);
+            assert!((4800..10000).contains(&decks.next().unwrap().positions[0]));
+        }
+    }
+    #[test]
+    fn loops_at_track_start_keep_the_full_length_with_offset_grids() {
+        for downbeat_seconds in [0., 0.000001, 0.1, 0.5, 2.1] {
+            for beats in [0.125, 0.5, 1., 4., 8., 64.] {
+                for align in [false, true] {
+                    let mut decks = Decks::new();
+                    let source = Arc::new(Source {
+                        left: vec![0.; 48000 * 40],
+                        right: vec![0.; 48000 * 40],
+                    });
+                    install(&mut decks, 0, 1, source);
+                    decks.command(
+                        Command::Grid(
+                            0,
+                            1,
+                            Grid {
+                                bpm: 120.,
+                                downbeat_seconds,
+                                reviewed: true,
+                            },
+                        ),
+                        [1, 1],
+                    );
+                    decks.command(Command::LoopLength(0, 1, beats, align), [1, 1]);
+                    let frame = decks.next().unwrap();
+                    assert_eq!(frame.loop_starts[0], Some(0));
+                    assert_eq!(frame.loop_ends[0], Some((beats * 24000.).round() as u64));
+                    assert_eq!(frame.loop_lengths[0], Some(beats));
+                    assert_eq!(frame.positions[0], 0);
+                    assert!(!frame.playing[0]);
+                }
+            }
+        }
+    }
+    #[test]
     fn aligned_lengths_select_the_grid_segment_containing_the_playhead() {
         let mut decks = Decks::new();
         let source = Arc::new(Source {
@@ -1686,6 +1934,119 @@ mod tests {
 #[cfg(test)]
 mod timing_tests {
     use super::*;
+    #[test]
+    fn locked_slip_release_is_immediate_and_loop_changes_cancel_pending_release() {
+        let mut decks = decks();
+        for d in 0..2 {
+            decks.command(Command::Sync(d, [1, 1], true), [1, 1]);
+            decks.command(Command::Play(d, 1), [1, 1]);
+        }
+        decks.command(Command::Slip(0, 1, true), [1, 1]);
+        decks.command(Command::LoopLength(0, 1, 0.5, false), [1, 1]);
+        for _ in 0..36000 {
+            decks.next().unwrap();
+        }
+        decks.command(Command::LoopLength(0, 1, 0.5, false), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert!(frame.loop_ends[0].is_none());
+        assert!(!frame.loop_release_pending[0]);
+        assert!(phase_error(&decks, 0) < 0.0001);
+        decks.command(Command::Slip(0, 1, false), [1, 1]);
+        decks.command(Command::LoopLength(0, 1, 0.5, true), [1, 1]);
+        for _ in 0..24000 {
+            decks.next().unwrap();
+        }
+        decks.command(Command::LoopLength(0, 1, 0.5, true), [1, 1]);
+        assert!(decks.next().unwrap().loop_release_pending[0]);
+        decks.command(Command::LoopLength(0, 1, 1., true), [1, 1]);
+        assert!(!decks.next().unwrap().loop_release_pending[0]);
+        decks.command(Command::LoopLength(0, 1, 1., true), [1, 1]);
+        assert!(decks.next().unwrap().loop_release_pending[0]);
+        decks.command(Command::Seek(0, 1, 96000), [1, 1]);
+        let frame = decks.next().unwrap();
+        assert!(frame.loop_ends[0].is_none());
+        assert!(!frame.loop_release_pending[0]);
+        assert!(phase_error(&decks, 0) < 0.0001);
+    }
+    #[test]
+    fn locked_loop_release_resumes_at_out_with_configured_phase_without_slip() {
+        for (quantum, manual) in [(1, false), (1, true), (4, false), (4, true)] {
+            let mut decks = decks();
+            decks.command(Command::SyncQuantum(quantum), [1, 1]);
+            for d in 0..2 {
+                decks.command(Command::Sync(d, [1, 1], true), [1, 1]);
+                decks.command(Command::Play(d, 1), [1, 1]);
+            }
+            for _ in 0..18000 {
+                decks.next().unwrap();
+            }
+            let before = decks.voices[1].as_ref().unwrap();
+            let offset = decks.global_beat - before.grid.unwrap().beat(before.seconds());
+            if manual {
+                decks.command(Command::LoopIn(1, 1, false), [1, 1]);
+                for _ in 0..13001 {
+                    decks.next().unwrap();
+                }
+                decks.command(Command::LoopOut(1, 1, false), [1, 1]);
+            } else {
+                decks.command(Command::LoopLength(1, 1, 0.5, true), [1, 1]);
+            }
+            for _ in 0..180000 {
+                decks.next().unwrap();
+            }
+            let out = decks.voices[1].as_ref().unwrap().loop_end.unwrap();
+            assert!(!decks.voices[1].as_ref().unwrap().slip_enabled);
+            if manual {
+                decks.command(Command::LoopOut(1, 1, false), [1, 1]);
+            } else {
+                decks.command(Command::LoopLength(1, 1, 0.5, true), [1, 1]);
+            }
+            assert!(decks.next().unwrap().loop_release_pending[1]);
+            let release = decks.voices[1].as_ref().unwrap().loop_release_beat.unwrap();
+            assert!(release >= decks.global_beat);
+            assert!(release - decks.global_beat <= f64::from(quantum));
+            let grid = decks.voices[1].as_ref().unwrap().grid.unwrap();
+            let phase_error =
+                (release - grid.beat(out as f64 / 48000.) - offset).rem_euclid(f64::from(quantum));
+            assert!(phase_error.min(f64::from(quantum) - phase_error) < 1e-8);
+            decks.command(Command::MasterTempo(150.), [1, 1]);
+            let mut released = false;
+            for press in 0..96002 {
+                let frame = decks.next().unwrap();
+                if frame.loop_ends[1].is_none() {
+                    assert!(!frame.loop_release_pending[1]);
+                    assert!(frame.synced.iter().all(|locked| *locked));
+                    assert!((decks.global_beat - release).abs() < 0.0002);
+                    assert!(
+                        (frame.positions[1] as i64 - out as i64).abs() <= 3,
+                        "Release must continue at OUT, not at a background position"
+                    );
+                    released = true;
+                    break;
+                }
+                // Both the active length and OUT must keep the original deadline.
+                let command = if !manual && press % 2 == 0 {
+                    Command::LoopLength(1, 1, 0.5, true)
+                } else {
+                    Command::LoopOut(1, 1, false)
+                };
+                decks.command(command, [1, 1]);
+                assert_eq!(
+                    decks.voices[1].as_ref().unwrap().loop_release_beat,
+                    Some(release)
+                );
+            }
+            assert!(released);
+            for _ in 0..24000 {
+                decks.next().unwrap();
+                let voice = decks.voices[1].as_ref().unwrap();
+                let error = (voice.grid.unwrap().beat(voice.seconds()) + offset
+                    - decks.global_beat)
+                    .rem_euclid(f64::from(quantum));
+                assert!(error.min(f64::from(quantum) - error) < 0.0002);
+            }
+        }
+    }
     fn phase_error(decks: &Decks, deck: usize) -> f64 {
         let voice = decks.voices[deck].as_ref().unwrap();
         let delta = (voice.grid.unwrap().beat(voice.seconds()) - decks.global_beat).rem_euclid(4.);
@@ -2290,6 +2651,40 @@ mod timing_tests {
             }
         }
     }
+    #[test]
+    fn pitch_shifts_audio_without_changing_duration_and_survives_tempo_and_seek() {
+        for shift in [-6., 3., 6.] {
+            let mut decks = decks();
+            decks.command(Command::Pitch(0, 99, 3.), [1, 1]);
+            assert_eq!(decks.voices[0].as_ref().unwrap().pitch_semitones, 0.);
+            decks.command(Command::Pitch(0, 1, shift), [1, 1]);
+            let voice = decks.voices[0].as_mut().unwrap();
+            assert!(voice.pitch(f64::NAN).is_err());
+            assert!(voice.pitch(7.).is_err());
+            assert!(voice.pitch(0.5).is_err());
+            voice.tempo(150.).unwrap();
+            voice.seek(0);
+            voice.play();
+            let mut crossings = 0;
+            let mut previous = 0.;
+            let mut frames = 0;
+            while voice.playing {
+                let value = voice.next().unwrap()[0];
+                if (48000..144000).contains(&frames) && previous <= 0. && value > 0. {
+                    crossings += 1;
+                }
+                previous = value;
+                frames += 1;
+            }
+            let expected = 440. * 2_f64.powf(shift / 12.);
+            assert!((crossings as f64 / 2. - expected).abs() < 3.);
+            assert!((frames as f64 - 480000. / 1.25).abs() <= 1.);
+            voice.pitch(0.).unwrap();
+            assert_eq!(voice.pitch_semitones, 0.);
+            assert_eq!(Voice::new(voice.source.clone(), 2).pitch_semitones, 0.);
+        }
+    }
+
     #[test]
     fn rendered_tone_preserves_pitch_and_source_duration_at_both_ratios() {
         for speed in [0.5, 0.8, 1.25, 2.0] {

@@ -41,7 +41,7 @@ export function RollingRow({ state, running, window, control, timingOpen = false
       ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 10px sans-serif'; ctx.fillText(label,Math.min(x+4,width-28),12);
     }
     ctx.strokeStyle='#c8f3ff';
-    const grid=gridGeometry(state.grid,position,window,speed,width,state.track?.duration_seconds ?? 0);
+    const grid=gridGeometry(state.grid,position,window,speed,width,state.track?.duration_seconds ?? 0,state.track?.start_seconds ?? 0);
     for (const m of grid) {
       ctx.globalAlpha=(m.beat===1 ? 1 : .5)*(state.grid?.reviewed ? 1 : .7);
       ctx.lineWidth=m.beat===1 ? 2 : 1;
@@ -61,7 +61,7 @@ export function RollingRow({ state, running, window, control, timingOpen = false
   useLayoutEffect(() => {
     latest.current={state,running,window,timingOpen};
     const received=state.received_at ?? performance.now();
-    clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0},received,state.sampled_at ?? received);
+    clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0,start_seconds:state.track?.start_seconds},received,state.sampled_at ?? received);
     paint.current(performance.now());
   },[state,running,window,timingOpen]);
   useEffect(() => {
@@ -89,7 +89,7 @@ export function RollingRow({ state, running, window, control, timingOpen = false
         if (!timingOpen || !running || state.playing || !state.track || !state.grid || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());
-        const seconds = Math.min(Math.max(0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));
+        const seconds = Math.min(Math.max(state.track.start_seconds ?? 0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));
         firstClick.current = null;
         void control(state.deck, 'reference_beat', seconds);
       }} />

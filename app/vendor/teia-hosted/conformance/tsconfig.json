@@ -1,0 +1,5 @@
+{
+  "extends": "../../editor/tsconfig.json",
+  "compilerOptions": { "types": [], "noEmit": true },
+  "include": ["*.ts", "*.tsx", "../../editor/src/vite-env.d.ts"]
+}

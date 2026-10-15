@@ -217,7 +217,7 @@ def make_handler(music: Path, generated: Path):
                         self.respond(404, {"error": str(exc)})
                 return
             if self.path == "/health":
-                self.respond(200, {"schema_version": LIBRARY_SCHEMA})
+                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
             elif self.path == "/v1/library/state":
                 self.respond(200, jobs.state())
             else:
@@ -317,6 +317,14 @@ def make_handler(music: Path, generated: Path):
     return Handler
 
 
+def library_storage(generated: Path, host_music: str) -> Path:
+    # Preserve the original library's cache. Other folders get separate indexes,
+    # timing edits and filename-keyed analysis, including when names coincide.
+    if host_music == "/Users/pauloricca/Desktop/projects/vira/music":
+        return generated
+    return generated / "libraries" / hashlib.sha256(host_music.encode()).hexdigest()
+
+
 if __name__ == "__main__":
     # Bind to the container interface; Compose publishes it on host loopback only.
-    ThreadingHTTPServer(("0.0.0.0", 47831), make_handler(Path("/music"), Path("/generated"))).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", 47831), make_handler(Path("/music"), library_storage(Path("/generated"), os.environ.get("VIRA_HOST_MUSIC_DIR", "/music")))).serve_forever()

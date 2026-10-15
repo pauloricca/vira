@@ -1,0 +1,11 @@
+import type { ImageAsset, NodeType, Patch, PortDefinition, SampleAsset } from './types';
+export declare function parsePatchJson(json: string): Patch;
+export declare function parsePatchObject(value: unknown, label: string): Patch;
+export declare function isSampleAsset(value: unknown): value is SampleAsset;
+export declare function isImageAsset(value: unknown): value is ImageAsset;
+export declare function isNodeType(value: unknown): value is NodeType;
+export declare function isNumberRecord(value: unknown): value is Record<string, number>;
+export declare function isRecord(value: unknown): value is Record<string, unknown>;
+export declare function normalizeSelectedMidiDeviceIds(value: unknown): string[];
+export declare function expressionInputDefinitions(expression: string): PortDefinition[];
+export declare function syncParamsToInputs(params: Record<string, number>, inputs: PortDefinition[]): Record<string, number>;

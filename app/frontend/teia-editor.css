@@ -1,0 +1,44 @@
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+.vira-teia-shell { height: 100%; display: flex; flex-direction: column; background: #10191d; color: #d4dce1; font: 12px/1.5 'SF Mono', Menlo, Consolas, monospace; -webkit-font-smoothing: antialiased; color-scheme: dark; }
+.vira-teia-header { display: flex; align-items: center; flex: none; gap: 20px; min-height: 66px; padding: 10px 16px; background: #142025; border-bottom: 1px solid #34434a; }
+.vira-teia-document { flex: 1; min-width: 0; }
+.vira-teia-document strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e1edf4; font-size: 12px; font-weight: 500; }
+.vira-teia-document > span { display: block; margin-top: 2px; color: #8b9aa2; font-size: 10px; }
+.vira-teia-live { display: inline-flex; align-items: center; gap: 7px; flex: none; color: #8b9aa2; font-size: 10px; }
+.vira-teia-live::before { content: ''; width: 5px; height: 5px; background: #68c8ee; border-radius: 50%; }
+.vira-teia-shell .vira-teia-button { display: inline-flex; align-items: center; justify-content: center; flex: none; box-sizing: border-box; height: 32px; margin: 0; padding: 0 12px; border: 1px solid #526169; border-radius: 0; background: linear-gradient(#1a272d, #121c21); color: #d6dfe4; font: inherit; font-size: 11px; line-height: 1; white-space: nowrap; cursor: pointer; }
+.vira-teia-shell .vira-teia-button:hover:not(:disabled) { background: #263b45; border-color: #81c8e4; }
+.vira-teia-shell .vira-teia-button-primary { background: #68c8ee; border-color: #68c8ee; color: #09161d; }
+.vira-teia-shell .vira-teia-button-primary:hover:not(:disabled) { background: #91dcf8; border-color: #91dcf8; }
+.vira-teia-shell .vira-teia-button-discard { color: #efa264; border-color: #795c44; }
+.vira-teia-shell .vira-teia-button-discard:hover:not(:disabled) { color: #ffc28f; border-color: #efa264; background: #30261f; }
+.vira-teia-shell .vira-teia-button:disabled { color: #6d7b82; border-color: #303e45; background: #142025; cursor: not-allowed; }
+.vira-teia-shell .vira-teia-button:focus-visible, .vira-teia-filename input:focus-visible { outline: 2px solid #68c8ee; outline-offset: 3px; }
+.vira-teia-canvas { flex: 1; min-height: 0; position: relative; }
+.vira-teia-canvas > .react-flow__provider { height: 100%; }
+.vira-teia-error { padding: 8px 16px; margin: 0; color: #ffaeae; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vira-teia-overlay { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center; padding: 24px; background: #080f13b3; }
+.vira-teia-modal { width: 620px; max-width: 100%; max-height: 100%; overflow: auto; background: #142025; border: 1px solid #526169; border-radius: 0; box-shadow: 0 18px 64px #0008; }
+.vira-teia-modal-body { padding: 24px; }
+.vira-teia-modal h2 { margin: 0 0 12px; color: #e1edf4; font: inherit; font-size: 15px; font-weight: 500; }
+.vira-teia-modal p { margin: 0; }
+.vira-teia-modal .vira-teia-modal-note { margin-top: 10px; color: #8b9aa2; font-size: 11px; }
+.vira-teia-modal .vira-teia-error { margin-top: 12px; padding: 0; }
+.vira-teia-modal-actions { display: flex; justify-content: space-between; gap: 16px; padding: 14px 24px; border-top: 1px solid #34434a; background: #101b20; }
+.vira-teia-action-group { display: flex; gap: 8px; }
+.vira-teia-save-as { width: 440px; }
+.vira-teia-save-as .vira-teia-modal-actions { justify-content: flex-end; }
+.vira-teia-filename { display: block; margin-top: 20px; color: #8b9aa2; font-size: 11px; }
+.vira-teia-filename input { display: block; box-sizing: border-box; width: 100%; height: 34px; margin-top: 6px; padding: 0 10px; border: 1px solid #43555e; border-radius: 0; background: #111c21; color: #e1edf4; font: inherit; font-size: 12px; }
+@media (max-width: 640px) {
+  .vira-teia-header { gap: 12px; }
+  .vira-teia-live { display: none; }
+  .vira-teia-overlay { padding: 16px; }
+  .vira-teia-modal-body { padding: 20px; }
+  .vira-teia-modal-actions { flex-wrap: wrap; padding: 14px 20px; }
+  .vira-teia-action-group { flex: 1 1 100%; justify-content: flex-end; }
+}
+@media (max-width: 400px) {
+  .vira-teia-document > span { display: none; }
+  .vira-teia-shell .vira-teia-button { padding: 0 9px; }
+}

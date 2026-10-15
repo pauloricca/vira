@@ -37,7 +37,7 @@ export function useScrub(state: DeckState, running: boolean, control: Control | 
     if (active) void control?.(state.deck, audible ? 'scrub_pause' : 'seek', active.position);
   }, [state.generation, running]);
   function position(element: Element, x: number, anchor: number, originX: number) {
-    return Math.max(0, Math.min(state.track?.duration_seconds ?? 0, positionAt(element, x, anchor, originX)));
+    return Math.max(state.track?.start_seconds ?? 0, Math.min(state.track?.duration_seconds ?? 0, positionAt(element, x, anchor, originX)));
   }
   function finish(event: PointerEvent<Element>) {
     const active = gesture.current;
@@ -52,7 +52,7 @@ export function useScrub(state: DeckState, running: boolean, control: Control | 
       if (state.playing) {
         event.preventDefault();
         const anchor = currentPosition();
-        send('seek', Math.max(0, Math.min(state.track.duration_seconds,
+        send('seek', Math.max(state.track.start_seconds ?? 0, Math.min(state.track.duration_seconds,
           playingPositionAt(event.currentTarget, event.clientX, anchor, event.clientX))));
         return;
       }

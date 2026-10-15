@@ -1,13 +1,72 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { RollingRow } from './RollingRow';
-import { Deck, DeckState, Mixer, TRACK_MIME, useDecks } from './Decks';
+import { AudioState, Deck, DeckState, Mixer, TRACK_MIME, useDecks } from './Decks';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-afterEach(() => { cleanup(); invoke.mockReset(); });
+afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
 const state: DeckState = { deck: 0, loading: false, error: null, playing: false, position_seconds: 0, gain: .8, generation: 1, requested_generation: 1,
   track: { track_id: 'a'.repeat(64), artifact_id: 'b'.repeat(64), title: 'Unanalysed song', artist: 'Test artist', filename: 'test.wav', duration_seconds: 100, frames: 4800000, peak_frames: 4800000, peaks: [[.2, .1]] } };
+test('the first beat displays as zero and Home seeks to that playable boundary', () => {
+  const control = vi.fn();
+  render(<Deck state={{ ...state, position_seconds: .25, synced: true, track: { ...state.track!, start_seconds: .25 }, grid: { bpm: 120, downbeat_seconds: .25, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  const waveform = screen.getByRole('slider', { name: 'Waveform seek deck A' });
+  expect(waveform.getAttribute('aria-valuenow')).toBe('0');
+  expect(waveform.getAttribute('aria-valuemax')).toBe('99.75');
+  expect(screen.getByLabelText('Time deck A').textContent).toBe('0:00.0 / 1:39.7');
+  fireEvent.keyDown(waveform, { key: 'Home' });
+  expect(control).toHaveBeenLastCalledWith(0, 'seek', .25);
+  fireEvent.keyDown(waveform, { key: 'ArrowLeft' });
+  expect(control).toHaveBeenLastCalledWith(0, 'seek', .25);
+  fireEvent.click(screen.getByRole('button', { name: 'Loop 1 deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'loop_length_aligned', 4);
+});
+test('deck locks survive a restart with empty decks and restore independently when a grid is loaded', async () => {
+  const grid = { bpm: 120, downbeat_seconds: 0, reviewed: true };
+  let native: AudioState = { running: true, error: null, telemetry: {}, decks: [{ ...state, grid, synced: true }, { ...state, deck: 1, grid, synced: false }] };
+  invoke.mockImplementation((command: string, args?: { deck: number; action: string; value: number }) => {
+    if (command === 'get_audio_state') return Promise.resolve(native);
+    if (command === 'deck_control' && args?.action === 'sync') native = { ...native, decks: native.decks.map(d => d.deck === args.deck ? { ...d, synced: args.value === 1 } : d) };
+    return Promise.resolve({});
+  });
+  const first = renderHook(() => useDecks());
+  await waitFor(() => expect(localStorage.getItem('vira.deck-0-locked')).toBe('true'));
+  expect(localStorage.getItem('vira.deck-1-locked')).toBe('false');
+  first.unmount();
+  native = { ...native, decks: native.decks.map(d => ({ ...d, track: null, grid: null, synced: false })) };
+  const second = renderHook(() => useDecks());
+  await waitFor(() => expect(second.result.current.audio.running).toBe(true));
+  expect(localStorage.getItem('vira.deck-0-locked')).toBe('true');
+  expect(invoke.mock.calls.filter(([command]) => command === 'deck_control')).toHaveLength(0);
+  // A track without timing must not discard the remembered lock either.
+  native = { ...native, decks: native.decks.map(d => ({ ...d, track: state.track })) };
+  await waitFor(() => expect(second.result.current.audio.decks[0].track).toBeTruthy());
+  expect(localStorage.getItem('vira.deck-0-locked')).toBe('true');
+  native = { ...native, decks: native.decks.map(d => ({ ...d, grid })) };
+  await waitFor(() => expect(second.result.current.audio.decks[0].synced).toBe(true));
+  expect(invoke.mock.calls.filter(([command]) => command === 'deck_control')).toEqual([
+    ['deck_control', { deck: 0, action: 'sync', value: 1, generation: 1 }],
+  ]);
+  await act(async () => { await second.result.current.control(0, 'sync', 0); });
+  expect(localStorage.getItem('vira.deck-0-locked')).toBe('false');
+  second.unmount();
+  const third = renderHook(() => useDecks());
+  await waitFor(() => expect(third.result.current.audio.running).toBe(true));
+  expect(invoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.value === 1)).toHaveLength(1);
+});
+
+test('native automatic unlocks update the saved deck lock', async () => {
+  let synced = true;
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state'
+    ? { running: true, error: null, telemetry: {}, decks: [{ ...state, synced }, { ...state, deck: 1, synced: false }] }
+    : {}));
+  renderHook(() => useDecks());
+  await waitFor(() => expect(localStorage.getItem('vira.deck-0-locked')).toBe('true'));
+  synced = false;
+  await waitFor(() => expect(localStorage.getItem('vira.deck-0-locked')).toBe('false'));
+});
+
 test('controls send independent deck commands and waveform supports pointer/keyboard seeks', () => {
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={state} running loading={false} error={null} load={vi.fn()} control={control} />);
@@ -60,6 +119,16 @@ test('loop controls toggle lengths and show in/out on the overview', () => {
   rerender(<Deck state={{ ...state, loop_in_seconds: 10 }} snapLoopPoints={false} running loading={false} error={null} load={vi.fn()} control={control} />);
   fireEvent.click(screen.getByRole('button', { name: 'Loop OUT deck A' }));
   expect(control).toHaveBeenLastCalledWith(0, 'loop_out', undefined);
+});
+test('queued loop release remains active and explains the wait until native release', () => {
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control: vi.fn() };
+  const looped = { ...state, playing: true, synced: true, loop_in_seconds: 10, loop_out_seconds: 10.5, loop_length_beats: 1, loop_release_pending: true };
+  const { rerender } = render(<Deck state={looped} {...props} />);
+  expect(screen.getByText('Loop release queued · waiting for locked deck start boundary').getAttribute('role')).toBe('status');
+  expect(screen.getByRole('button', { name: 'Loop 1/4 deck A' }).getAttribute('aria-pressed')).toBe('true');
+  rerender(<Deck state={{ ...looped, loop_out_seconds: null, loop_release_pending: false }} {...props} />);
+  expect(screen.queryByText('Loop release queued · waiting for locked deck start boundary')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Loop 1/4 deck A' }).getAttribute('aria-pressed')).toBe('false');
 });
 test('SLIP toggles for its deck and shows native state', () => {
   const control = vi.fn().mockResolvedValue(undefined);

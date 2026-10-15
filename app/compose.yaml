@@ -7,10 +7,12 @@ services:
       - "127.0.0.1:47831:47831"
     volumes:
       - type: bind
-        source: ../music
+        source: ${VIRA_MUSIC_DIR:-../music}
         target: /music
         read_only: true
       - ./generated:/generated
+    environment:
+      VIRA_HOST_MUSIC_DIR: ${VIRA_MUSIC_DIR:-/Users/pauloricca/Desktop/projects/vira/music}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:47831/health', timeout=2)"]
       interval: 5s

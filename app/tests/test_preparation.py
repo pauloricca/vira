@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
-from preparation.service import make_handler, quick_snapshot, scan_bin
+from preparation.service import library_storage, make_handler, quick_snapshot, scan_bin
 
 
 class MetadataTests(unittest.TestCase):
@@ -170,6 +170,14 @@ class MetadataTests(unittest.TestCase):
         with patch("preparation.service.subprocess.run", side_effect=changing):
             self.assertIn("changed", self.scan()[0]["error"])
 
+    def test_music_folders_have_distinct_persistent_caches(self):
+        self.assertEqual(library_storage(self.generated, "/Users/pauloricca/Desktop/projects/vira/music"), self.generated)
+        first = library_storage(self.generated, "/Music one")
+        second = library_storage(self.generated, "/Music two")
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, library_storage(self.generated, "/Music one"))
+        self.assertTrue(first.is_relative_to(self.generated / "libraries"))
+
     def test_missing_bin_and_empty_bin(self):
         self.assertEqual(self.scan(), [])
         self.music.rmdir()
@@ -182,7 +190,11 @@ class MetadataTests(unittest.TestCase):
         worker.start()
         url = f"http://127.0.0.1:{server.server_port}"
         try:
-            self.assertEqual(json.load(urllib.request.urlopen(url + "/health"))["schema_version"], 2)
+            health = json.load(urllib.request.urlopen(url + "/health"))
+            self.assertEqual(health["schema_version"], 2)
+            self.assertEqual(health["music_bin"], str(self.music))
+            with patch.dict("os.environ", {"VIRA_HOST_MUSIC_DIR": "/My Music é"}):
+                self.assertEqual(json.load(urllib.request.urlopen(url + "/health"))["music_bin"], "/My Music é")
             request = urllib.request.Request(url + "/v1/library/scan", method="POST")
             self.assertEqual(json.load(urllib.request.urlopen(request))["tracks"], [])
             with self.assertRaises(urllib.error.HTTPError) as caught:

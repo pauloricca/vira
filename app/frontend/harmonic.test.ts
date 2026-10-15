@@ -17,3 +17,18 @@ test('scores same, adjacent and relative keys above distant keys', () => {
   expect(compatibility(camelotKey('F# major'), c)).toBe(0);
   expect(compatibility(null, c)).toBeNull();
 });
+
+test('offers the source mode, recommends the same or relative key, and uses the shortest shift', async () => {
+  const { keyChoices, shiftedKey } = await import('./harmonic');
+  const major = keyChoices('A major', 'C major');
+  expect(major).toHaveLength(12);
+  expect(major.every(choice => choice.key.endsWith('major'))).toBe(true);
+  expect(major.find(choice => choice.recommended)).toMatchObject({ key: 'C major', semitones: 3 });
+  expect(keyChoices('A minor', 'C major').find(choice => choice.recommended)).toMatchObject({ key: 'A minor', original: true });
+  expect(keyChoices('C major', 'D minor').find(choice => choice.recommended)?.key).toBe('F major');
+  expect(keyChoices('B minor', 'C minor').find(choice => choice.recommended)?.semitones).toBe(1);
+  expect(shiftedKey('Db major', -1)).toBe('C major');
+  expect(shiftedKey('B minor', 1)).toBe('C minor');
+  expect(keyChoices('unknown', 'C major')).toEqual([]);
+  expect(keyChoices('C major', null).some(choice => choice.recommended)).toBe(false);
+});

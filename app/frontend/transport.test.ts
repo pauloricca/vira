@@ -1,5 +1,17 @@
 import { expect, test } from 'vitest';
 import { DisplayPosition } from './transport';
+test('display position stays inside playable bounds even with stale or extrapolated positions', () => {
+  const clock = new DisplayPosition();
+  const snapshot = { position_seconds: 0, start_seconds: .25, duration: 10, generation: 1, playing: false };
+  clock.update(snapshot, 0);
+  expect(clock.at(100)).toBe(.25);
+  clock.update({ ...snapshot, position_seconds: 12 }, 100);
+  expect(clock.at(100)).toBe(10);
+  clock.update({ ...snapshot, playing: true }, 200);
+  expect(clock.at(200)).toBe(.25);
+  clock.update({ ...snapshot, position_seconds: 9.9, playing: true }, 300);
+  expect(clock.at(1000)).toBe(10);
+});
 import { gridGeometry, peakLevels, rangePeak, waveformColour } from './waveform';
 const state={position_seconds:10,speed:1,playing:true,generation:1,position_epoch:0,duration:100};
 test('late, uneven polls correct continuously without a backwards jump',()=>{
@@ -49,6 +61,9 @@ test('output-time grids show equal spacing only for equal target tempos',()=>{
   const a=gridGeometry(grid,5,4,1,1024,100),b=gridGeometry(grid,5,4,.8,1024,100);
   expect(a[1].x-a[0].x).toBeCloseTo(128); expect(b[1].x-b[0].x).toBeCloseTo(160);
   expect(gridGeometry(null,5,4,1,1024,100)).toEqual([]);
+  const opening = gridGeometry({ ...grid, downbeat_seconds: .25 }, .25, 4, 1, 1024, 100, .25);
+  expect(opening[0]).toEqual({ x: 512, bar: 1, beat: 1 });
+  expect(opening.every(marker => marker.x >= 512)).toBe(true);
 });
 
 test('slow rAF fallback remains a single visible display loop and stops when unused', async()=>{

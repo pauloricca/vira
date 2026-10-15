@@ -46,14 +46,27 @@ impl Grid {
         duration: f64,
         quantum: f64,
     ) -> Result<f64> {
+        self.align_quantum_from(current, leader_beat, 0., duration, quantum)
+    }
+    pub fn align_quantum_from(
+        self,
+        current: f64,
+        leader_beat: f64,
+        start: f64,
+        duration: f64,
+        quantum: f64,
+    ) -> Result<f64> {
         let phase = leader_beat.rem_euclid(quantum);
-        let low = ((self.beat(0.) - phase) / quantum).ceil();
+        // The playable start is rounded to a source frame. Keep the first
+        // grid boundary eligible when it rounds to that same frame.
+        let rounding = self.bpm / (60. * 48000. * 2. * quantum) + 1e-12;
+        let low = ((self.beat(start) - phase) / quantum - rounding).ceil();
         let high = ((self.beat(duration - 1. / 48000.) - phase) / quantum).floor();
         ensure!(low <= high, "No matching bar phase lies within this source");
         let bar = ((self.beat(current) - phase) / quantum + 0.5 - 1e-12)
             .floor()
             .clamp(low, high);
-        Ok(self.seconds(bar * quantum + phase))
+        Ok(self.seconds(bar * quantum + phase).max(start))
     }
 }
 /// A stable source-frame anchor evaluated against output samples, never a rounded beat increment.
@@ -108,5 +121,16 @@ mod tests {
         assert_eq!(grid.align_quantum(101., 0., 200., 1.).unwrap(), 101.);
         assert_eq!(grid.align(199.9, 1., 200.).unwrap(), 198.5);
         assert!(grid.align(0., 3., 0.1).is_err());
+        let offset = Grid {
+            downbeat_seconds: 0.2555542936878912,
+            ..grid
+        };
+        let start = (offset.downbeat_seconds * 48000.).round() / 48000.;
+        assert_eq!(
+            offset
+                .align_quantum_from(start, 0., start, 10., 4.)
+                .unwrap(),
+            start
+        );
     }
 }

@@ -42,10 +42,10 @@ export function rangePeak(levels: Float32Array[], first: number, last: number) {
   }
   return peak;
 }
-export function gridGeometry(grid: Grid | null | undefined, position: number, window: number, speed: number, width: number, duration: number) {
+export function gridGeometry(grid: Grid | null | undefined, position: number, window: number, speed: number, width: number, duration: number, sourceStart = 0) {
   if (!grid) return [];
   const sourceWindow = window * speed, start = position - sourceWindow / 2;
-  const first = Math.ceil((Math.max(0,start) - grid.downbeat_seconds) * grid.bpm / 60);
+  const first = Math.ceil((Math.max(sourceStart,start) - grid.downbeat_seconds) * grid.bpm / 60 - 1e-9);
   const last = Math.floor((Math.min(duration,start+sourceWindow) - grid.downbeat_seconds) * grid.bpm / 60);
   const result = [];
   for (let beat=first; beat<=last && result.length<2048; beat++) result.push({
@@ -63,7 +63,7 @@ export class WaveTiles {
     const peaks = track?.fine_peaks;
     if (!track || !peaks?.length || window<=0) { this.tiles.clear(); this.peaks=undefined; this.key=''; return; }
     const pixels = width * dpr / window;
-    const key = `${pixels}:${height}:${dpr}:${colour}`;
+    const key = `${pixels}:${height}:${dpr}:${colour}:${track.start_seconds ?? 0}`;
     if (key !== this.key || this.peaks !== peaks) { this.tiles.clear(); this.key=key; this.peaks=peaks; }
     const levels = peakLevels(peaks), features = track.fine_features?.length ? featureLevels(track.fine_features) : null, step = (track.fine_peak_frames ?? 240) / 48000;
     const tileWidth = 1024, origin = start * pixels;
@@ -79,6 +79,7 @@ export class WaveTiles {
         const center=height*dpr/2, amplitude=height*dpr/3;
         for (let x=0; x<tileWidth; x++) {
           const seconds=(tile*tileWidth+x)/pixels;
+          if (seconds + 1 / pixels <= (track.start_seconds ?? 0)) continue;
           if (seconds>=track.duration_seconds) break;
           const a=Math.floor(seconds/step), b=Math.max(a+1,Math.ceil((seconds+1/pixels)/step));
           const peak=rangePeak(levels,a,b)*amplitude;

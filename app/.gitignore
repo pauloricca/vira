@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!vendor/teia-hosted/dist/
+!vendor/teia-hosted/dist/**
 src-tauri/target/
 src-tauri/gen/
 output/

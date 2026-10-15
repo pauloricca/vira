@@ -27,3 +27,27 @@ export function compatibility(candidate: CamelotKey | null, deck: CamelotKey | n
   const otherMode = [.9, .65, .35, .18, .08, .03, 0];
   return (candidate.letter === deck.letter ? sameMode : otherMode)[wheelDistance];
 }
+
+export const keyRoots = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+export function shiftedKey(key: string | null | undefined, semitones = 0): string | null {
+  const parsed = camelotKey(key);
+  if (!parsed) return null;
+  const wheel = parsed.letter === 'A' ? minorWheel : majorWheel;
+  const root = (wheel[parsed.number - 1] + semitones + 12) % 12;
+  return `${keyRoots[root]} ${parsed.letter === 'A' ? 'minor' : 'major'}`;
+}
+
+export function keyChoices(original: string | null | undefined, other: string | null | undefined) {
+  const source = camelotKey(original);
+  const reference = camelotKey(other);
+  if (!source) return [];
+  const wheel = source.letter === 'A' ? minorWheel : majorWheel;
+  const root = wheel[source.number - 1];
+  return keyRoots.map((name, note) => ({
+    key: `${name} ${source.letter === 'A' ? 'minor' : 'major'}`,
+    semitones: ((note - root + 18) % 12) - 6,
+    original: note === root,
+    recommended: reference !== null && note === wheel[reference.number - 1],
+  }));
+}

@@ -1,0 +1,645 @@
+{
+  "format": "teia-hosted-compatibility",
+  "version": 1,
+  "sourceCommit": "ecd5e17b8a8ca21d65958ecfb067d8ee2993253b",
+  "sourceDirty": true,
+  "versions": {
+    "packages": {
+      "editor": "0.1.0",
+      "runtime": "0.3.0",
+      "kernel": "0.1.0",
+      "hosted": "0.1.0"
+    },
+    "package": "0.1.0",
+    "document": 1,
+    "legacyDocument": 0,
+    "program": 1,
+    "runtime": 1,
+    "bridge": 2,
+    "bridgeCompatible": [
+      1,
+      2
+    ],
+    "xpManifest": 2,
+    "engineApis": [
+      1,
+      2
+    ]
+  },
+  "nativeProfile": "native-scalar-v1",
+  "nativeFunctionalVerification": "no current source-matched equivalence evidence",
+  "artifacts": [
+    {
+      "path": "chunk-2YJPUQUH.js",
+      "bytes": 230643,
+      "sha256": "4cd6a22557bdc72580a73ace26abae49110466cd257b76138ebe3340bff3c1b3"
+    },
+    {
+      "path": "conformance/contracts.test.mjs",
+      "bytes": 273419,
+      "sha256": "5f91678a9ac881624a7a1d4e8752946f6d4ccc8c622b6018c4b7a4e5c2f37fd7"
+    },
+    {
+      "path": "conformance/editor.html",
+      "bytes": 323,
+      "sha256": "6dcf2026a8115831c0b71751e740a8e20ccf95b5b873f8b4dde0852c107d0be7"
+    },
+    {
+      "path": "conformance/editor.js",
+      "bytes": 2736974,
+      "sha256": "4d74a9f3abc050b8c9300d32222025d6c6807a796187b2924fdf28772d5c8818"
+    },
+    {
+      "path": "editor.js",
+      "bytes": 937322,
+      "sha256": "3d580852ad96a27d56616b9c49c41f99bf1b495b132524d3b0e7fe25f88ed393"
+    },
+    {
+      "path": "flow.css",
+      "bytes": 18596,
+      "sha256": "124a885d4b166ae576701061156e10b1f08c36a73319e866f2e82badedc73591"
+    },
+    {
+      "path": "index.js",
+      "bytes": 29562,
+      "sha256": "c37dff05256ad8f4e11997801fa802aa4420bed59d4d558dda1e4f011de27988"
+    },
+    {
+      "path": "native/teia-kernel/Cargo.toml",
+      "bytes": 211,
+      "sha256": "bf4525d61264227f363fe583fc05d6da82b517487a8fa7418240f5ede6594ad7"
+    },
+    {
+      "path": "native/teia-kernel/src/bounded_repeats.rs",
+      "bytes": 14783,
+      "sha256": "2f3e45a04f788f95a12a58dd7f1b84207e5e1a5fa9b4c829f5ee4dfb2e4fb998"
+    },
+    {
+      "path": "native/teia-kernel/src/hosted_observation.rs",
+      "bytes": 27019,
+      "sha256": "ad005c16d4303329bcd938938484097324c9aaca038ed86a18e5c19953c75a1e"
+    },
+    {
+      "path": "native/teia-kernel/src/hosted_resources.rs",
+      "bytes": 8304,
+      "sha256": "51f57778dc523816f0e711ba4e5829c7d574ab4e853f4d410824cfcaa5d5e77b"
+    },
+    {
+      "path": "native/teia-kernel/src/hosted.rs",
+      "bytes": 37965,
+      "sha256": "5131a2be03b43f3f4fc1b2298d6f335416dda830a93e07da641b63617864c332"
+    },
+    {
+      "path": "native/teia-kernel/src/lib.rs",
+      "bytes": 457008,
+      "sha256": "46315080c923b0c736bc43e2c526dc81dd480d5c79e5ba257485f2c0c00f86ae"
+    },
+    {
+      "path": "native/teia-kernel/src/native_state.rs",
+      "bytes": 2282,
+      "sha256": "8a0824dc795694aed1f03ee73830d158debd70b6e59d44abd137d6d7f8897259"
+    },
+    {
+      "path": "native/teia-kernel/src/parallel.rs",
+      "bytes": 33247,
+      "sha256": "0a132296c6fd2ac9b96262f3cddb551baf9e13cc9daea6e2c1e233d4e642cf13"
+    },
+    {
+      "path": "native/teia-kernel/src/reverb.rs",
+      "bytes": 8100,
+      "sha256": "1063173e05cccbeb7d9f3bc67096e4f04f3b2bdbaba35ebaa0f43d5e1b6d3ae6"
+    },
+    {
+      "path": "native/teia-kernel/src/runtime_preparation.rs",
+      "bytes": 1783,
+      "sha256": "2a066fdf79bc109459897fe7f0d22ccf4bacbf2631ede31b13d29115b02b577c"
+    },
+    {
+      "path": "native/teia-kernel/src/runtime-capabilities.json",
+      "bytes": 2343,
+      "sha256": "27f6454d5ffe27aeeb6ff1f8ba96da317bf6456285f52ba357b2bc3095a34733"
+    },
+    {
+      "path": "native/teia-kernel/src/state_fields.rs",
+      "bytes": 16119,
+      "sha256": "e01c2ef270fb46a904c850c68a7cd6bcfc82436fad36cfc97751f4ddc5d037a9"
+    },
+    {
+      "path": "native/teia-kernel/tests/fixtures/shared.json",
+      "bytes": 207933,
+      "sha256": "bf895b393cbc10b961fa0ff467761e0e6dfce28f67a7e0f191d5800617f60429"
+    },
+    {
+      "path": "native/teia-kernel/tests/fixtures/shared.rs",
+      "bytes": 152455,
+      "sha256": "a5dc8e5a3c70500573bf35427c67d0ef461af1b8655c4647f0504490e0834fbd"
+    },
+    {
+      "path": "README.md",
+      "bytes": 25609,
+      "sha256": "c6bb5e086ffd565b5db7681b4f9d86015544c56bb8d2a3f5c96f23db00966ab3"
+    },
+    {
+      "path": "styles.css",
+      "bytes": 106511,
+      "sha256": "3bb7019ac6dcf5ec2dfe6239719e10ddd07a827ae92baeb017210bdbd8af543f"
+    },
+    {
+      "path": "themes.css",
+      "bytes": 14914,
+      "sha256": "ce4aec12c5c64d7c6b4c7b11e7218a03d0cbfe157534acf20ebb1dcd53b844c4"
+    },
+    {
+      "path": "types/audio/bufferStorage.d.ts",
+      "bytes": 554,
+      "sha256": "ee77508e25d60a2ce78e9d1b19c4f4b8fcc639d239910fc35f995a30e28f47b2"
+    },
+    {
+      "path": "types/audio/config.d.ts",
+      "bytes": 265,
+      "sha256": "6f18f6c1c7da5d88c8ceace4b54294dad24177992ba980122b691b99165f0cdd"
+    },
+    {
+      "path": "types/audio/dspEdit.d.ts",
+      "bytes": 427,
+      "sha256": "e5ea35dde0b1cb6b15381b277eb0d1b39338067b42bb82f6d12478e2ad63eb47"
+    },
+    {
+      "path": "types/audio/dspOpcodes.d.ts",
+      "bytes": 1499,
+      "sha256": "72c7d57109120e5f98b240c73f13f52e68c4d544995ec005f507dbc132e551cd"
+    },
+    {
+      "path": "types/audio/dspOptimizer.d.ts",
+      "bytes": 1323,
+      "sha256": "e3413d37d7cc7e09d17f5e571e01ebc1c88bf7a695c4d43e765476c8ed4019ce"
+    },
+    {
+      "path": "types/audio/dspProgram.d.ts",
+      "bytes": 3476,
+      "sha256": "f32c5a3a2f54d844b6eb8ff71516fdafd41595ecebe28fccb203ac77b31b4da9"
+    },
+    {
+      "path": "types/audio/dspSchedule.d.ts",
+      "bytes": 923,
+      "sha256": "5dd18a916ab5683b967fbb620b47d0425a7c6d1a09f65b0bfe6c2296640ea8fa"
+    },
+    {
+      "path": "types/audio/fm1Capabilities.d.ts",
+      "bytes": 9378,
+      "sha256": "8f7a7b71d915f9dfae38e786cc01e4ef2d0a4af7d06a03be693d2dba4ccd9dde"
+    },
+    {
+      "path": "types/audio/fm1Optimizer.d.ts",
+      "bytes": 238,
+      "sha256": "39ba9629493a1e76b25920857ad38755d19d4ead41807f7e327e3c6f731a36ab"
+    },
+    {
+      "path": "types/audio/fm1Package.d.ts",
+      "bytes": 859,
+      "sha256": "81ec970f7adfc25b79306812702585a565a9b5acf8d513c51dcd2cd3f6dbcddf"
+    },
+    {
+      "path": "types/audio/fm1Support.d.ts",
+      "bytes": 716,
+      "sha256": "679fc367d80d1bd79f1385cc14183c2e194b7b5b1a768b9b44c33c2cf10d928b"
+    },
+    {
+      "path": "types/audio/fm1Upload.d.ts",
+      "bytes": 673,
+      "sha256": "59d5bb77a9fa41082d8049ed1795c35b3915a2d1d022c91fa24cbe2820375b06"
+    },
+    {
+      "path": "types/audio/parallelEngine.d.ts",
+      "bytes": 484,
+      "sha256": "14424142d4c6544e1dfd03f6b04fa55839099a6381e0c57cad49e7e45f9b7402"
+    },
+    {
+      "path": "types/audio/patchPackage.d.ts",
+      "bytes": 480,
+      "sha256": "dc6a672d932e3078d0df304f15247e94ae9f193a7cd6c89c7a8acb266b3ff690"
+    },
+    {
+      "path": "types/audio/sampleWaveformCache.d.ts",
+      "bytes": 411,
+      "sha256": "d93c62463bedca8e298ee550a1caa919872635d46dfa4083ab9de5d9912fb353"
+    },
+    {
+      "path": "types/audio/useAudioEngine.d.ts",
+      "bytes": 3487,
+      "sha256": "15f972d7b4f52b64307b1b050f83e0ea0659d9eb42e1f177a91cb008abefacc4"
+    },
+    {
+      "path": "types/audio/useFm1LiveEdit.d.ts",
+      "bytes": 196,
+      "sha256": "a4d05d4f2bd13f559a3915259056251388740422225dc446f6a54211d4dd285c"
+    },
+    {
+      "path": "types/diagnostics.d.ts",
+      "bytes": 363,
+      "sha256": "4dbc8c1b46b742cddcb419f2a12b43194c873d23cac3d29de6fdd69dcd797b00"
+    },
+    {
+      "path": "types/editor/canvasZoom.d.ts",
+      "bytes": 346,
+      "sha256": "98902e05a52d0dfd8b5b0357e4cbdd4ff1a3f01a9cbf0c0241672fe245809861"
+    },
+    {
+      "path": "types/editor/chartGrid.d.ts",
+      "bytes": 851,
+      "sha256": "faad7e015e52b035064c4a89779bf2dd22ee8c578648e05c9847302aa0ec0e8a"
+    },
+    {
+      "path": "types/editor/dspNodeScope.d.ts",
+      "bytes": 94,
+      "sha256": "ce7729e567cce2f6ac284e2003df7291b16b2741262db13c324cb3d4f2b53251"
+    },
+    {
+      "path": "types/editor/EdgeOverlayContext.d.ts",
+      "bytes": 337,
+      "sha256": "9373ba54110b19f2697c06c0ec5fe7c691a8d63c1e99f13ea43f26741f4d7acc"
+    },
+    {
+      "path": "types/editor/flowPatch.d.ts",
+      "bytes": 11793,
+      "sha256": "894e9ab9e528524301acd58cfc82a326995e01a184900576123769166660a01b"
+    },
+    {
+      "path": "types/editor/Fm1ModeContext.d.ts",
+      "bytes": 71,
+      "sha256": "4f7807db1c57801e0068f959303aeec585680a15606200f06de522a11f1c9cad"
+    },
+    {
+      "path": "types/editor/Fm1UploadDialog.d.ts",
+      "bytes": 183,
+      "sha256": "4278edffbf013b8a5836293741b8eb2eafd117c4624defdacd84c1f6c112d10d"
+    },
+    {
+      "path": "types/editor/NodeEditor.d.ts",
+      "bytes": 162,
+      "sha256": "f7bbc36d9046ad4e62180dbf44965d013c14a5949f4ff2d68bcd97a09548f8af"
+    },
+    {
+      "path": "types/editor/numericDisplay.d.ts",
+      "bytes": 67,
+      "sha256": "77472277e3f48fbe221853e5ef3c4635591f5bd46dab20e68a71e376377e83ab"
+    },
+    {
+      "path": "types/editor/ShaderEdge.d.ts",
+      "bytes": 786,
+      "sha256": "856c3180dbfd30fdcbbe1f5ad8e22770e21ca255741f85c28950dc0b0c38593f"
+    },
+    {
+      "path": "types/editor/ShaderNode.d.ts",
+      "bytes": 427,
+      "sha256": "b37c0192c66140a8411234ab1f5acf8141c1d8ac72ecca70cdb202e4bf5d43fb"
+    },
+    {
+      "path": "types/graph/customWave.d.ts",
+      "bytes": 1181,
+      "sha256": "3f40d9d24654657fc351b9a869df8263cc6dd98df17d5d5f57bd25bd331eb9f9"
+    },
+    {
+      "path": "types/graph/demoPatch.d.ts",
+      "bytes": 77,
+      "sha256": "be0c5650c3136161622b136c042a3abfec622a0e8010e127fe9789357d0cf141"
+    },
+    {
+      "path": "types/graph/expression.d.ts",
+      "bytes": 284,
+      "sha256": "835f70781c8d7998c32c79e85fc1c8ea7748184c3500f182360cbe70c3e7b7cf"
+    },
+    {
+      "path": "types/graph/musicScales.d.ts",
+      "bytes": 455,
+      "sha256": "ed5f5bd5202c797c4ade13b679a505fd00d4274ee9dc5d8079cdac2d08f013fa"
+    },
+    {
+      "path": "types/graph/nodeTypes.d.ts",
+      "bytes": 3855,
+      "sha256": "44d90f19a99ad76612b61fc67adc568bfd11a901069ea886a810ef893973b009"
+    },
+    {
+      "path": "types/graph/parse.d.ts",
+      "bytes": 924,
+      "sha256": "464f4efb1a2d5fe5619bc7e9dcf8a37d804ad73f766706c173c1df35d0f514b5"
+    },
+    {
+      "path": "types/graph/patchCompatibility.d.ts",
+      "bytes": 112,
+      "sha256": "1025dbba25ee595cf26dfde9437a82c4ab2d6608d332f131dcd59a7430ecc42f"
+    },
+    {
+      "path": "types/graph/serialize.d.ts",
+      "bytes": 158,
+      "sha256": "304af52e43277634d3a1213d7f934984066b4aa68c8c77a70eeac46ac41a8143"
+    },
+    {
+      "path": "types/graph/spread.d.ts",
+      "bytes": 1110,
+      "sha256": "745fb30fd9ce083093abfc5596e8587891bceea6db8c228ba06830c654520474"
+    },
+    {
+      "path": "types/graph/subpatch.d.ts",
+      "bytes": 97,
+      "sha256": "d6620f2220c2e3bdb9a6c55cdc8407c6f63e282c3c4ba370c697b3fda9f15d7b"
+    },
+    {
+      "path": "types/graph/types.d.ts",
+      "bytes": 5878,
+      "sha256": "716d0f9fa64d1424fe0a047e37402e0f424c38166ad0100e85dfadf46a99a7c7"
+    },
+    {
+      "path": "types/hosted/assets.d.ts",
+      "bytes": 798,
+      "sha256": "23ffaf4fc7bbc10e843956e2330bd362bd45b3f1f931dda6dad35d46afc15da9"
+    },
+    {
+      "path": "types/hosted/bridge.d.ts",
+      "bytes": 4764,
+      "sha256": "0126644fc5b21442b18d65a77f00cacdcff6879ddf47d5dcd0d8c32679e8376e"
+    },
+    {
+      "path": "types/hosted/compiler.d.ts",
+      "bytes": 2828,
+      "sha256": "623b5cfbaeec0297923a9823089c5d01351082ba0da14126b4db7124d0219a1a"
+    },
+    {
+      "path": "types/hosted/document.d.ts",
+      "bytes": 1630,
+      "sha256": "cd76928786d382cb9a6dc68af3d6d4c185e8c5c068625ddf00d2c4eb240569b8"
+    },
+    {
+      "path": "types/hosted/HostedModeContext.d.ts",
+      "bytes": 193,
+      "sha256": "a43ccb679db9e7c38d7f2368ebbb63eeeaceaf7e4c9e0558031488e3192dd8f8"
+    },
+    {
+      "path": "types/hosted/HostedNodeEditor.d.ts",
+      "bytes": 356,
+      "sha256": "435e73bf7ca79228a0fb659347b28077ba74d9be40ea229164223fbe9bc671c9"
+    },
+    {
+      "path": "types/hosted/HostedParameters.d.ts",
+      "bytes": 257,
+      "sha256": "ebff7a5c63de0a8bb4fffc94547109f6086d893b1e99844b597e7f127af8504f"
+    },
+    {
+      "path": "types/hosted/index.d.ts",
+      "bytes": 426,
+      "sha256": "3710a528d2b8d38e3008983a1b63cdb8b1b4e50dcb80471afbe328c966cbc019"
+    },
+    {
+      "path": "types/hosted/mockBridge.d.ts",
+      "bytes": 934,
+      "sha256": "a344790cade188a4ec0492f28d149e5e024e43d1edf6aacd77d1b2a8cd907b8d"
+    },
+    {
+      "path": "types/hosted/native.d.ts",
+      "bytes": 3902,
+      "sha256": "8d15d005b968e27c4d247ea17dfb5dab4bc4166ff328ef67d98fe1601015b936"
+    },
+    {
+      "path": "types/hosted/package.d.ts",
+      "bytes": 380,
+      "sha256": "529c359c9d81acfc3b37c201088a25e6ad8c1908bf3eeab5b65d2e81f30adc09"
+    },
+    {
+      "path": "types/hosted/parameters.d.ts",
+      "bytes": 768,
+      "sha256": "5b43a8c7d0709d30ca0eb6e5f3c66e2fe279ce77abc7f7d071e069216144c7d7"
+    },
+    {
+      "path": "types/hosted/session.d.ts",
+      "bytes": 3237,
+      "sha256": "52ebecc8fa595dd97da918545222554ce9a42539cd1395cc4518fd843e7a5607"
+    },
+    {
+      "path": "types/hosted/useHostedAudio.d.ts",
+      "bytes": 278,
+      "sha256": "7fde9dbae2b280dca008749c180bc3d50f93b75db85e5e36abed1b66b2ea2c1b"
+    }
+  ],
+  "sourceChecksums": [
+    {
+      "path": "editor/src/audio/bufferStorage.ts",
+      "sha256": "8b56ef728eabb495ffe3b1dfb06fe8cbdcbbbc18ec0a24a1952124fc68ea04a2"
+    },
+    {
+      "path": "editor/src/audio/config.ts",
+      "sha256": "2b37ae32865aca1d79032e87ad14cc5fa7bc422944c5c61b979790660145303d"
+    },
+    {
+      "path": "editor/src/audio/dspEdit.ts",
+      "sha256": "04dc064fc4b22afa52ab4aaa6a0382b0b9466d8f0a2c507c63e8f7c05ed04076"
+    },
+    {
+      "path": "editor/src/audio/dspOpcodes.ts",
+      "sha256": "3e605442a356c87dd1c6aef58ce0d00d762c5ed31da0499b90e962181fed55ee"
+    },
+    {
+      "path": "editor/src/audio/dspOptimizer.ts",
+      "sha256": "21e45b7aca38a7a696006dbc99b518c71f65eefdb36d77b3bf2bea2c9ec4d91f"
+    },
+    {
+      "path": "editor/src/audio/dspProgram.ts",
+      "sha256": "724626d8bba01ffb3a83c0296612cf88fb7617b372b80ba14915f1682f7f78b7"
+    },
+    {
+      "path": "editor/src/audio/dspSchedule.ts",
+      "sha256": "9e20711deeda84b8a4142c5b6639dfd43ea46cea6c167ec0599820fd20af4d24"
+    },
+    {
+      "path": "editor/src/audio/fm1Capabilities.ts",
+      "sha256": "7a29929da790792dc3e54b3139cda2a4230e8f971fc5e101dade126a33a556cd"
+    },
+    {
+      "path": "editor/src/audio/fm1Optimizer.ts",
+      "sha256": "c4aefb17286a0f80a2dcc2553b3e4c5bbe8fcb8f302c4e9eec095c1b3a03e9f0"
+    },
+    {
+      "path": "editor/src/audio/fm1Package.ts",
+      "sha256": "f63cff9f1feaf41aef939d0c540684ee1cb7dd99601204af693bc007cbe27c9c"
+    },
+    {
+      "path": "editor/src/audio/fm1Support.ts",
+      "sha256": "c7bc3b9979a76822aaf3b72acb914ce2e75e1abf37ff761c965e6e07e7ae363d"
+    },
+    {
+      "path": "editor/src/audio/fm1Upload.ts",
+      "sha256": "77e2e199f523b95bb047e9dada2aa4725e03d8b9eb112d66a9d0c412fb0f0b96"
+    },
+    {
+      "path": "editor/src/audio/parallelEngine.ts",
+      "sha256": "21323196a4ee56a81a6cb7db0abf8d80d8eb3e013a3f4b50516c27ecaef9b2a4"
+    },
+    {
+      "path": "editor/src/audio/patchPackage.ts",
+      "sha256": "da3021756b4a8fa10606056bfd8d282248e4ff0a3e63892227284a3931d6decf"
+    },
+    {
+      "path": "editor/src/audio/sampleWaveformCache.ts",
+      "sha256": "3175becaf702264a00c8ed7a433e4281ef746b33f10e4b96f495abe6f1de2413"
+    },
+    {
+      "path": "editor/src/audio/useAudioEngine.ts",
+      "sha256": "c4f2d74fa35bc4ba9660f2630e3c9fcfd0909b1a6ea44acb872914883edea816"
+    },
+    {
+      "path": "editor/src/audio/useFm1LiveEdit.ts",
+      "sha256": "f713142b090b52bd6f8322e9fda1648dbf2f7a3dde08aa99a4c5c657776fdb7e"
+    },
+    {
+      "path": "editor/src/diagnostics.ts",
+      "sha256": "eeed709b3d569dc320dccaaf956dc903ea0c192e88d890440a5c9c2cd9ca8480"
+    },
+    {
+      "path": "editor/src/editor/EdgeOverlayContext.tsx",
+      "sha256": "7db9966d785a3fba5ead9e61594b591f197f2fe32e109ef52caabf77ccb05615"
+    },
+    {
+      "path": "editor/src/editor/Fm1ModeContext.ts",
+      "sha256": "cc1bc130ec1638f62f27ce14997e86f8dae35e3a891d44702cab054b496fc5fd"
+    },
+    {
+      "path": "editor/src/editor/Fm1UploadDialog.tsx",
+      "sha256": "101ca7bac78847d79ccb37d18cb161e511fa4f006d1e3aa97c3603feb3cbe7f2"
+    },
+    {
+      "path": "editor/src/editor/NodeEditor.tsx",
+      "sha256": "4270b1560b3ae214c4851290f5482f9b762f83a156519857e204d5c5a3c10cb9"
+    },
+    {
+      "path": "editor/src/editor/ShaderEdge.tsx",
+      "sha256": "eaf7fc7bbc5b182356252a81b41f7cc65d4a19357b0d54ef3d6f6a4163b6e2d5"
+    },
+    {
+      "path": "editor/src/editor/ShaderNode.tsx",
+      "sha256": "71ebe5d2157861e5edfd70b77a4f41db5ef1d0cddc238ba0f9bb8392f2d690b3"
+    },
+    {
+      "path": "editor/src/editor/canvasZoom.ts",
+      "sha256": "66c27347a73801711921588b73e37e19e8ce1a1f51453126bcba0d3dd074b86f"
+    },
+    {
+      "path": "editor/src/editor/chartGrid.tsx",
+      "sha256": "09bd0a9c55611a4f909ea5280b5d5f322cff614fcdf3de89dcebdc82a2c209db"
+    },
+    {
+      "path": "editor/src/editor/dspNodeScope.ts",
+      "sha256": "11b6167afeecc6c691e47eafe6944cf56c5ecb5c152b9e104a990c32e28d33af"
+    },
+    {
+      "path": "editor/src/editor/flowPatch.ts",
+      "sha256": "2a96056d0223c9ae47d4bdd74a0396832d5220c4725de4103cde935d86fdef0e"
+    },
+    {
+      "path": "editor/src/editor/numericDisplay.ts",
+      "sha256": "f4a4691638ba4bc3f3fd1e2e3c5b94cf2502906193527d8c5214fc8fd2978649"
+    },
+    {
+      "path": "editor/src/graph/customWave.ts",
+      "sha256": "1186bb9143bb03e3f97dcc3140013ea369ebac5f9149984f718afb9d59ea5e54"
+    },
+    {
+      "path": "editor/src/graph/demoPatch.ts",
+      "sha256": "680e1a75b596ba6c28eb5db44499d3540added6c3a2f5ca0a451234cbfe67893"
+    },
+    {
+      "path": "editor/src/graph/expression.ts",
+      "sha256": "3d9ffced8af6611ed9b59414f2917895aa21fbf2d0f145d59eeab71a9ab34995"
+    },
+    {
+      "path": "editor/src/graph/musicScales.ts",
+      "sha256": "e725213ebe3e993919a476f05a14a6cda9616ece3cd34f2ab0c51cbb1065041c"
+    },
+    {
+      "path": "editor/src/graph/nodeTypes.ts",
+      "sha256": "2e7ae45e2ee35df2587980de14b6e4184c52af9ed4890eb185221bf34012431a"
+    },
+    {
+      "path": "editor/src/graph/parse.ts",
+      "sha256": "769600d7bc6858f0d2c83a4e9cd3b50329df0adbced9331f1da85c70dbe3f2e8"
+    },
+    {
+      "path": "editor/src/graph/patchCompatibility.ts",
+      "sha256": "c616a535c135bee311e1aee133f91f7ea10c010b50eca6e16687f8eab8dc4e63"
+    },
+    {
+      "path": "editor/src/graph/serialize.ts",
+      "sha256": "b79eeb691c8f22ec11bb4cfa750b5720cc8af4674d0e9eabf13aa642d876109a"
+    },
+    {
+      "path": "editor/src/graph/spread.ts",
+      "sha256": "58bec3d980343612b1fc6e31059ab2926b50455f7a547129ffd24b071d81a0da"
+    },
+    {
+      "path": "editor/src/graph/subpatch.ts",
+      "sha256": "56fd60b9c664479761eefaa1e4d5264160156974687bc529aba01716ed2fbeb5"
+    },
+    {
+      "path": "editor/src/hosted/HostedModeContext.ts",
+      "sha256": "037cfd1b3fb901f6e87436723fde6deb36aece15713fb72a8104cf42e5dfb1de"
+    },
+    {
+      "path": "editor/src/hosted/HostedNodeEditor.tsx",
+      "sha256": "f1d0a5cd30c90146f2d37c4b09bfbe54b48e03f5dad8d9e75c194f00f55c8255"
+    },
+    {
+      "path": "editor/src/hosted/HostedParameters.tsx",
+      "sha256": "6450d26fa68f95b710db7e9979a11b34c93c6ceca6281675332a16f2b25a7906"
+    },
+    {
+      "path": "editor/src/hosted/assets.ts",
+      "sha256": "1a529b112504a7987a8cb48d79e41d636ad021566dd659cd2d0966a0153bb651"
+    },
+    {
+      "path": "editor/src/hosted/bridge.ts",
+      "sha256": "9e98890329897f150648d7ebd5f97175140d6ccb4f28c01c3983c509c84ff8a9"
+    },
+    {
+      "path": "editor/src/hosted/compiler.ts",
+      "sha256": "a6649dc7b3dc1da06139a47576b2189fde1b0ef3ec06ee7fcbeb24f9fb4ac0a1"
+    },
+    {
+      "path": "editor/src/hosted/document.ts",
+      "sha256": "2c8dc864316db5c6d789485449d94f7e76492a52dc7ccfa81430b6279ae866fd"
+    },
+    {
+      "path": "editor/src/hosted/engineCapabilities.json",
+      "sha256": "27f6454d5ffe27aeeb6ff1f8ba96da317bf6456285f52ba357b2bc3095a34733"
+    },
+    {
+      "path": "editor/src/hosted/index.ts",
+      "sha256": "d8530cd5e0099dc3167fe75447d5e1f91d53d30c7d9d137630c9b338620624ac"
+    },
+    {
+      "path": "editor/src/hosted/mockBridge.ts",
+      "sha256": "2ff7454b8aefe963ec2956c6dba068b272ca087b017f9bdcfee82cbe043f7e62"
+    },
+    {
+      "path": "editor/src/hosted/native.ts",
+      "sha256": "8e817707257dad677252340d7066c85188265111cf83bf0d4fcb335ad9e235a9"
+    },
+    {
+      "path": "editor/src/hosted/package.ts",
+      "sha256": "8941f0cf8acbff01a734a403ed63b8a76f1129423bf3281331597b2a77b3496c"
+    },
+    {
+      "path": "editor/src/hosted/parameters.ts",
+      "sha256": "be6e051739b10ca27612b29ea2285d41d2e68b82f368b950ace9d94d48327f2c"
+    },
+    {
+      "path": "editor/src/hosted/session.ts",
+      "sha256": "91fd529393ae814309b1009bf532e705059e9a7b2a9b5b588f5f07c8a9f68c70"
+    },
+    {
+      "path": "editor/src/hosted/useHostedAudio.ts",
+      "sha256": "b88ebf818bcf27d66567db79d6fe4d8a1bec2d50ebdae87ef1a235a9656c87a0"
+    },
+    {
+      "path": "firmware/fm1/support.json",
+      "sha256": "88c75c70db87affec95dff157cf2de84c28c8e7528c8174db53bc27b6e5c416f"
+    }
+  ]
+}

@@ -4084,7 +4084,12 @@ dependencies = [
  "sha2",
  "tauri",
  "tauri-build",
+ "vira-teia-native",
 ]
+
+[[package]]
+name = "vira-teia-native"
+version = "0.1.0"
 
 [[package]]
 name = "vswhom"

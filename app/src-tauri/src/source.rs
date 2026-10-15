@@ -20,6 +20,9 @@ pub struct Prepared {
     pub filename: String,
     pub frames: usize,
     pub duration_seconds: f64,
+    /// Playable zero in source coordinates; file timestamps remain unchanged.
+    #[serde(default)]
+    pub start_seconds: f64,
     pub peak_frames: usize,
     pub peaks: Vec<[f32; 2]>,
     #[serde(default)]

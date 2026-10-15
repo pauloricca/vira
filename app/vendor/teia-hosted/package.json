@@ -1,0 +1,17 @@
+{
+  "name": "@pauloricca/teia-hosted",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": { "types": "./dist/types/hosted/index.d.ts", "default": "./dist/index.js" },
+    "./editor": { "types": "./dist/types/hosted/HostedNodeEditor.d.ts", "default": "./dist/editor.js" },
+    "./styles.css": "./dist/styles.css",
+    "./themes.css": "./dist/themes.css",
+    "./flow.css": "./dist/flow.css",
+    "./compatibility.json": "./dist/compatibility.json"
+  },
+  "files": ["dist/"],
+  "peerDependencies": { "react": "^19.1.0", "react-dom": "^19.1.0", "@xyflow/react": "^12.8.4", "@xyflow/system": "0.0.77" }
+}

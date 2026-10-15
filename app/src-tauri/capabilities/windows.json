@@ -1,0 +1,1 @@
+{"identifier":"vira-windows","description":"Local Vira windows and editor close coordination","windows":["main","teia-editor-*"],"permissions":["core:default","core:window:allow-destroy"]}

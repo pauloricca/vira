@@ -1,5 +1,39 @@
 # VIRA local app — library and two native decks
 
+The **TEIA** workspace hosts a native stereo master effect and opens the reusable
+Teia graph editor in a separate Tauri window. Add the stereo gain example, load
+it on master, and open its editor. Edits apply live; Save is explicit and
+acknowledged by Vira. Patch files, instance overrides and recovery drafts belong
+to Vira. See [Teia handover](TEIA-HANDOVER.md) for the frozen dependency, supported
+profile, close/save behavior and Docker build instructions.
+The shared native Teia runtime supports filters, envelopes, effects, custom
+waves, sequencers, media, Buffers and resource-free nested bounded repeats. The
+editor uses the Vira theme. Sample/image imports create durable assets. Use
+**Edit with dry master** to repair missing media. Meters/scopes, sample playheads,
+Buffer previews and transient Button/Keys gestures control the existing native
+instance through bridge v2. Explicit Save captures preserved root/group Buffer
+recordings before writing JSON. Reset preserves those recordings in private
+recovery and prepares replacement DSP off the audio thread.
+**Run patch clock with decks stopped** advances sequencers independently.
+Native MIDI input/output and ordered Note On/Off pulses are enabled. Queue
+overflow suspends the effect to dry master; **Reset DSP** resumes. FFT remains
+unsupported. Resource-heavy repeats remain gated pending macOS deadline evidence;
+see the handover for exact bounds and remaining acceptance checks.
+After a package refresh, reopen the rebuilt app and explicitly reload the patch
+so its cached program uses the new snapshot.
+
+In **Settings → Folders**, choose the music and Teia patch directories with the
+native folder picker. Choices persist in
+`~/Library/Application Support/uk.ricca.vira/paths.json` and apply after quitting
+and reopening VIRA. Files are not moved. Keep `assets/` and `buffers/` beside
+patches when moving a library. The preparation service remounts only the selected
+music folder read-only; Docker Desktop must be running and allow access to that
+folder. Different music folders have separate generated indexes/analysis/timing
+caches. The original default library retains its existing cache. `VIRA_APP_DIR`
+can locate `app/compose.yaml` if the development checkout moves. A failed mount
+is reported in the library; startup details are in the app support directory's
+`preparation-start.log`. Refresh retries preparation startup.
+
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
 single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
@@ -69,11 +103,12 @@ SDK when invoking Compose; it is mounted read-only. No host toolchain installs
 are required. This is a local development bundle, without signing or installer
 distribution.
 
-The native backend has one absolute `MUSIC_BIN` constant in
-`src-tauri/src/lib.rs`; launch directory does not change it. Compose mounts this
-repository's `music/` into `/music` read-only and `app/generated/` separately
-read/write. Keep the app in this repository so the mount matches the fixed bin.
-Neither the service nor app modifies source music.
+The native backend uses persisted folder settings, with the original absolute
+`MUSIC_BIN` as its default; launch directory does not change it. Compose mounts
+the selected music folder into `/music` read-only and `app/generated/` separately
+read/write. VIRA verifies the service's folder identity before opening/refreshing
+and reconfigures the mount on a background thread when needed. Neither the
+service nor app modifies source music.
 
 Startup and Refresh scan direct children, using FFprobe to read embedded title,
 artist and duration for MP3 and PCM WAV. Missing title uses the complete filename
@@ -86,7 +121,7 @@ The service publishes port 47831 on **127.0.0.1 only**. The webview can invoke
 `get_audio_state` and `deck_control`; it has no filesystem/shell
 plugins or direct HTTP access. The backend sends requests to fixed service
 endpoints on background threads, validates IDs/schema and verifies an analysis
-ID belongs to a readable library row. It supplies the fixed bin label. Probing
+ID belongs to a readable library row. It supplies the active music folder label. Probing
 is limited to the file protocol, with a 15-second per-file timeout. Concurrent
 scans return a retry message. The native request has a 120-second total timeout;
 very large/problematic bins can exceed it in this initial serial implementation.
@@ -190,6 +225,12 @@ validates the descriptor and streamed PCM checksum, rejecting same-size corrupti
 through webview commands/events.
 
 Each successful load installs only the selected deck, paused at the beginning.
+For tracks with a timing grid, the first beat is playable zero: load, Stop,
+Cue and Home start there, and the deck clock reads 0:00. Seeking, scrubbing,
+master alignment and loops stay between that boundary and the source end.
+A one-bar loop at zero covers the first four beats without the leading gap.
+Waveforms retain source timestamps internally so saved timing references remain
+valid; the overview and elapsed clock show only the playable portion.
 The current source keeps playing while a replacement is prepared; failed loading
 keeps it usable and displays an error. If loads race on one deck, the latest
 request is the only one that may commit. The other deck continues independently.
@@ -204,7 +245,14 @@ separate R3/transport states.
   again to release it, or a different length to switch. IN and OUT mark a manual
   loop and snap to the nearest beat by default when a grid is available; a
   separate Settings option allows exact playhead placement. Both waveforms show
-  the loop bounds.
+  the loop bounds. OUT or the active length releases the loop. On a playing
+  locked deck with SLIP off, release waits for the master's phase to match OUT
+  using Settings → Locked deck start (Bar or Beat), then continues from OUT.
+  It does not advance the resume position while looping. For an OUT point within
+  a bar or beat, the exit waits for that same position within the master's bar
+  or beat. Repeated presses keep the same queued exit. The deck
+  shows “Loop release queued” while it waits. Unlocked and paused releases remain
+  immediate. SLIP still returns immediately to its advancing background playhead.
 - **SLIP** keeps a background playhead moving while a loop repeats. Releasing
   the loop resumes at the background position. It pauses and follows tempo with
   the deck, and stays enabled when another track loads on that deck.
@@ -228,6 +276,18 @@ separate R3/transport states.
   Paused seeking and scrubbing retain tempo lock. Use left/right arrows for
   five-second jumps, or Home/End for the track boundaries; playing keyboard seeks
   preserve phase too. Exact seeks to the end stop playback.
+- **Key** opens a dropdown with the twelve keys in the track's detected major or
+  minor mode. Original is marked in the deck's colour; Best match is marked in the
+  other deck's colour, using that deck's current sounding key. Same-mode matches
+  use the same root; different-mode matches use the relative major/minor. Both
+  marks appear when the original is already the best match. Selecting a key uses
+  the shortest semitone shift (at most six), independently of BPM. The button's
+  `*` marks a changed key; selecting Original resets it. Shifts survive transport,
+  looping and tempo changes, and reset on loading another track. Key selection
+  requires an analysed key, a loaded deck and the running audio engine. Library
+  compatibility indicators follow the shifted keys. Pitch changes use the same
+  5 ms transition/re-prime path as tempo changes; musical listening on macOS is
+  still required to judge transition and vocal quality.
 - **Volume** sets per-deck gain from zero to one. The mix applies 0.45 headroom per
   deck and a final sample clamp; the default deck gain is 0.8.
 - **Crossfader** blends A and B with an equal-power curve: full A at the left,
@@ -237,7 +297,7 @@ separate R3/transport states.
   Channel meters remain before the crossfader; master meters show the resulting mix.
 
 The output is one in-process CPAL/Core Audio stereo stream. A persistent producer
-owns the two native Rubber Band 4.0 R3 voices at unity speed/pitch. It renders
+owns the two native Rubber Band 4.0 R3 voices, initially at unity speed/pitch. It renders
 128-frame chunks into a bounded 1,024-frame SPSC queue, independently of the
 requested 256-frame device buffer. The worker retains the spike's verified macOS
 real-time scheduling, asynchronous Audio Workgroup, and callback-signalled wake
@@ -343,8 +403,8 @@ reload. Applying a grid retains source position, returns to its source tempo,
 clears that deck’s master tempo lock.
 
 Each deck's target BPM is bounded to 0.5–2.0 times its applied source BPM.
-Rubber Band R3 uses duration ratio = source BPM / target BPM, with pitch scale
-one. Unreviewed grids can be auditioned. Tempo changes reset/re-prime R3 at the
+Rubber Band R3 uses duration ratio = source BPM / target BPM, with independent pitch scale
+`2^(semitones / 12)`. Unreviewed grids can be auditioned. Tempo changes reset/re-prime R3 at the
 producer boundary using the current precise source anchor, discard old prepared
 DSP output and crossfade from the last output over 5 ms. This is a short transition,
 not a guarantee that stretched song attacks remain sample-exact.
@@ -356,7 +416,9 @@ their musical timing before relying on alignment. Both decks can lock at once. A
 deck's BPM and manual tempo controls are greyed out. Unlocking preserves its
 current target BPM. Manual deck tempo changes unlock that deck;
 replacing or applying a grid clears only that deck's lock. Pause and Stop leave
-the lock armed. Locking a playing deck seeks to the nearest source position with
+the lock armed. Each deck remembers its lock state across app restarts and restores
+it when a track with a usable timing grid is loaded. Empty decks do not clear saved
+locks. Locking a playing deck seeks to the nearest source position with
 the master's selected beat or bar phase. When Play starts a locked deck while another deck is
 running, the Bar setting (the default) joins the current bar immediately during
 its first beat by seeking to the nearest matching source bar phase. From beat 2 onward,

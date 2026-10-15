@@ -41,6 +41,7 @@ struct Shared {
     loop_starts: [AtomicU64; 2],
     loop_ends: [AtomicU64; 2],
     loop_lengths: [AtomicU64; 2],
+    loop_release_pending: [AtomicBool; 2],
     slip_enabled: [AtomicBool; 2],
     gains: [AtomicU64; 2],
     meter_decks: [AtomicU64; 2],
@@ -50,6 +51,7 @@ struct Shared {
     grid_anchor: [AtomicU64; 2],
     reviewed: [AtomicBool; 2],
     targets: [AtomicU64; 2],
+    pitches: [AtomicU64; 2],
     synced: [AtomicBool; 2],
     launch_pending: [AtomicBool; 2],
     clicks: [AtomicU64; 2],
@@ -105,6 +107,7 @@ impl Shared {
             loop_starts: std::array::from_fn(|_| u64::MAX.into()),
             loop_ends: std::array::from_fn(|_| u64::MAX.into()),
             loop_lengths: std::array::from_fn(|_| 0_f64.to_bits().into()),
+            loop_release_pending: std::array::from_fn(|_| false.into()),
             slip_enabled: std::array::from_fn(|_| false.into()),
             gains: std::array::from_fn(|_| (0.8_f32.to_bits() as u64).into()),
             meter_decks: std::array::from_fn(|_| 0.into()),
@@ -116,6 +119,7 @@ impl Shared {
             grid_anchor: std::array::from_fn(|_| 0.into()),
             reviewed: std::array::from_fn(|_| false.into()),
             targets: std::array::from_fn(|_| 0.into()),
+            pitches: std::array::from_fn(|_| 0.into()),
             synced: std::array::from_fn(|_| false.into()),
             launch_pending: std::array::from_fn(|_| false.into()),
             clicks: std::array::from_fn(|_| 0.into()),
@@ -197,7 +201,11 @@ impl Shared {
                     })
                 }),
                 targets: std::array::from_fn(|d| f64::from_bits(self.targets[d].load(Relaxed))),
+                pitches: std::array::from_fn(|d| f64::from_bits(self.pitches[d].load(Relaxed))),
                 synced: std::array::from_fn(|d| self.synced[d].load(Relaxed)),
+                loop_release_pending: std::array::from_fn(|d| {
+                    self.loop_release_pending[d].load(Relaxed)
+                }),
                 launch_pending: std::array::from_fn(|d| self.launch_pending[d].load(Relaxed)),
                 clicks: std::array::from_fn(
                     |d| f32::from_bits(self.clicks[d].load(Relaxed) as u32),
@@ -281,12 +289,15 @@ mod tests {
         engine.metadata.lock().unwrap()[0]
             .records
             .insert(7, prepared);
-        engine.metadata.lock().unwrap()[0].waveform = Some((7, Waveform {
-            artifact_id: "artifact".into(),
-            fine_peak_frames: 240,
-            fine_peaks: vec![[0.2, 0.1]],
-            fine_features: vec![[0.3, 0.4]],
-        }));
+        engine.metadata.lock().unwrap()[0].waveform = Some((
+            7,
+            Waveform {
+                artifact_id: "artifact".into(),
+                fine_peak_frames: 240,
+                fine_peaks: vec![[0.2, 0.1]],
+                fine_features: vec![[0.3, 0.4]],
+            },
+        ));
         engine.shared.generations[0].store(7, Relaxed);
         engine.shared.loop_starts[0].store(12000, Relaxed);
         engine.shared.loop_ends[0].store(24000, Relaxed);
@@ -296,8 +307,14 @@ mod tests {
         let compact = engine.state_for_frontend(Some([7, 0]));
         assert_eq!(full["decks"][0]["track"]["title"], "Test song");
         assert_eq!(compact["decks"][0]["track_unchanged"], true);
-        assert!(full["decks"][0]["track"]["fine_peaks"].as_array().unwrap().is_empty());
-        let peak = serde_json::to_value(engine.waveform_for_generation(0, 7).unwrap()).unwrap()["fine_peaks"][0][0].as_f64().unwrap();
+        assert!(full["decks"][0]["track"]["fine_peaks"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let peak = serde_json::to_value(engine.waveform_for_generation(0, 7).unwrap()).unwrap()
+            ["fine_peaks"][0][0]
+            .as_f64()
+            .unwrap();
         assert!((peak - 0.2).abs() < 1e-6);
         assert_eq!(compact["decks"][0]["loop_in_seconds"], 0.25);
         assert_eq!(compact["decks"][0]["loop_out_seconds"], 0.5);
@@ -374,6 +391,7 @@ pub struct DeckState {
     pub loop_in_seconds: Option<f64>,
     pub loop_out_seconds: Option<f64>,
     pub loop_length_beats: Option<f64>,
+    pub loop_release_pending: bool,
     pub slip_enabled: bool,
     pub headphone_cue: bool,
     pub gain: f32,
@@ -384,6 +402,7 @@ pub struct DeckState {
     pub requested_generation: u64,
     pub grid: Option<crate::timing::Grid>,
     pub target_bpm: f64,
+    pub pitch_semitones: f64,
     pub speed: f64,
     pub synced: bool,
     pub launch_pending: bool,
@@ -393,6 +412,9 @@ pub struct DeckState {
 }
 
 pub struct EngineHandle {
+    pub teia: Arc<crate::teia::Host>,
+    pub patches: Vec<Arc<crate::teia::Host>>,
+    pub patch_transaction: Mutex<()>,
     graph: Mutex<crate::routing::Graph>,
     shared: Arc<Shared>,
     commands: Mutex<rtrb::Producer<Command>>,
@@ -403,11 +425,52 @@ pub struct EngineHandle {
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
+        let mut patches = Vec::new();
+        let mut drivers = Vec::new();
+        for slot in 0..crate::routing::PATCH_LIMIT {
+            let (host, mut driver) =
+                crate::teia::Host::new_slot(crate::teia::Host::default_root(), slot);
+            driver.silent_bypass = true;
+            patches.push(host);
+            drivers.push(driver);
+        }
+        let teia = patches[0].clone();
+        let saved_graph =
+            std::fs::read(crate::teia::Host::default_root().join(".vira-routing.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<crate::routing::Graph>(&bytes).ok())
+                .filter(|g| g.compile().is_ok());
+        let mut graph = saved_graph.clone().unwrap_or_default();
+        if saved_graph.is_none() {
+            for (slot, host) in patches.iter().enumerate() {
+                let snapshot = host.snapshot();
+                if let Some(name) = snapshot["record"]["name"].as_str() {
+                    graph.add_patch(
+                        slot,
+                        name.trim_end_matches(".json").into(),
+                        crate::routing::patch_audio_inputs(&snapshot["record"]["document"]),
+                    );
+                }
+            }
+        }
+        for (slot, host) in patches.iter().enumerate() {
+            let state = host.snapshot();
+            if !state["record"].is_null() {
+                graph.sync_patch_inputs(
+                    slot,
+                    crate::routing::patch_audio_inputs(&state["record"]["installed_document"]),
+                );
+            }
+        }
+        let initial_graph = graph.clone();
         let shared = Arc::new(Shared::new());
         let (tx, rx) = rtrb::RingBuffer::new(32);
         let wake = Wake::new().map(Arc::new);
         let handle = Arc::new(Self {
-            graph: Mutex::new(crate::routing::Graph::default()),
+            teia,
+            patches,
+            patch_transaction: Mutex::new(()),
+            graph: Mutex::new(graph),
             shared: shared.clone(),
             commands: Mutex::new(tx),
             wake: wake.as_ref().ok().cloned(),
@@ -419,13 +482,14 @@ impl EngineHandle {
             Ok(wake) => {
                 #[cfg(target_os = "macos")]
                 std::thread::spawn(move || {
-                    if let Err(e) = native_output(shared.clone(), rx, wake) {
+                    if let Err(e) = native_output(shared.clone(), rx, wake, drivers, initial_graph)
+                    {
                         shared.fail(format!("Native output failed: {e:#}"));
                     }
                 });
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let _ = (rx, wake);
+                    let _ = (rx, wake, drivers, initial_graph);
                     shared.fail("Native output requires macOS".into());
                 }
             }
@@ -439,12 +503,73 @@ impl EngineHandle {
     pub fn routing_graph(&self) -> crate::routing::Graph {
         self.graph.lock().unwrap().clone()
     }
+    pub fn sync_patch_routing(&self, slot: usize) -> Result<Option<crate::routing::Graph>> {
+        let state = self.patches[slot].snapshot();
+        let mut graph = self.routing_graph();
+        let before = graph.clone();
+        graph.sync_patch_inputs(
+            slot,
+            crate::routing::patch_audio_inputs(&state["record"]["installed_document"]),
+        );
+        if graph == before {
+            return Ok(None);
+        }
+        self.set_routing_graph(graph.clone())?;
+        Ok(Some(graph))
+    }
+    pub fn apply_session_routing(&self, mut graph: crate::routing::Graph) -> Result<()> {
+        let _transaction = self.patch_transaction.lock().unwrap();
+        let previous = self.routing_graph();
+        let removed: Vec<_> = previous
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.kind == crate::routing::Kind::Patch
+                    && !graph.nodes.iter().any(|next| next.id == n.id)
+            })
+            .filter_map(|n| crate::routing::patch_slot(&n.id))
+            .collect();
+        for &slot in &removed {
+            let state = self.patches[slot].snapshot();
+            anyhow::ensure!(
+                state["editorOpen"] == false,
+                "Close the patch editor before removing its routing node"
+            );
+        }
+        for node in &graph.nodes {
+            if node.kind == crate::routing::Kind::Patch {
+                let slot = crate::routing::patch_slot(&node.id)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown patch"))?;
+                anyhow::ensure!(
+                    !self.patches[slot].snapshot()["record"].is_null(),
+                    "Patch is no longer in this session"
+                );
+            }
+        }
+        for slot in 0..self.patches.len() {
+            let state = self.patches[slot].snapshot();
+            graph.sync_patch_inputs(
+                slot,
+                crate::routing::patch_audio_inputs(&state["record"]["installed_document"]),
+            );
+        }
+        self.set_routing_graph(graph)?;
+        for slot in removed {
+            self.patches[slot].control("remove", None, None, None)?;
+        }
+        Ok(())
+    }
     pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
         let plan = graph.compile()?;
         let mut current = self.graph.lock().unwrap();
         if !graph.same_audio(&current) {
             self.send(Command::Routing(plan))?;
         }
+        let root = crate::teia::Host::default_root();
+        std::fs::create_dir_all(&root)?;
+        let temporary = root.join(".vira-routing.tmp");
+        std::fs::write(&temporary, serde_json::to_vec(&graph)?)?;
+        std::fs::rename(temporary, root.join(".vira-routing.json"))?;
         *current = graph;
         Ok(())
     }
@@ -570,6 +695,10 @@ impl EngineHandle {
         if !value.is_null() {
             let grid: crate::timing::Grid = serde_json::from_value(value.clone())?;
             voice.apply_grid(grid.validate(prepared.duration_seconds)?);
+            // The first beat is playable zero. Keep source coordinates for timing
+            // edits and waveforms, but never play or seek into the leading gap.
+            voice.set_start(grid.downbeat_seconds);
+            prepared.start_seconds = voice.seconds();
         }
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
@@ -755,6 +884,14 @@ impl EngineHandle {
             "click_panel" => {
                 Command::ClickPanel(deck, generations[deck], value.unwrap_or(0.) != 0.)
             }
+            "pitch" => {
+                let shift = value.ok_or_else(|| anyhow::anyhow!("Pitch requires semitones"))?;
+                ensure!(
+                    shift.is_finite() && (-6.0..=6.0).contains(&shift) && shift.fract() == 0.,
+                    "Pitch must be a whole semitone between -6 and 6"
+                );
+                Command::Pitch(deck, generations[deck], shift)
+            }
             "tempo" => {
                 let target = value.ok_or_else(|| anyhow::anyhow!("Tempo requires target BPM"))?;
                 snapshot.grids[deck]
@@ -903,6 +1040,7 @@ impl EngineHandle {
                     loop_in_seconds: snapshot.loop_starts[d].map(|p| p as f64 / RATE as f64),
                     loop_out_seconds: snapshot.loop_ends[d].map(|p| p as f64 / RATE as f64),
                     loop_length_beats: snapshot.loop_lengths[d],
+                    loop_release_pending: snapshot.loop_release_pending[d],
                     slip_enabled: snapshot.slip_enabled[d],
                     headphone_cue: snapshot.headphone_cue[d],
                     gain: gains[d],
@@ -913,6 +1051,7 @@ impl EngineHandle {
                     requested_generation: requested,
                     grid: snapshot.grids[d],
                     target_bpm: snapshot.targets[d],
+                    pitch_semitones: snapshot.pitches[d],
                     speed: snapshot.grids[d].map_or(1., |g| snapshot.targets[d] / g.bpm),
                     synced: snapshot.synced[d],
                     launch_pending: snapshot.launch_pending[d],
@@ -938,7 +1077,7 @@ impl EngineHandle {
         let routes = self.shared.routes.lock().unwrap().clone();
         json!({"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
-            "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":0.0,
+            "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
                 "queue_capacity_ms":QUEUE_FRAMES as f64/48.,"realtime_policy_verified":self.shared.realtime.load(Acquire),
                 "realtime_policy_at_exit":self.shared.realtime_at_end.load(Acquire),
@@ -967,6 +1106,8 @@ fn native_output(
     shared: Arc<Shared>,
     mut commands: rtrb::Consumer<Command>,
     wake: Arc<Wake>,
+    mut drivers: Vec<crate::teia_audio::Driver>,
+    initial_graph: crate::routing::Graph,
 ) -> Result<()> {
     use crate::scheduling::Realtime;
     use cpal::traits::{DeviceTrait, StreamTrait};
@@ -1013,8 +1154,16 @@ fn native_output(
     let worker_shared = shared.clone();
     let worker_wake = wake.clone();
     let worker_finished = finished.clone();
+    // Initialize timebase conversion off both real-time threads.
+    let _ = unsafe { crate::teia_midi::now_ns() };
+    let teia_midi_clocks: Vec<_> = drivers.iter().map(|d| d.midi.host.clone()).collect();
+    let initial_plan = initial_graph.compile()?;
     let worker = thread::spawn(move || -> Result<()> {
+        for driver in &drivers {
+            driver.telemetry.alive.store(true, Release);
+        }
         let mut decks = Decks::new();
+        drop(decks.command(Command::Routing(initial_plan), [0, 0]));
         let mut block = [Frame::default(); PRODUCER_FRAMES];
         let rt = Realtime::new(PRODUCER_FRAMES as u32)?;
         let mut ready = false;
@@ -1050,6 +1199,9 @@ fn native_output(
                     );
                 }
                 let start = Instant::now();
+                for driver in &mut drivers {
+                    driver.commands();
+                }
                 // At most one command per producer chunk limits bursts of accepted
                 // resets. No command waits and no old source/DSP drops on this path.
                 if retire_tx.slots() > 0 {
@@ -1063,9 +1215,7 @@ fn native_output(
                         }
                     }
                 }
-                for frame in &mut block {
-                    *frame = decks.next()?;
-                }
+                decks.next_block(&mut block, &mut drivers)?;
                 let elapsed = start.elapsed().as_nanos() as u64;
                 worker_shared.worker_max_ns.fetch_max(elapsed, Relaxed);
                 if elapsed > PRODUCER_FRAMES as u64 * 1_000_000_000 / 48000 {
@@ -1088,6 +1238,10 @@ fn native_output(
             .realtime_at_end
             .store(rt.is_realtime(), Release);
         drop(rt); // Restore standard policy before source/DSP destruction or error reports.
+        for driver in &drivers {
+            driver.telemetry.alive.store(false, Release);
+        }
+        drop(drivers);
         drop(decks);
         drop(commands);
         worker_finished.store(true, Release);
@@ -1109,9 +1263,19 @@ fn native_output(
         let error = shared.clone();
         let cb_wake = wake.clone();
         let callback_output = output.clone();
+        let midi_clocks = teia_midi_clocks.clone();
         let stream = device.build_output_stream(
             &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                let timing = info.timestamp();
+                let playback_ns = unsafe { crate::teia_midi::now_ns() }.saturating_add(
+                    timing
+                        .playback
+                        .duration_since(&timing.callback)
+                        .unwrap_or_default()
+                        .as_nanos() as u64,
+                );
+                let mut anchored = false;
                 let began = Instant::now();
                 // A replaced stream is dropped before its successor starts, so
                 // this lock is uncontended during normal playback.
@@ -1128,9 +1292,18 @@ fn native_output(
                 let mut master_peaks = [0_f32; 2];
                 let mut cue = callback_cue.try_lock().ok();
                 data.fill(0.);
-                for samples in data.chunks_exact_mut(channels) {
+                for (index, samples) in data.chunks_exact_mut(channels).enumerate() {
                     match state.consumer.pop() {
                         Ok(frame) => {
+                            if !anchored {
+                                for midi_clock in &midi_clocks {
+                                    midi_clock.anchor(
+                                        frame.output_frame,
+                                        playback_ns + index as u64 * 1_000_000_000 / 48000,
+                                    );
+                                }
+                                anchored = true;
+                            }
                             samples[..2].copy_from_slice(&frame.samples);
                             if let Some(cue) = cue.as_mut() {
                                 let _ = cue.push(frame.cue_samples);
@@ -1172,6 +1345,7 @@ fn native_output(
                     cb.loop_starts[d].store(last.loop_starts[d].unwrap_or(u64::MAX), Relaxed);
                     cb.loop_ends[d].store(last.loop_ends[d].unwrap_or(u64::MAX), Relaxed);
                     cb.loop_lengths[d].store(last.loop_lengths[d].unwrap_or(0.).to_bits(), Relaxed);
+                    cb.loop_release_pending[d].store(last.loop_release_pending[d], Relaxed);
                     cb.slip_enabled[d].store(last.slip_enabled[d], Relaxed);
                     cb.headphone_cue[d].store(last.headphone_cue[d], Relaxed);
                     cb.gains[d].store(last.gains[d].to_bits() as u64, Relaxed);
@@ -1195,6 +1369,7 @@ fn native_output(
                     );
                     cb.reviewed[d].store(last.grids[d].is_some_and(|g| g.reviewed), Relaxed);
                     cb.targets[d].store(last.targets[d].to_bits(), Relaxed);
+                    cb.pitches[d].store(last.pitches[d].to_bits(), Relaxed);
                     cb.synced[d].store(last.synced[d], Relaxed);
                     cb.launch_pending[d].store(last.launch_pending[d], Relaxed);
                     cb.clicks[d].store(last.clicks[d].to_bits() as u64, Relaxed);

@@ -19,6 +19,12 @@ pub enum Kind {
     Compressor,
     Oscillator,
     RingModulation,
+    Patch,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PatchInput {
+    pub id: String,
+    pub label: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Node {
@@ -29,16 +35,24 @@ pub struct Node {
     pub x: f32,
     pub y: f32,
     pub value: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch_inputs: Option<Vec<PatchInput>>,
 }
 impl Node {
-    pub fn inputs(&self) -> &'static [&'static str] {
-        match self.kind {
+    pub fn inputs(&self) -> Vec<&str> {
+        if self.kind == Kind::Patch {
+            if let Some(ports) = &self.patch_inputs {
+                return ports.iter().map(|p| p.id.as_str()).collect();
+            }
+        }
+        let ports: &[&str] = match self.kind {
             Kind::Player | Kind::Oscillator => &[],
             Kind::Crossfader | Kind::Cue => &["A", "B"],
             Kind::Compressor => &["audio", "sidechain"],
             Kind::RingModulation => &["audio", "carrier"],
             _ => &["audio"],
-        }
+        };
+        ports.to_vec()
     }
     pub fn outputs(&self) -> &'static [&'static str] {
         match self.kind {
@@ -86,6 +100,7 @@ impl Default for Graph {
             ];
             for (i, (name, kind)) in stages.iter().enumerate() {
                 nodes.push(Node {
+                    patch_inputs: None,
                     id: format!("{prefix}-{name}"),
                     kind: *kind,
                     deck: Some(d),
@@ -120,6 +135,7 @@ impl Default for Graph {
             ("headphones", Kind::Output, "Headphone output", 1160., 350.),
         ] {
             nodes.push(Node {
+                patch_inputs: None,
                 id: id.into(),
                 kind,
                 deck: None,
@@ -155,6 +171,9 @@ pub struct Plan {
     master: usize,
     headphones: usize,
     faders: [usize; 2],
+    block_outputs: Box<[[[[f32; 2]; 2]; crate::decks::PRODUCER_FRAMES]]>,
+    routed_inputs: Box<[[[f32; crate::decks::PRODUCER_FRAMES]; 2]]>,
+    patch_frames: Box<[crate::decks::Frame; crate::decks::PRODUCER_FRAMES]>,
 }
 impl Graph {
     pub fn same_audio(&self, other: &Self) -> bool {
@@ -162,7 +181,11 @@ impl Graph {
             && self.wires.len() == other.wires.len()
             && self.nodes.iter().all(|n| {
                 other.nodes.iter().any(|o| {
-                    n.id == o.id && n.kind == o.kind && n.deck == o.deck && n.value == o.value
+                    n.id == o.id
+                        && n.kind == o.kind
+                        && n.deck == o.deck
+                        && n.value == o.value
+                        && n.patch_inputs == o.patch_inputs
                 })
             })
             && self.wires.iter().all(|w| other.wires.contains(w))
@@ -184,6 +207,14 @@ impl Graph {
                 "Invalid node"
             );
             ensure!(
+                n.patch_inputs.as_ref().is_none_or(|p| p.len() <= 32
+                    && p.iter().all(|port| !port.id.is_empty())
+                    && p.iter()
+                        .enumerate()
+                        .all(|(i, port)| !p[..i].iter().any(|old| old.id == port.id))),
+                "Invalid patch input ports (maximum 32)"
+            );
+            ensure!(
                 !self.nodes[..i].iter().any(|other| other.id == n.id),
                 "Duplicate node ID"
             );
@@ -198,12 +229,17 @@ impl Graph {
                     || (n.deck.is_none()
                         && matches!(
                             n.kind,
-                            Kind::Gain | Kind::Compressor | Kind::Oscillator | Kind::RingModulation
+                            Kind::Gain
+                                | Kind::Compressor
+                                | Kind::Oscillator
+                                | Kind::RingModulation
+                                | Kind::Patch
                         )),
                 "Unsupported processing node"
             );
             ensure!(
                 match n.kind {
+                    Kind::Patch => patch_slot(&n.id).is_some(),
                     Kind::Gain => (0. ..=2.).contains(&n.value),
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
                     Kind::Oscillator => (20. ..=2000.).contains(&n.value),
@@ -288,6 +324,13 @@ impl Graph {
         Ok(Box::new(Plan {
             conventional,
             steps,
+            routed_inputs: vec![[[0.; crate::decks::PRODUCER_FRAMES]; 2]; 32].into_boxed_slice(),
+            block_outputs: vec![[[[0.; 2]; 2]; crate::decks::PRODUCER_FRAMES]; 33]
+                .into_boxed_slice(),
+            patch_frames: vec![crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
             // Slot 32 is immutable silence when a built-in meter/output is removed.
             master: index("master").unwrap_or(32),
             headphones: index("headphones").unwrap_or(32),
@@ -323,60 +366,13 @@ impl Plan {
     ) -> ([[f32; 2]; 2], [[f32; 2]; 2]) {
         let mut outputs = [[[0.; 2]; 2]; 33];
         for step in &mut self.steps {
-            let mut input = [[0.; 2]; 2];
+            let mut input = [[0.; 2]; 32];
             for link in &step.links {
                 for c in 0..2 {
                     input[link.port][c] += outputs[link.source][link.output][c] * link.gain;
                 }
             }
-            let d = step.node.deck.unwrap_or(0);
-            let value = match step.node.kind {
-                Kind::Player => players[d],
-                Kind::Trim | Kind::Eq | Kind::Filter => {
-                    if step.dsp.settings != settings[d] {
-                        step.dsp.set(settings[d]);
-                    }
-                    step.dsp.process_stage(
-                        input[0],
-                        match step.node.kind {
-                            Kind::Trim => 0,
-                            Kind::Eq => 1,
-                            _ => 2,
-                        },
-                    )
-                }
-                Kind::Fader => input[0].map(|v| v * gains[d]),
-                Kind::Crossfader => std::array::from_fn(|c| {
-                    0.45 * (input[0][c] * cross[0] + input[1][c] * cross[1])
-                }),
-                Kind::Cue => {
-                    std::array::from_fn(|c| 0.45 * (input[0][c] * cue[0] + input[1][c] * cue[1]))
-                }
-                Kind::Output => input[0],
-                Kind::Gain => input[0].map(|v| v * step.node.value),
-                Kind::Compressor => {
-                    let detector = if step.external_detector {
-                        input[1]
-                    } else {
-                        input[0]
-                    };
-                    let peak = detector[0].abs().max(detector[1].abs());
-                    step.envelope +=
-                        (peak - step.envelope) * if peak > step.envelope { 0.02 } else { 0.0004 };
-                    let gain = if step.envelope > step.node.value {
-                        (step.node.value / step.envelope).powf(0.75)
-                    } else {
-                        1.
-                    };
-                    input[0].map(|v| v * gain)
-                }
-                Kind::RingModulation => std::array::from_fn(|c| input[0][c] * input[1][c]),
-                Kind::Oscillator => {
-                    step.phase = (step.phase + step.node.value / 48000.).fract();
-                    let v = (step.phase * std::f32::consts::TAU).sin() * 0.1;
-                    [v, v]
-                }
-            };
+            let value = step.process(input, players, settings, gains, cross, cue);
             outputs[step.index][1] = if step.node.kind == Kind::Oscillator {
                 [(step.phase * std::f32::consts::TAU).cos() * 0.1; 2]
             } else {
@@ -414,6 +410,7 @@ mod tests {
     fn branching_sends_and_sidechain() {
         let mut g = Graph::default();
         g.nodes.push(Node {
+            patch_inputs: None,
             id: "comp".into(),
             kind: Kind::Compressor,
             deck: None,
@@ -457,6 +454,7 @@ mod tests {
         let mut graph = Graph::default();
         // An unused processor forces the general schedule without changing its signal chain.
         graph.nodes.push(Node {
+            patch_inputs: None,
             id: "unused".into(),
             kind: Kind::Gain,
             deck: None,
@@ -496,6 +494,7 @@ mod tests {
         let mut graph = Graph::default();
         graph.wires.clear();
         graph.nodes.push(Node {
+            patch_inputs: None,
             id: "comp".into(),
             kind: Kind::Compressor,
             deck: None,
@@ -616,5 +615,352 @@ mod tests {
             [1.; 2],
         );
         assert_eq!(out, [[0.; 2]; 2]);
+    }
+}
+
+pub const PATCH_LIMIT: usize = 16;
+pub fn patch_slot(id: &str) -> Option<usize> {
+    id.strip_prefix("patch-")?
+        .parse::<usize>()
+        .ok()
+        .filter(|i| *i < PATCH_LIMIT && format!("patch-{i}") == id)
+}
+impl Step {
+    fn process(
+        &mut self,
+        input: [[f32; 2]; 32],
+        players: [[f32; 2]; 2],
+        settings: [Settings; 2],
+        gains: [f32; 2],
+        cross: [f32; 2],
+        cue: [f32; 2],
+    ) -> [f32; 2] {
+        let d = self.node.deck.unwrap_or(0);
+        match self.node.kind {
+            Kind::Player => players[d],
+            Kind::Trim | Kind::Eq | Kind::Filter => {
+                if self.dsp.settings != settings[d] {
+                    self.dsp.set(settings[d]);
+                }
+                self.dsp.process_stage(
+                    input[0],
+                    match self.node.kind {
+                        Kind::Trim => 0,
+                        Kind::Eq => 1,
+                        _ => 2,
+                    },
+                )
+            }
+            Kind::Fader => input[0].map(|v| v * gains[d]),
+            Kind::Crossfader => {
+                std::array::from_fn(|c| 0.45 * (input[0][c] * cross[0] + input[1][c] * cross[1]))
+            }
+            Kind::Cue => {
+                std::array::from_fn(|c| 0.45 * (input[0][c] * cue[0] + input[1][c] * cue[1]))
+            }
+            Kind::Output | Kind::Patch => input[0],
+            Kind::Gain => input[0].map(|v| v * self.node.value),
+            Kind::Compressor => {
+                let detector = if self.external_detector {
+                    input[1]
+                } else {
+                    input[0]
+                };
+                let peak = detector[0].abs().max(detector[1].abs());
+                self.envelope +=
+                    (peak - self.envelope) * if peak > self.envelope { 0.02 } else { 0.0004 };
+                let gain = if self.envelope > self.node.value {
+                    (self.node.value / self.envelope).powf(0.75)
+                } else {
+                    1.
+                };
+                input[0].map(|v| v * gain)
+            }
+            Kind::RingModulation => std::array::from_fn(|c| input[0][c] * input[1][c]),
+            Kind::Oscillator => {
+                self.phase = (self.phase + self.node.value / 48000.).fract();
+                let v = (self.phase * std::f32::consts::TAU).sin() * 0.1;
+                [v, v]
+            }
+        }
+    }
+}
+impl Graph {
+    pub fn remove_patch(&mut self, slot: usize) {
+        let id = format!("patch-{slot}");
+        self.nodes.retain(|node| node.id != id);
+        self.wires.retain(|wire| wire.from != id && wire.to != id);
+    }
+    pub fn add_patch(&mut self, slot: usize, label: String, ports: Vec<PatchInput>) {
+        let id = format!("patch-{slot}");
+        if self.nodes.iter().any(|n| n.id == id) {
+            return;
+        }
+        self.nodes.push(Node {
+            patch_inputs: Some(Vec::new()),
+            id: id.clone(),
+            kind: Kind::Patch,
+            deck: None,
+            label,
+            x: 800. + (slot % 4) as f32 * 180.,
+            y: 500. + (slot / 4) as f32 * 95.,
+            value: 1.,
+        });
+        self.sync_patch_inputs(slot, ports);
+        if self.nodes.iter().any(|n| n.id == "master") {
+            self.wires.push(Wire {
+                from: id,
+                to: "master".into(),
+                output: "audio".into(),
+                input: "audio".into(),
+                gain: 1.,
+            });
+        }
+    }
+    pub fn sync_patch_inputs(&mut self, slot: usize, ports: Vec<PatchInput>) {
+        let id = format!("patch-{slot}");
+        let Some(node) = self
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id && n.kind == Kind::Patch)
+        else {
+            return;
+        };
+        let old = node.patch_inputs.clone().unwrap_or_default();
+        if node.patch_inputs.is_none() {
+            if let Some(first) = ports.first() {
+                for wire in &mut self.wires {
+                    if wire.to == id && wire.input == "audio" {
+                        wire.input = first.id.clone();
+                    }
+                }
+            }
+        }
+        node.patch_inputs = Some(ports.clone());
+        self.wires
+            .retain(|w| w.to != id || ports.iter().any(|p| p.id == w.input));
+        for port in &ports {
+            if !old.iter().any(|p| p.id == port.id)
+                && self.nodes.iter().any(|n| n.id == "mix")
+                && !self
+                    .wires
+                    .iter()
+                    .any(|w| w.from == "mix" && w.to == id && w.input == port.id)
+            {
+                self.wires.push(Wire {
+                    from: "mix".into(),
+                    to: id.clone(),
+                    output: "audio".into(),
+                    input: port.id.clone(),
+                    gain: 1.,
+                });
+            }
+        }
+    }
+}
+impl Plan {
+    pub fn has_patch(&self, slot: usize) -> bool {
+        self.steps
+            .iter()
+            .any(|s| s.node.kind == Kind::Patch && patch_slot(&s.node.id) == Some(slot))
+    }
+    pub fn render_block(
+        &mut self,
+        block: &mut [crate::decks::Frame; crate::decks::PRODUCER_FRAMES],
+        drivers: &mut [crate::teia_audio::Driver],
+    ) {
+        use crate::decks::{Frame, PRODUCER_FRAMES};
+        let outputs = &mut self.block_outputs;
+        outputs.fill([[[0.; 2]; 2]; PRODUCER_FRAMES]);
+        let patch = &mut self.patch_frames;
+        let routed_inputs = &mut self.routed_inputs;
+        for step in &mut self.steps {
+            if step.node.kind == Kind::Patch {
+                routed_inputs.fill([[0.; PRODUCER_FRAMES]; 2]);
+            }
+            for (i, frame) in block.iter().enumerate() {
+                let mut input = [[0.; 2]; 32];
+                for link in &step.links {
+                    for c in 0..2 {
+                        input[link.port][c] += outputs[link.source][i][link.output][c] * link.gain;
+                    }
+                }
+                let value = step.process(
+                    input,
+                    frame.routing_players,
+                    frame.mixer,
+                    frame.gains,
+                    frame.routing_cross,
+                    frame.routing_cue,
+                );
+                outputs[step.index][i][0] = value.map(|v| if v.is_finite() { v } else { 0. });
+                outputs[step.index][i][1] = if step.node.kind == Kind::Oscillator {
+                    [(step.phase * std::f32::consts::TAU).cos() * 0.1; 2]
+                } else {
+                    input[0]
+                };
+                if step.node.kind == Kind::Patch {
+                    for port in 0..step.node.patch_inputs.as_ref().map_or(1, Vec::len) {
+                        for c in 0..2 {
+                            routed_inputs[port][c][i] = input[port][c];
+                        }
+                    }
+                    patch[i] = Frame {
+                        samples: input[0],
+                        ..*frame
+                    };
+                }
+            }
+            if step.node.kind == Kind::Patch {
+                if let Some(driver) =
+                    patch_slot(&step.node.id).and_then(|slot| drivers.get_mut(slot))
+                {
+                    driver.process_routed(
+                        patch,
+                        &routed_inputs[..step.node.patch_inputs.as_ref().map_or(1, Vec::len)],
+                    );
+                    for i in 0..PRODUCER_FRAMES {
+                        outputs[step.index][i][0] = patch[i].samples;
+                    }
+                }
+            }
+        }
+        for (i, frame) in block.iter_mut().enumerate() {
+            frame.samples = outputs[self.master][i][0];
+            frame.cue_samples = outputs[self.headphones][i][0];
+            frame.deck_samples = [outputs[self.faders[0]][i][0], outputs[self.faders[1]][i][0]];
+        }
+    }
+}
+
+/// Stable node identities also cover AudioInput nodes nested in Groups.
+pub fn patch_audio_inputs(document: &serde_json::Value) -> Vec<PatchInput> {
+    let mut nodes = Vec::new();
+    crate::teia_bridge::nodes(document, "", &mut nodes);
+    let mut ports: Vec<_> = nodes
+        .into_iter()
+        .filter(|(_, node)| node["type"] == "AudioInput")
+        .map(|(id, node)| PatchInput {
+            label: node["customLabel"].as_str().unwrap_or(&id).to_string(),
+            id,
+        })
+        .collect();
+    ports.sort_by(|a, b| a.id.cmp(&b.id));
+    ports
+}
+pub fn patch_has_audio_input(document: &serde_json::Value) -> bool {
+    !patch_audio_inputs(document).is_empty()
+}
+
+#[cfg(test)]
+mod patch_input_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn live_input_changes_preserve_existing_routes_and_only_default_new_ports() {
+        let port = |id: &str| PatchInput {
+            id: id.into(),
+            label: id.into(),
+        };
+        let mut graph = Graph::default();
+        graph.add_patch(0, "Patch".into(), vec![]);
+        assert!(graph.nodes.last().unwrap().inputs().is_empty());
+        graph.sync_patch_inputs(0, vec![port("one"), port("two")]);
+        assert_eq!(graph.nodes.last().unwrap().inputs(), vec!["one", "two"]);
+        assert_eq!(graph.wires.iter().filter(|w| w.to == "patch-0").count(), 2);
+        graph
+            .wires
+            .retain(|w| !(w.to == "patch-0" && w.input == "one"));
+        graph.sync_patch_inputs(0, vec![port("one"), port("two"), port("three")]);
+        assert!(!graph
+            .wires
+            .iter()
+            .any(|w| w.to == "patch-0" && w.input == "one"));
+        assert!(graph
+            .wires
+            .iter()
+            .any(|w| w.from == "mix" && w.to == "patch-0" && w.input == "three"));
+        graph.sync_patch_inputs(0, vec![port("two")]);
+        assert_eq!(graph.nodes.last().unwrap().inputs(), vec!["two"]);
+        assert!(graph
+            .wires
+            .iter()
+            .filter(|w| w.to == "patch-0")
+            .all(|w| w.input == "two"));
+        graph.sync_patch_inputs(0, vec![]);
+        assert!(graph.nodes.last().unwrap().inputs().is_empty());
+        assert!(!graph.wires.iter().any(|w| w.to == "patch-0"));
+        assert!(graph.compile().is_ok());
+    }
+    #[test]
+    fn removing_a_patch_removes_its_node_and_all_its_connections_only() {
+        let mut graph = Graph::default();
+        graph.add_patch(
+            1,
+            "Keep".into(),
+            vec![PatchInput {
+                id: "in".into(),
+                label: "in".into(),
+            }],
+        );
+        let kept = graph.clone();
+        graph.add_patch(
+            0,
+            "Remove".into(),
+            vec![PatchInput {
+                id: "in".into(),
+                label: "in".into(),
+            }],
+        );
+        graph.wires.push(Wire {
+            from: "patch-0".into(),
+            to: "patch-1".into(),
+            input: "audio".into(),
+            output: "audio".into(),
+            gain: 1.,
+        });
+        graph.remove_patch(0);
+        assert_eq!(graph, kept);
+        assert!(graph.compile().is_ok());
+        graph.add_patch(0, "Add again".into(), vec![]);
+        assert!(!graph.wires.iter().any(|w| w.to == "patch-0"));
+        assert!(graph.compile().is_ok());
+    }
+    #[test]
+    fn only_patches_with_an_audio_input_receive_the_default_mix_send() {
+        for (document, expected_input) in [
+            (
+                json!({"nodes":[{"id":"in","type":"AudioInput"},{"type":"AudioOut"}]}),
+                true,
+            ),
+            (
+                json!({"nodes":[{"id":"group","type":"Group","subpatch":{"nodes":[{"id":"in","type":"AudioInput"}]}}]}),
+                true,
+            ),
+            (
+                json!({"nodes":[{"type":"SineOsc"},{"type":"AudioOut"}]}),
+                false,
+            ),
+        ] {
+            let input = patch_has_audio_input(&document);
+            assert_eq!(input, expected_input);
+            let mut graph = Graph::default();
+            let original_wires = graph.wires.clone();
+            graph.add_patch(0, "Patch".into(), patch_audio_inputs(&document));
+            assert_eq!(
+                graph
+                    .wires
+                    .iter()
+                    .any(|w| w.from == "mix" && w.to == "patch-0"),
+                input
+            );
+            assert!(graph
+                .wires
+                .iter()
+                .any(|w| w.from == "patch-0" && w.to == "master"));
+            assert!(original_wires.iter().all(|w| graph.wires.contains(w)));
+            assert!(graph.compile().is_ok());
+        }
+        assert!(!patch_has_audio_input(&json!({"nodes":[]})));
     }
 }

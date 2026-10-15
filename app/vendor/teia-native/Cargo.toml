@@ -1,0 +1,15 @@
+# Vira's static-library build adapter. Teia's frozen source is unchanged.
+[package]
+name = "vira-teia-native"
+version = "0.1.0"
+edition = "2021"
+[lib]
+name = "teia_kernel"
+path = "lib.rs"
+crate-type = ["rlib"]
+[features]
+parallel = []
+
+[[test]]
+name = "hosted_conformance"
+path = "../teia-review/hosted-native-tests.rs"
