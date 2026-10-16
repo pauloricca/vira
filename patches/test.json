@@ -1,0 +1,54 @@
+{
+  "links": [
+    {
+      "from": {
+        "node": "input",
+        "port": "left"
+      },
+      "mode": "set",
+      "to": {
+        "node": "output",
+        "port": "left"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "input",
+        "port": "right"
+      },
+      "mode": "set",
+      "to": {
+        "node": "output",
+        "port": "right"
+      },
+      "weight": 1
+    }
+  ],
+  "name": "test",
+  "nodes": [
+    {
+      "id": "input",
+      "params": {
+        "gain": 1,
+        "level": 1
+      },
+      "position": {
+        "x": 80,
+        "y": 160
+      },
+      "type": "AudioInput"
+    },
+    {
+      "id": "output",
+      "params": {
+        "level": 1
+      },
+      "position": {
+        "x": 480,
+        "y": 160
+      },
+      "type": "AudioOut"
+    }
+  ]
+}

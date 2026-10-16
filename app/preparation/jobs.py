@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 # Kept here too so the HTTP service never imports the numerical toolchain.
@@ -105,9 +106,85 @@ def run_analysis(snapshot, work):
     return validate_result(json.loads(result_path.read_text(encoding="utf-8")))
 
 
+def entry_id(row):
+    # Row identity is cheap and location-specific; content identity is resolved on demand.
+    return hashlib.sha256(json.dumps([row["filename"], row["size_bytes"], row["modified_ns"]], ensure_ascii=False).encode()).hexdigest()
+
+
+class ContentStore:
+    """Shared saved work, looked up only when a track is used or analysed."""
+    def __init__(self, generated):
+        self.generated = generated
+        self.root = generated / "content"
+        self.lock = threading.RLock()
+        self.legacy = None
+
+    def index_legacy(self):
+        # This reads saved metadata, never source audio, and never runs during a scan.
+        index = {}
+        roots = [self.generated, *sorted((self.generated / "libraries").glob("*"))]
+        for root in roots:
+            for kind in ("analysis", "timing"):
+                for path in (root / kind).glob("*.json"):
+                    try:
+                        value = json.loads(path.read_text())
+                        digest = value.get("source_hash") or value.get("source", {}).get("source_hash")
+                        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                            continue
+                        if kind == "analysis":
+                            if value.get("schema_version") != ANALYSIS_SCHEMA or value.get("analyzer_version") != ANALYZER_VERSION:
+                                continue
+                            analysis = value["analysis"]
+                            if analysis["state"] not in ("analysed", "needs_review", "approved"):
+                                continue
+                            validate_result(analysis["result"])
+                        elif value.get("schema_version") != 1 or not isinstance(value.get("grid"), dict):
+                            continue
+                        value = {**value, "source_hash": digest, "saved_ns": value.get("saved_ns", path.stat().st_mtime_ns)}
+                        key = (kind, digest)
+                        if key not in index or value["saved_ns"] > index[key]["saved_ns"]:
+                            index[key] = value
+                    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                        continue
+        self.legacy = index
+
+    def read(self, kind, digest):
+        with self.lock:
+            path = self.root / kind / (digest + ".json")
+            try:
+                value = json.loads(path.read_text())
+                if not isinstance(value, dict):
+                    value = None
+            except (OSError, ValueError, TypeError):
+                value = None
+            if self.legacy is None:
+                self.index_legacy()
+            legacy = self.legacy.get((kind, digest))
+            if legacy and (value is None or legacy["saved_ns"] > value.get("saved_ns", 0)):
+                # Preserve the original save time. Recognition is never a new edit.
+                value = legacy
+                atomic_json(path, value)
+            return copy.deepcopy(value)
+
+    def write(self, kind, digest, value):
+        with self.lock:
+            value = {**value, "source_hash": digest, "saved_ns": value.get("saved_ns", time.time_ns())}
+            path = self.root / kind / (digest + ".json")
+            try:
+                current = json.loads(path.read_text())
+                if current.get("saved_ns", 0) > value["saved_ns"]:
+                    return current
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+            atomic_json(path, value)
+            return value
+
+
 class LibraryJobs:
-    def __init__(self, music, generated, analyzer=run_analysis, capacity=MAX_PENDING):
+    def __init__(self, music, generated, analyzer=run_analysis, capacity=MAX_PENDING, namespace="", content=None):
         self.music, self.generated, self.analyzer = music, generated, analyzer
+        self.namespace = namespace
+        self.content = content if content is not None else ContentStore(generated)
         self.lock = threading.RLock()
         self.rows = {}
         self.revision = 0
@@ -129,7 +206,8 @@ class LibraryJobs:
         try:
             envelope = json.loads(path.read_text(encoding="utf-8"))
             if (envelope["schema_version"] != ANALYSIS_SCHEMA or envelope["analyzer_version"] != ANALYZER_VERSION
-                    or envelope["source"] != self.identity(row)):
+                    or any(envelope["source"].get(key) != row[key] for key in ("filename", "size_bytes", "modified_ns"))
+                    or (row.get("source_hash") is not None and envelope["source"].get("source_hash") != row["source_hash"])):
                 return blank("stale", "Source or analyzer version changed. Reanalyse this file.")
             analysis = envelope["analysis"]
             if analysis["state"] in ("queued", "analysing"):
@@ -140,48 +218,105 @@ class LibraryJobs:
                 raise ValueError("Invalid cached state")
             elif not isinstance(analysis.get("error"), str) or analysis.get("result") is not None:
                 raise ValueError("Invalid cached failure")
+            digest = envelope["source"].get("source_hash")
+            if digest is not None and (not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+                raise ValueError("Invalid saved source hash")
+            if analysis["result"] is not None and digest is None:
+                raise ValueError("Saved analysis is missing its source hash")
+            row["analysis_saved_ns"] = envelope.get("saved_ns", path.stat().st_mtime_ns)
+            row["source_hash"] = digest
             return analysis
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return blank("stale", "Cached analysis is unreadable or incompatible. Reanalyse this file.")
 
     @staticmethod
     def identity(row):
-        return {key: row[key] for key in ("id", "filename", "size_bytes", "modified_ns", "source_hash")}
+        identity = {key: row[key] for key in ("id", "filename", "size_bytes", "modified_ns", "source_hash")}
+        identity["id"] = row.get("_local_id", row["id"])
+        return identity
 
-    def persist(self, row):
+    def persist(self, row, shared=False):
+        if shared:
+            row["analysis_saved_ns"] = time.time_ns()
         atomic_json(self.cache_path(row["filename"]), {
             "schema_version": ANALYSIS_SCHEMA, "analyzer_version": ANALYZER_VERSION,
-            "source": self.identity(row), "analysis": row["analysis"]})
+            "source": self.identity(row), "analysis": row["analysis"], "saved_ns": row.get("analysis_saved_ns", 0)})
+        if shared and row.get("source_hash") and row["analysis"]["state"] in ("analysed", "needs_review", "approved"):
+            self.content.write("analysis", row["source_hash"], {
+                "schema_version": ANALYSIS_SCHEMA, "analyzer_version": ANALYZER_VERSION, "analysis": row["analysis"], "saved_ns": row["analysis_saved_ns"]})
+
+    def namespace_rows(self, tracks):
+        for row in tracks:
+            local = entry_id(row)
+            row["_local_id"] = local
+            row["id"] = hashlib.sha256((self.namespace + local).encode()).hexdigest() if self.namespace else local
+        return tracks
 
     def reconcile(self, tracks):
-        # Hash outside the state lock; HTTP state polling remains cheap during scans.
-        for row in tracks:
-            row["source_hash"] = None
-            if row["status"] == "ready":
-                try:
-                    digest, stat = source_hash(self.music / row["filename"])
-                    if (stat.st_size, str(stat.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
-                        raise ValueError("File changed during scanning. Refresh to retry.")
-                    row["source_hash"] = digest
-                    row["id"] = hashlib.sha256(json.dumps([row["filename"], row["size_bytes"], row["modified_ns"], digest]).encode()).hexdigest()
-                except (OSError, ValueError) as exc:
-                    row.update(status="unreadable", error=str(exc))
+        # Metadata/stat reconciliation never reads or hashes source audio.
+        self.namespace_rows(tracks)
         with self.lock:
             previous = self.rows
             self.rows = {}
             for row in tracks:
+                row["source_hash"] = None
                 old = previous.get(row["id"])
-                row["analysis"] = copy.deepcopy(old["analysis"]) if old else self.cached(row)
+                if old:
+                    row["source_hash"] = old.get("source_hash")
+                    row["analysis_saved_ns"] = old.get("analysis_saved_ns", 0)
+                    row["analysis"] = copy.deepcopy(old["analysis"])
+                else:
+                    row["analysis"] = self.cached(row)
                 self.rows[row["id"]] = row
             self.revision += 1
             return self.state()
+
+    def shared_analysis(self, digest):
+        value = self.content.read("analysis", digest)
+        try:
+            if (value["schema_version"] != ANALYSIS_SCHEMA or value["analyzer_version"] != ANALYZER_VERSION
+                    or value["source_hash"] != digest or value["analysis"]["state"] not in ("analysed", "needs_review", "approved")):
+                return None
+            validate_result(value["analysis"]["result"])
+            return value
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def identify(self, track_id):
+        row, path = self.source(track_id)
+        digest, stat = source_hash(path)
+        if (stat.st_size, str(stat.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
+            raise ValueError("Source changed. Refresh the library.")
+        if row.get("source_hash") and digest != row["source_hash"]:
+            with self.lock:
+                current = self.rows.get(track_id)
+                if current:
+                    current["source_hash"] = None
+                    current["analysis"] = blank("stale", "Source changed. Analyse to identify the new content.")
+                    self.revision += 1
+            raise ValueError("Source changed. Refresh the library.")
+        restored = self.shared_analysis(digest)
+        with self.lock:
+            current = self.rows.get(track_id)
+            if current is None:
+                raise ValueError("Source was removed. Refresh the library.")
+            current["source_hash"] = digest
+            # A running job owns its row until completion.
+            if restored and current["analysis"]["state"] not in ("queued", "analysing"):
+                current["analysis"] = restored["analysis"]
+                current["analysis_saved_ns"] = restored.get("saved_ns", 0)
+            self.persist(current)
+            self.revision += 1
+            return copy.deepcopy(current)
 
     def seed(self, tracks):
         """Publish size-checked saved rows while a full scan runs in the background."""
         with self.lock:
             if self.revision:
                 return self.state()
-            self.rows = {row["id"]: row for row in tracks}
+            for row in self.namespace_rows(tracks):
+                row["analysis"] = self.cached(row)
+                self.rows[row["id"]] = row
             self.revision += 1
             return self.state()
 
@@ -209,6 +344,13 @@ class LibraryJobs:
             if self.pending.full():
                 raise ValueError("Analysis queue is full. Wait for a job to finish and retry.")
             old = row["analysis"]
+            # Preserve an already displayed legacy result before the queue record
+            # replaces its local envelope. This copies saved metadata, not audio.
+            if (old["state"] in ("analysed", "needs_review", "approved")
+                    and row.get("source_hash") and row.get("analysis_saved_ns", 0) > 0):
+                self.content.write("analysis", row["source_hash"], {
+                    "schema_version": ANALYSIS_SCHEMA, "analyzer_version": ANALYZER_VERSION,
+                    "analysis": old, "saved_ns": row["analysis_saved_ns"]})
             row["analysis"] = blank("queued")
             try:
                 self.persist(row)
@@ -236,7 +378,7 @@ class LibraryJobs:
             previous = row["analysis"]
             row["analysis"] = {**previous, "state": "approved"}
             try:
-                self.persist(row)
+                self.persist(row, shared=True)
             except OSError:
                 row["analysis"] = previous
                 raise ValueError("Cannot save analysis approval. Check the generated-data mount.")
@@ -265,23 +407,27 @@ class LibraryJobs:
                 return  # Removed/superseded before the job started.
             row["analysis"] = blank("analysing")
             self.revision += 1
-        result, failure = None, None
+        result, failure, restored = None, None, None
+        digest = None
         try:
             with tempfile.TemporaryDirectory(prefix="vira-analysis-") as directory:
                 work = Path(directory)
                 snapshot = work / ("source" + Path(requested["filename"]).suffix)
                 with snapshot.open("wb") as handle:
                     digest, stat = source_hash(self.music / requested["filename"], handle)
-                if digest != requested["source_hash"] or (stat.st_size, str(stat.st_mtime_ns)) != (requested["size_bytes"], requested["modified_ns"]):
+                if (stat.st_size, str(stat.st_mtime_ns)) != (requested["size_bytes"], requested["modified_ns"]):
                     raise ValueError("Source changed before analysis. Refresh and retry.")
-                result = validate_result(self.analyzer(snapshot, work))
+                requested["source_hash"] = digest
+                restored = self.shared_analysis(digest)
+                if restored is None:
+                    result = validate_result(self.analyzer(snapshot, work))
         except Exception as exc:
             failure = str(exc) or "Analysis failed. Retry this file."
         # Check again even without Refresh: never publish a result for changed content.
         unchanged = False
         try:
-            digest, stat = source_hash(self.music / requested["filename"])
-            unchanged = digest == requested["source_hash"] and (stat.st_size, str(stat.st_mtime_ns)) == (requested["size_bytes"], requested["modified_ns"])
+            after_digest, stat = source_hash(self.music / requested["filename"])
+            unchanged = after_digest == requested["source_hash"] and (stat.st_size, str(stat.st_mtime_ns)) == (requested["size_bytes"], requested["modified_ns"])
         except (OSError, ValueError):
             pass
         with self.lock:
@@ -292,13 +438,18 @@ class LibraryJobs:
                 row["analysis"] = blank("stale", "Source changed or was removed during analysis. Refresh and reanalyse.")
             elif failure:
                 row["analysis"] = blank("failed", failure)
+            elif restored:
+                row["analysis"] = restored["analysis"]
+                row["analysis_saved_ns"] = restored.get("saved_ns", 0)
             else:
                 # The baseline's universal advisory flag does not mean a fitting
                 # failure. Other ambiguity/fit flags select Needs review.
                 review = set(result["flags"]) - {"metrical_level_and_phase_unverified"}
                 row["analysis"] = {"state": "needs_review" if review else "analysed", "error": None, "result": result}
+            if unchanged:
+                row["source_hash"] = requested["source_hash"]
             try:
-                self.persist(row)
+                self.persist(row, shared=unchanged and not failure and restored is None)
             except OSError:
                 row["analysis"] = blank("failed", "Cannot persist analysis. Check the generated-data mount and retry.")
             self.revision += 1

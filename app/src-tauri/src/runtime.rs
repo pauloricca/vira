@@ -26,11 +26,20 @@ struct Shared {
     cue_error: Mutex<Option<String>>,
     cue_device_errors: AtomicU64,
     headphone_cue: [AtomicBool; 2],
+    auto_mode: [AtomicU64; 2],
+    auto_points: [[AtomicU64; 5]; 2],
+    auto_remaining: [AtomicU64; 5],
+    auto_style: AtomicU64,
+    auto_started: AtomicBool,
     crossfader: AtomicU64,
     crossfader_enabled: AtomicBool,
     cancel: AtomicBool,
     worker_cancel: AtomicBool,
     requested: [AtomicU64; 2],
+    audition_generation: AtomicU64,
+    audition_position: AtomicU64,
+    audition_index: AtomicU64,
+    audition_playing: AtomicBool,
     sequence: AtomicU64,
     positions: [AtomicU64; 2],
     position_epochs: [AtomicU64; 2],
@@ -93,10 +102,19 @@ impl Shared {
             cue_error: Mutex::new(None),
             cue_device_errors: 0.into(),
             headphone_cue: std::array::from_fn(|_| false.into()),
+            auto_mode: std::array::from_fn(|_| 0.into()),
+            auto_points: std::array::from_fn(|_| std::array::from_fn(|_| 0.into())),
+            auto_remaining: std::array::from_fn(|_| 0.into()),
+            auto_style: 0.into(),
+            auto_started: false.into(),
             crossfader: (0_f32.to_bits() as u64).into(),
             crossfader_enabled: true.into(),
             worker_cancel: false.into(),
             requested: std::array::from_fn(|_| 0.into()),
+            audition_generation: 0.into(),
+            audition_position: 0.into(),
+            audition_index: 0.into(),
+            audition_playing: false.into(),
             sequence: 0.into(),
             positions: std::array::from_fn(|_| 0.into()),
             position_epochs: std::array::from_fn(|_| 0.into()),
@@ -157,6 +175,19 @@ impl Shared {
             let playing = std::array::from_fn(|d| self.playing[d].load(Relaxed));
             let gain = std::array::from_fn(|d| f32::from_bits(self.gains[d].load(Relaxed) as u32));
             let frame = Frame {
+                audition_generation: self.audition_generation.load(Relaxed),
+                audition_position: self.audition_position.load(Relaxed),
+                audition_index: self.audition_index.load(Relaxed),
+                audition_playing: self.audition_playing.load(Relaxed),
+                auto_mode: std::array::from_fn(|d| self.auto_mode[d].load(Relaxed) as u8),
+                auto_points: std::array::from_fn(|d| {
+                    std::array::from_fn(|i| f64::from_bits(self.auto_points[d][i].load(Relaxed)))
+                }),
+                auto_remaining: std::array::from_fn(|i| {
+                    f64::from_bits(self.auto_remaining[i].load(Relaxed))
+                }),
+                auto_style: self.auto_style.load(Relaxed) as u8,
+                auto_started: self.auto_started.load(Relaxed),
                 crossfader: f32::from_bits(self.crossfader.load(Relaxed) as u32),
                 crossfader_enabled: self.crossfader_enabled.load(Relaxed),
                 position_epochs: std::array::from_fn(|d| self.position_epochs[d].load(Relaxed)),
@@ -422,6 +453,8 @@ pub struct EngineHandle {
     metadata: Mutex<[Metadata; 2]>,
     sources: Mutex<HashMap<String, Weak<Source>>>,
     download: Mutex<()>,
+    audition_request: Mutex<u64>,
+    audition_cache: Mutex<Vec<(String, Arc<Source>)>>,
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
@@ -477,6 +510,8 @@ impl EngineHandle {
             metadata: Mutex::new(std::array::from_fn(|_| Metadata::default())),
             sources: Mutex::new(HashMap::new()),
             download: Mutex::new(()),
+            audition_request: Mutex::new(0),
+            audition_cache: Mutex::new(Vec::new()),
         });
         match wake {
             Ok(wake) => {
@@ -610,6 +645,144 @@ impl EngineHandle {
             wake.notify();
         }
         Ok(())
+    }
+    pub fn begin_audition(&self, master: bool) -> Result<u64> {
+        ensure!(
+            master || self.shared.cue_running.load(Acquire),
+            "Select an available Cue headphones output on the Audio page before auditioning"
+        );
+        let mut request = self.audition_request.lock().unwrap();
+        self.send(Command::AuditionStop)?;
+        *request += 1;
+        Ok(*request)
+    }
+    fn prepare_audition(
+        &self,
+        generation: u64,
+        track_id: &str,
+        master: bool,
+    ) -> Result<Box<crate::decks::Audition>> {
+        let current = || *self.audition_request.lock().unwrap() == generation;
+        ensure!(current(), "Audition cancelled");
+        let prepared = source::prepare_audition(track_id)?;
+        let source = {
+            let _download = self.download.lock().unwrap();
+            ensure!(current(), "Audition cancelled");
+            let cached = self
+                .sources
+                .lock()
+                .unwrap()
+                .get(&prepared.artifact_id)
+                .and_then(Weak::upgrade);
+            if let Some(source) = cached {
+                source
+            } else {
+                let source = prepared.download(current)?;
+                let mut cache = self.sources.lock().unwrap();
+                cache.retain(|_, value| value.strong_count() > 0);
+                cache.insert(prepared.artifact_id.clone(), Arc::downgrade(&source));
+                source
+            }
+        };
+        // Retain at most two recently auditioned sources, bounded to 256 MiB total.
+        // Eviction and PCM destruction happen here, on the ordinary load thread.
+        {
+            let mut cache = self.audition_cache.lock().unwrap();
+            cache.retain(|(id, _)| id != &prepared.artifact_id);
+            cache.push((prepared.artifact_id.clone(), source.clone()));
+            while cache.len() > 2
+                || cache
+                    .iter()
+                    .map(|(_, source)| source.bytes())
+                    .sum::<usize>()
+                    > source::MAX_SOURCE_BYTES
+            {
+                cache.remove(0);
+            }
+        }
+        ensure!(current(), "Audition cancelled");
+        ensure!(
+            master || self.shared.cue_running.load(Acquire),
+            "Cue headphones output is unavailable"
+        );
+        let mut voice = Box::new(crate::decks::Audition::new(source, generation));
+        voice.master = master;
+        let timing =
+            crate::service_response("/v1/timing/get", Some(json!({"track_id":track_id})), true)
+                .map_err(anyhow::Error::msg)?
+                .json::<Value>()?;
+        let value = if timing["state"] == "stale" {
+            &Value::Null
+        } else if !timing["grid"].is_null() {
+            &timing["grid"]
+        } else {
+            &timing["suggestion"]
+        };
+        if !value.is_null() {
+            let grid: crate::timing::Grid = serde_json::from_value(value.clone())?;
+            voice.set_grid(Some(grid.validate(prepared.duration_seconds)?));
+        }
+        Ok(voice)
+    }
+    pub fn load_audition(&self, generation: u64, track_id: &str, master: bool) -> Result<u64> {
+        let voice = self.prepare_audition(generation, track_id, master)?;
+        let request = self.audition_request.lock().unwrap();
+        ensure!(*request == generation, "Audition cancelled");
+        self.send(Command::AuditionInstall(voice))?;
+        Ok(generation)
+    }
+    pub fn queue_audition(
+        &self,
+        generation: u64,
+        index: u64,
+        track_id: &str,
+        master: bool,
+    ) -> Result<()> {
+        let mut voice = self.prepare_audition(generation, track_id, master)?;
+        voice.index = index + 1;
+        let request = self.audition_request.lock().unwrap();
+        ensure!(*request == generation, "Audition cancelled");
+        self.send(Command::AuditionQueue(generation, index, voice))
+    }
+    pub fn audition_control(
+        &self,
+        action: &str,
+        generation: u64,
+        value: Option<f64>,
+    ) -> Result<()> {
+        let mut request = self.audition_request.lock().unwrap();
+        if action == "stop" {
+            *request += 1;
+            return self.send(Command::AuditionStop);
+        }
+        ensure!(*request == generation, "Audition replaced or stopped");
+        match action {
+            "play_pause" => self.send(Command::AuditionControl(generation, None)),
+            "sequence" => {
+                let bars = value.unwrap_or(-1.);
+                ensure!(
+                    [-1., 0., 1., 2., 4., 8., 16., 32.].contains(&bars),
+                    "Invalid overlap"
+                );
+                self.send(Command::AuditionSequence(
+                    generation,
+                    bars >= 0.,
+                    bars.max(0.) as u8,
+                ))
+            }
+            "seek" => {
+                let seconds = value.unwrap_or(f64::NAN);
+                ensure!(
+                    seconds.is_finite() && seconds >= 0.,
+                    "Invalid audition position"
+                );
+                self.send(Command::AuditionControl(
+                    generation,
+                    Some((seconds * RATE as f64).round() as usize),
+                ))
+            }
+            _ => anyhow::bail!("Unknown audition control"),
+        }
     }
     pub fn begin_load(&self, deck: usize) -> Result<u64> {
         ensure!(deck < 2, "Deck must be A or B");
@@ -754,7 +927,10 @@ impl EngineHandle {
             frames > 0
                 || matches!(
                     action,
-                    "master_tempo"
+                    "auto_bars"
+                        | "auto_style"
+                        | "auto_tempo"
+                        | "master_tempo"
                         | "drift_rate"
                         | "sync_quantum"
                         | "crossfader"
@@ -764,6 +940,48 @@ impl EngineHandle {
             "Load a track before using transport"
         );
         let command = match action {
+            "auto_bars" => {
+                let bars = value.unwrap_or(-1.);
+                ensure!(
+                    [0., 1., 2., 4., 8., 16., 32.].contains(&bars),
+                    "Unsupported overlap"
+                );
+                Command::AutoBars(bars as u8)
+            }
+            "auto_style" => {
+                ensure!(
+                    matches!(value, Some(0.) | Some(1.) | Some(2.)),
+                    "Transition mode must be Crossfade, Bass swap or Smart"
+                );
+                Command::AutoStyle(value.unwrap() as u8)
+            }
+            "auto_tempo" => {
+                ensure!(
+                    matches!(value, Some(0.) | Some(1.)),
+                    "Tempo mode must be 0 or 1"
+                );
+                Command::AutoTempo(value == Some(1.))
+            }
+            "auto_now" | "auto_end" => {
+                let end = action == "auto_end";
+                if snapshot.auto_mode[deck] != if end { 2 } else { 1 } {
+                    ensure!(
+                        snapshot.playing[deck] && !snapshot.playing[1 - deck],
+                        "Only the outgoing deck can be playing"
+                    );
+                    for grid in snapshot.grids {
+                        let grid =
+                            grid.ok_or_else(|| anyhow::anyhow!("Both decks need timing grids"))?;
+                        grid.speed(snapshot.master_bpm)?;
+                    }
+                    ensure!(
+                        !snapshot.loop_ends.iter().any(Option::is_some),
+                        "Release loops before an automatic transition"
+                    );
+                }
+                Command::AutoTransition(deck, generations, end)
+            }
+
             "headphone_cue" => {
                 ensure!(
                     matches!(value, Some(0.) | Some(1.)),
@@ -1061,6 +1279,7 @@ impl EngineHandle {
                         1 => Some("Master lock rejected at render boundary: check grid, phase and tempo range"),
                         2 => Some("Tempo rejected at render boundary: range changed"),
                         3 => Some("No valid master phase position; lock disabled"),
+                        4 => Some("Automatic transition unavailable: check both timing grids, tempo range, loops and remaining track length"),
                         _ => None,
                     },
                 }
@@ -1075,7 +1294,11 @@ impl EngineHandle {
             .map(|source| source.bytes())
             .sum();
         let routes = self.shared.routes.lock().unwrap().clone();
-        json!({"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        let auto_transition = snapshot.auto_mode.iter().position(|mode| *mode != 0).map(|from| json!({
+            "from":from, "style":match snapshot.auto_style { 2 => "smart", 1 => "bass-swap", _ => "crossfade" },
+            "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
+        }));
+        json!({"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
@@ -1134,6 +1357,7 @@ fn native_output(
         loop {
             while let Ok(voice) = retire_rx.pop() {
                 match voice {
+                    crate::decks::Retired::Audition(v) => drop(v),
                     crate::decks::Retired::Voice(v) => drop(v),
                     crate::decks::Retired::Routing(p) => drop(p),
                 }
@@ -1145,6 +1369,7 @@ fn native_output(
         }
         while let Ok(voice) = retire_rx.pop() {
             match voice {
+                crate::decks::Retired::Audition(v) => drop(v),
                 crate::decks::Retired::Voice(v) => drop(v),
                 crate::decks::Retired::Routing(p) => drop(p),
             }
@@ -1335,6 +1560,11 @@ fn native_output(
                 let last = state.last;
                 cb.sequence
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                cb.audition_generation
+                    .store(last.audition_generation, Relaxed);
+                cb.audition_position.store(last.audition_position, Relaxed);
+                cb.audition_index.store(last.audition_index, Relaxed);
+                cb.audition_playing.store(last.audition_playing, Relaxed);
                 for d in 0..2 {
                     cb.positions[d].store(last.positions[d], Relaxed);
                     cb.position_epochs[d].store(last.position_epochs[d], Relaxed);
@@ -1376,6 +1606,17 @@ fn native_output(
                     cb.timing_errors[d].store(last.timing_errors[d] as u64, Relaxed);
                     cb.reposition[d].store(last.reposition[d].to_bits(), Relaxed);
                 }
+                for d in 0..2 {
+                    cb.auto_mode[d].store(last.auto_mode[d] as u64, Relaxed);
+                    for i in 0..5 {
+                        cb.auto_points[d][i].store(last.auto_points[d][i].to_bits(), Relaxed);
+                    }
+                }
+                for i in 0..5 {
+                    cb.auto_remaining[i].store(last.auto_remaining[i].to_bits(), Relaxed);
+                }
+                cb.auto_style.store(last.auto_style as u64, Relaxed);
+                cb.auto_started.store(last.auto_started, Relaxed);
                 cb.master_bpm.store(last.master_bpm.to_bits(), Relaxed);
                 cb.drift_rate.store(last.drift_rate.to_bits(), Relaxed);
                 cb.crossfader

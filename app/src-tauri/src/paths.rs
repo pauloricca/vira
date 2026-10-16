@@ -1,4 +1,4 @@
-//! Persistent library locations. A running process keeps its startup roots.
+//! Persistent library locations. Music collections can be changed while running.
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +12,16 @@ use std::{
 #[serde(rename_all = "camelCase")]
 pub struct Locations {
     pub music: PathBuf,
+    #[serde(default)]
+    pub music_folders: Option<Vec<PathBuf>>,
     pub patches: PathBuf,
+}
+impl Locations {
+    pub fn collections(&self) -> Vec<PathBuf> {
+        self.music_folders
+            .clone()
+            .unwrap_or_else(|| vec![self.music.clone()])
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +40,7 @@ pub fn support() -> PathBuf {
 fn defaults() -> Locations {
     Locations {
         music: PathBuf::from(crate::MUSIC_BIN),
+        music_folders: None,
         patches: std::env::var_os("VIRA_TEIA_PATCH_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| support().join("patches")),
@@ -51,10 +61,11 @@ pub fn active() -> &'static Locations {
     })
 }
 pub fn settings() -> Result<Settings> {
-    let active = active().clone();
+    let mut active = active().clone();
     let selected = read(&support().join("paths.json"), defaults())?;
+    active.music_folders = Some(selected.collections());
     Ok(Settings {
-        restart_required: selected != active,
+        restart_required: selected.patches != active.patches,
         selected,
         active,
     })
@@ -84,7 +95,15 @@ pub fn select(kind: &str, path: &Path) -> Result<Settings> {
     let mut settings = settings()?; // Freeze active locations before persisting.
     let path = selected_directory(path)?;
     match kind {
-        "music" => settings.selected.music = path,
+        "music" => {
+            let mut folders = settings.selected.collections();
+            ensure!(
+                !folders.contains(&path),
+                "This music folder is already added"
+            );
+            folders.push(path);
+            settings.selected.music_folders = Some(folders);
+        }
         "patches" => {
             // Verify write access without changing an existing patch or asset.
             let probe = path.join(format!(
@@ -105,16 +124,35 @@ pub fn select(kind: &str, path: &Path) -> Result<Settings> {
         _ => bail!("Unknown library folder"),
     }
     save(&support().join("paths.json"), &settings.selected)?;
-    settings.restart_required = settings.selected != settings.active;
+    settings.active.music_folders = Some(settings.selected.collections());
+    settings.restart_required = settings.selected.patches != settings.active.patches;
     Ok(settings)
 }
 
-/// Compose remounts only the chosen directory, read-only. No broad host mount or
+pub fn remove_music(path: &Path) -> Result<Settings> {
+    let _save = SAVE.lock().unwrap();
+    let mut settings = settings()?;
+    let mut folders = settings.selected.collections();
+    ensure!(
+        folders.iter().any(|folder| folder == path),
+        "Music folder is not configured"
+    );
+    folders.retain(|folder| folder != path);
+    settings.selected.music_folders = Some(folders);
+    save(&support().join("paths.json"), &settings.selected)?;
+    settings.active.music_folders = Some(settings.selected.collections());
+    settings.restart_required = settings.selected.patches != settings.active.patches;
+    Ok(settings)
+}
+
+/// Compose mounts only the configured directories, read-only. No broad host mount or
 /// path-accepting HTTP API is introduced. This runs on an ordinary startup thread.
 pub fn ensure_music_mount() -> Result<()> {
     let _service = SERVICE.lock().unwrap();
-    let music = &active().music;
-    selected_directory(music)?;
+    let folders = read(&support().join("paths.json"), defaults())?.collections();
+    for folder in &folders {
+        selected_directory(folder)?;
+    }
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(2))
@@ -126,7 +164,11 @@ pub fn ensure_music_mount() -> Result<()> {
             .ok()
             .filter(|r| r.status().is_success())
             .and_then(|r| r.json::<serde_json::Value>().ok())
-            .is_some_and(|v| v["schema_version"] == 2 && v["music_bin"].as_str() == music.to_str())
+            .is_some_and(|v| {
+                v["schema_version"] == 2
+                    && v["content_cache"] == 1
+                    && v["music_folders"] == serde_json::json!(folders)
+            })
     };
     if matches() {
         return Ok(());
@@ -151,11 +193,23 @@ pub fn ensure_music_mount() -> Result<()> {
     if let Some(existing) = std::env::var_os("PATH") {
         search_paths.extend(std::env::split_paths(&existing));
     }
+    // Compose override replaces the legacy single mount with the exact configured roots.
+    let mounts: Vec<_> = folders.iter().enumerate().map(|(index, folder)| {
+        serde_json::json!({"type": "bind", "source": folder, "target": format!("/collections/{index}"), "read_only": true})
+    }).chain(std::iter::once(serde_json::json!({"type": "bind", "source": app.join("generated"), "target": "/generated"}))).collect();
+    let collections: Vec<_> = folders.iter().enumerate().map(|(index, folder)| {
+        serde_json::json!({"path": folder, "mount": format!("/collections/{index}")})
+    }).collect();
+    let override_path = support().join("collections.compose.yaml");
+    // !override needs YAML, while JSON safely encodes user-controlled paths.
+    let yaml = format!("services:\n  preparation:\n    volumes: !override {}\n    environment:\n      VIRA_COLLECTIONS: {}\n", serde_json::to_string(&mounts)?, serde_json::to_string(&serde_json::to_string(&collections)?)?);
+    fs::write(&override_path, yaml)?;
     let mut child = std::process::Command::new(docker)
         .args(["compose", "-f"])
         .arg(app.join("compose.yaml"))
+        .arg("-f")
+        .arg(&override_path)
         .args(["up", "-d", "--build", "--wait", "preparation"])
-        .env("VIRA_MUSIC_DIR", music)
         .env("PATH", std::env::join_paths(search_paths)?)
         .stdout(log.try_clone()?)
         .stderr(log)
@@ -180,12 +234,28 @@ pub fn ensure_music_mount() -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_single_folder_migrates_and_explicit_empty_stays_empty() {
+        let legacy: Locations =
+            serde_json::from_str(r#"{"music":"/Music é","patches":"/Patches"}"#).unwrap();
+        assert_eq!(legacy.collections(), vec![PathBuf::from("/Music é")]);
+        let mut multiple = legacy.clone();
+        multiple.music_folders = Some(vec![PathBuf::from("/Music é"), PathBuf::from("/Dance")]);
+        let restored: Locations =
+            serde_json::from_slice(&serde_json::to_vec(&multiple).unwrap()).unwrap();
+        assert_eq!(restored.collections().len(), 2);
+        multiple.music_folders = Some(vec![]);
+        let restored: Locations =
+            serde_json::from_slice(&serde_json::to_vec(&multiple).unwrap()).unwrap();
+        assert!(restored.collections().is_empty());
+    }
+    #[test]
     fn locations_roundtrip_spaces_and_unicode_and_reject_files() {
         let root = std::env::temp_dir().join(format!("vira-paths-{}", std::process::id()));
         fs::create_dir_all(root.join("Music é")).unwrap();
         let location = selected_directory(&root.join("Music é")).unwrap();
         let paths = Locations {
             music: location.clone(),
+            music_folders: None,
             patches: location,
         };
         let config = root.join("settings/paths.json");

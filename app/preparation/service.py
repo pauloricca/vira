@@ -1,6 +1,7 @@
 """Local development metadata service. Source music is always read-only."""
 import copy
 import hashlib
+import io
 import json
 import math
 import os
@@ -10,10 +11,10 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
-    from .jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json, blank
+    from .jobs import LibraryJobs, ContentStore, LIBRARY_SCHEMA, atomic_json, blank, entry_id
     from .prepare import Preparation
 except ImportError:
-    from jobs import LibraryJobs, LIBRARY_SCHEMA, atomic_json, blank
+    from jobs import LibraryJobs, ContentStore, LIBRARY_SCHEMA, atomic_json, blank, entry_id
     from prepare import Preparation
 
 SCHEMA_VERSION = 1
@@ -104,7 +105,7 @@ def scan_bin(music: Path, generated: Path) -> dict:
 
 
 def quick_snapshot(music: Path, generated: Path) -> list:
-    """Show saved rows with matching sizes before the full metadata/hash scan."""
+    """Show saved rows with matching stats before the metadata scan, without hashing."""
     if not music.is_dir():
         raise ValueError("Music bin is unavailable. Check the read-only music mount, then Refresh.")
     try:
@@ -130,24 +131,24 @@ def quick_snapshot(music: Path, generated: Path) -> list:
             stat = path.stat()
             if stat.st_size != row["size_bytes"]:
                 continue
-            if row["status"] == "ready" and (not isinstance(row.get("source_hash"), str)
-                    or len(row["source_hash"]) != 64
-                    or any(c not in "0123456789abcdef" for c in row["source_hash"])):
-                continue
             if str(stat.st_mtime_ns) != row["modified_ns"]:
                 row["modified_ns"] = str(stat.st_mtime_ns)
-                if row["status"] == "ready":
-                    row["id"] = hashlib.sha256(json.dumps([name, stat.st_size, row["modified_ns"], row["source_hash"]]).encode()).hexdigest()
-                    row["analysis"] = blank("stale", "File timestamp changed. Verifying in background.")
+                row["source_hash"] = None
+                row["analysis"] = blank("stale", "File timestamp changed. Analyse or load to identify its content.")
+            if row.get("analysis", {}).get("state") in ("queued", "analysing"):
+                row["analysis"] = blank("failed", "Analysis was interrupted by a service restart. Retry this file.")
+            row["id"] = entry_id(row)
+            # The collection namespace is applied by seed().
+            row["_local_id"] = row["id"]
             rows.append(row)
         except (OSError, ValueError, KeyError, TypeError):
             continue
     return rows
 
 
-def make_handler(music: Path, generated: Path):
+def make_handler(music: Path, generated: Path, namespace="", content=None):
     scan_lock = threading.Lock()
-    jobs = LibraryJobs(music, generated)
+    jobs = LibraryJobs(music, generated, namespace=namespace, content=content)
     preparation = Preparation(jobs)
 
     def scan():
@@ -178,7 +179,7 @@ def make_handler(music: Path, generated: Path):
                         self.send_response(204)
                         self.end_headers()
                         return
-                    artwork = generated / "artwork" / (row["source_hash"] + ".jpg")
+                    artwork = generated / "artwork" / ((row.get("source_hash") or row["id"]) + ".jpg")
                     if not artwork.exists():
                         artwork.parent.mkdir(parents=True, exist_ok=True)
                         result = subprocess.run([
@@ -217,7 +218,7 @@ def make_handler(music: Path, generated: Path):
                         self.respond(404, {"error": str(exc)})
                 return
             if self.path == "/health":
-                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
+                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "content_cache": 1, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
             elif self.path == "/v1/library/state":
                 self.respond(200, jobs.state())
             else:
@@ -250,15 +251,17 @@ def make_handler(music: Path, generated: Path):
                     body = json.loads(self.rfile.read(length))
                     track_id = body.get("track_id") if isinstance(body, dict) else None
                     keys = set(body) if isinstance(body, dict) else set()
-                    allowed = ({"track_id"}, {"track_id", "deck", "generation"}) if self.path == "/v1/prepare" else ({"track_id"},)
+                    allowed = ({"track_id"}, {"track_id", "audition"}, {"track_id", "deck", "generation"}) if self.path == "/v1/prepare" else ({"track_id"},)
                     if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or keys not in allowed:
                         raise ValueError("Analysis requires a valid library track ID.")
                     if self.path == "/v1/prepare":
                         deck, generation = body.get("deck"), body.get("generation")
+                        if "audition" in body and body["audition"] is not True:
+                            raise ValueError("Invalid audition request.")
                         if deck is not None and (type(deck) is not int or deck not in (0, 1) or type(generation) is not int or generation < 1):
                             raise ValueError("Invalid deck load request.")
                         try:
-                            result = preparation.prepare(track_id, deck, generation)
+                            result = preparation.prepare(track_id, deck, generation, audition=body.get("audition", False))
                         finally:
                             if deck is not None:
                                 preparation.complete(deck, generation)
@@ -313,6 +316,7 @@ def make_handler(music: Path, generated: Path):
             self.end_headers()
             self.wfile.write(body)
 
+    Handler.preparation = preparation
     Handler.jobs = jobs
     return Handler
 
@@ -325,6 +329,118 @@ def library_storage(generated: Path, host_music: str) -> Path:
     return generated / "libraries" / hashlib.sha256(host_music.encode()).hexdigest()
 
 
+def make_collections_handler(collections, generated):
+    """Keep every root mounted; route opaque track/artifact IDs to its own cache."""
+    handlers = []
+    content = ContentStore(generated)
+    for item in collections:
+        host = item["path"]
+        namespace = "" if host == "/Users/pauloricca/Desktop/projects/vira/music" else host
+        handler = make_handler(Path(item["mount"]), library_storage(generated, host), namespace, content)
+        handlers.append((host, handler))
+    instance = hashlib.sha256("".join(handler.jobs.instance_id for _, handler in handlers).encode()).hexdigest()
+
+    def state():
+        snapshots = [(host, handler.jobs.state()) for host, handler in handlers]
+        return dict(schema_version=LIBRARY_SCHEMA, instance_id=instance,
+                    revision=sum(value["revision"] for _, value in snapshots),
+                    collections=[host for host, _ in handlers],
+                    scan_pending=any(value["scan_pending"] for _, value in snapshots),
+                    scan_error="; ".join(f"{Path(host).name}: {value['scan_error']}"
+                                         for host, value in snapshots if value["scan_error"]) or None,
+                    tracks=[dict(row, collection=host) for host, value in snapshots for row in value["tracks"]])
+
+    class Handler(BaseHTTPRequestHandler):
+        def respond(self, status, value):
+            if getattr(self, "collecting", False):
+                if status >= 400:
+                    self.failures.append(value.get("error", "Scan failed"))
+                return
+            if isinstance(value, dict) and "tracks" in value and value.get("schema_version") == LIBRARY_SCHEMA:
+                value = state()
+            body = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def track_handler(self, track_id):
+            for _, handler in handlers:
+                with handler.jobs.lock:
+                    if track_id in handler.jobs.rows:
+                        return handler
+            return None
+
+        def do_GET(self):
+            if self.path == "/health":
+                self.respond(200, dict(schema_version=LIBRARY_SCHEMA, content_cache=1, music_folders=[host for host, _ in handlers]))
+            elif self.path == "/v1/library/state":
+                self.respond(200, state())
+            elif self.path.startswith("/v1/artwork/"):
+                handler = self.track_handler(self.path[len("/v1/artwork/"):])
+                if handler:
+                    handler.do_GET(self)
+                else:
+                    self.respond(404, {"error": "Track is unavailable. Refresh the library."})
+            elif self.path.startswith("/v1/prepared/") and self.path.endswith("/pcm"):
+                identity = self.path[len("/v1/prepared/"):-len("/pcm")]
+                for _, handler in handlers:
+                    try:
+                        handler.preparation.audio_path(identity)
+                    except (ValueError, OSError, KeyError):
+                        continue
+                    handler.do_GET(self)
+                    return
+                self.respond(404, {"error": "Prepared audio is unavailable. Reload the track."})
+            else:
+                self.respond(404, {"error": "Unknown endpoint."})
+
+        def do_POST(self):
+            if self.path in ("/v1/library/open", "/v1/library/scan"):
+                if self.headers.get("Content-Length", "0") != "0" or self.headers.get("Transfer-Encoding"):
+                    self.respond(400, {"error": "Scan does not accept a request body."})
+                    return
+                self.collecting, self.failures = True, []
+                for _, handler in handlers:
+                    handler.do_POST(self)
+                self.collecting = False
+                value = state()
+                if self.failures:
+                    value["scan_error"] = "; ".join(self.failures)
+                    self.respond(503, {"error": value["scan_error"]})
+                else:
+                    self.respond(200, value)
+                return
+            if self.path not in ("/v1/analysis", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save"):
+                self.respond(404, {"error": "Unknown endpoint."})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("Invalid track request.")
+                raw = self.rfile.read(length)
+                body = json.loads(raw)
+                track_id = body.get("track_id") if isinstance(body, dict) else None
+                if not isinstance(track_id, str):
+                    raise ValueError("A library track ID is required.")
+                handler = self.track_handler(track_id)
+                if handler is None:
+                    raise ValueError("Track is unavailable. Refresh the library.")
+                # Existing endpoint validators still check all fields and opaque IDs.
+                self.rfile = io.BytesIO(raw)
+                handler.do_POST(self)
+            except (ValueError, OSError) as exc:
+                self.respond(400, {"error": str(exc)})
+
+    Handler.collection_handlers = handlers
+    return Handler
+
+
 if __name__ == "__main__":
     # Bind to the container interface; Compose publishes it on host loopback only.
-    ThreadingHTTPServer(("0.0.0.0", 47831), make_handler(Path("/music"), library_storage(Path("/generated"), os.environ.get("VIRA_HOST_MUSIC_DIR", "/music")))).serve_forever()
+    if "VIRA_COLLECTIONS" in os.environ:
+        handler = make_collections_handler(json.loads(os.environ["VIRA_COLLECTIONS"]), Path("/generated"))
+    else:
+        handler = make_handler(Path("/music"), library_storage(Path("/generated"), os.environ.get("VIRA_HOST_MUSIC_DIR", "/music")))
+    ThreadingHTTPServer(("0.0.0.0", 47831), handler).serve_forever()

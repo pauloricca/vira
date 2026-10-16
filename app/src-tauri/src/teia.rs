@@ -890,18 +890,31 @@ impl Host {
                 let name = if command["saveAs"] == true {
                     save_name.context("Choose a filename for Save As")?
                 } else {
-                    record.name.clone()
+                    match command["document"]["name"].as_str() {
+                        Some(name) => {
+                            let name = name.trim();
+                            ensure!(!name.is_empty(), "Give the patch a name before saving");
+                            format!("{name}.json")
+                        }
+                        None => record.name.clone(),
+                    }
                 };
                 let path = self.path(&name)?;
-                if name == record.name {
-                    ensure!(hash(&fs::read(&path)?) == record.saved_hash, "Save conflict: the patch was changed on disk. Use Save As to preserve your draft");
-                } else {
+                let previous_path = self.path(&record.name)?;
+                let save_as = command["saveAs"] == true;
+                if !save_as || name == record.name {
+                    ensure!(hash(&fs::read(&previous_path)?) == record.saved_hash, "Save conflict: the patch was changed on disk. Use Save As to preserve your draft");
+                }
+                if name != record.name {
                     ensure!(
                         !path.exists(),
-                        "Save As conflict: that filename already exists"
+                        "Save conflict: that patch name already exists; choose another name"
                     );
                 }
                 atomic_json(&path, &command["document"])?;
+                if !save_as && name != record.name {
+                    fs::remove_file(previous_path)?;
+                }
                 record.name = name;
                 record.saved_hash = hash(&fs::read(path)?);
                 record.saved_document = command["document"].clone();
@@ -1724,6 +1737,60 @@ mod tests {
             f64::from_bits(fixture.host.telemetry.values[0].load(SeqCst)),
             1.
         );
+    }
+    #[test]
+    fn saving_renames_the_file_from_the_patch_name_and_restores_that_name() {
+        let fixture = Fixture::new();
+        let session = fixture.host.open_session().unwrap();
+        let mut save = fixture.command(&session, 1, "save");
+        save["document"]["name"] = json!("My stereo effect");
+        assert_eq!(
+            fixture.host.request(save.clone(), None).unwrap()["status"],
+            "saved"
+        );
+        assert!(!fixture.root.join("Gain.json").exists());
+        assert_eq!(
+            read_json(&fixture.root.join("My stereo effect.json")).unwrap(),
+            save["document"]
+        );
+        assert_eq!(
+            fixture.host.snapshot()["record"]["name"],
+            "My stereo effect.json"
+        );
+        assert_eq!(
+            fixture.host.editor_init().unwrap()["filename"],
+            "My stereo effect.json"
+        );
+        fixture.host.restore().unwrap();
+        assert_eq!(
+            fixture.host.snapshot()["record"]["document"]["name"],
+            "My stereo effect"
+        );
+        assert_eq!(fixture.host.request(save, None).unwrap()["status"], "saved");
+    }
+    #[test]
+    fn patch_renames_reject_collisions_and_invalid_names_without_changing_files() {
+        let fixture = Fixture::new();
+        let session = fixture.host.open_session().unwrap();
+        fixture
+            .host
+            .import("Other.json", &fixture.document)
+            .unwrap();
+        let original = fs::read(fixture.root.join("Gain.json")).unwrap();
+        for name in [
+            "Other",
+            "",
+            "  ",
+            "../Escape",
+            "nested/name",
+            "nested\\name",
+        ] {
+            let mut save = fixture.command(&session, 1, "save");
+            save["document"]["name"] = json!(name);
+            assert!(fixture.host.request(save, None).is_err(), "{name}");
+            assert_eq!(fs::read(fixture.root.join("Gain.json")).unwrap(), original);
+            assert_eq!(fixture.host.snapshot()["record"]["name"], "Gain.json");
+        }
     }
     #[test]
     fn save_conflicts_and_save_as_acknowledge_only_the_requested_snapshot() {

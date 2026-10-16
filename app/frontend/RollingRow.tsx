@@ -3,10 +3,11 @@ import { useScrub } from './scrub';
 import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
 import { WaveTiles, gridGeometry } from './waveform';
+import { drawTransitionGuides, transitionMarkers, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
-export function RollingRow({ state, running, window, control, timingOpen = false, onInteract, active = false }: { state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function RollingRow({ state, running, window, control, transition, masterBpm = 120, timingOpen = false, onInteract, active = false }: { transition?: TransitionPlan | null; masterBpm?: number; state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const latest = useRef({ state, running, window, timingOpen });
+  const latest = useRef({ state, running, window, timingOpen, transition, masterBpm });
   const firstClick = useRef<{ anchor: number; at: number } | null>(null);
   const clock = useRef(new DisplayPosition());
   const tiles = useRef(new WaveTiles());
@@ -19,7 +20,7 @@ export function RollingRow({ state, running, window, control, timingOpen = false
     (element, x, anchor) => { const bounds=element.getBoundingClientRect(); return anchor + ((x-bounds.left)/Math.max(1,bounds.width)-.5)*window*(state.speed ?? 1); });
   paint.current = now => {
     const element=canvas.current; if (!element || !visible) return;
-    const {state,window,timingOpen}=latest.current, {width,height,dpr}=size.current;
+    const {state,window,timingOpen,transition,masterBpm}=latest.current, {width,height,dpr}=size.current;
     if (width<=0) return; const ctx=element.getContext('2d'); if (!ctx) return;
     const began=performance.now(), speed=state.speed ?? 1, position=gesture.current?.position ?? clock.current.at(now);
     const colour=state.deck===0 ? '#89d2ee' : '#efa264';
@@ -55,15 +56,23 @@ export function RollingRow({ state, running, window, control, timingOpen = false
       ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
       ctx.fillStyle = '#f6d477'; ctx.beginPath(); ctx.moveTo(x-5,0); ctx.lineTo(x+5,0); ctx.lineTo(x,9); ctx.fill();
     }
+    const markers = transitionMarkers(transition, state.deck);
+    drawTransitionGuides(ctx, markers, marker => {
+      if (state.playing && state.loop_out_seconds != null) {
+        const elapsed = transition?.sampled_at == null ? 0 : Math.min(.5, Math.max(0, (now - transition.sampled_at) / 1000));
+        return width * (.5 + (marker.remaining * 60 / masterBpm - elapsed) / window);
+      }
+      return loopX(marker.seconds);
+    }, width, height);
     const cost=performance.now()-began;
     drawMetrics.count++; drawMetrics.total_ms+=cost; drawMetrics.max_ms=Math.max(drawMetrics.max_ms,cost);
   };
   useLayoutEffect(() => {
-    latest.current={state,running,window,timingOpen};
+    latest.current={state,running,window,timingOpen,transition,masterBpm};
     const received=state.received_at ?? performance.now();
     clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0,start_seconds:state.track?.start_seconds},received,state.sampled_at ?? received);
     paint.current(performance.now());
-  },[state,running,window,timingOpen]);
+  },[state,running,window,timingOpen,transition,masterBpm]);
   useEffect(() => {
     const element=canvas.current; if (!element) return;
     function resize() {
@@ -93,6 +102,7 @@ export function RollingRow({ state, running, window, control, timingOpen = false
         firstClick.current = null;
         void control(state.deck, 'reference_beat', seconds);
       }} />
+    <TransitionDescription plan={transition} deck={state.deck} rolling />
     <div className="rolling-playhead" />
   </div>;
 }

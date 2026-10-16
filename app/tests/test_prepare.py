@@ -27,6 +27,23 @@ class PreparationTests(unittest.TestCase):
         self.jobs.close()
         self.temp.cleanup()
 
+    def test_audition_skips_waveforms_and_deck_upgrade_reuses_pcm(self):
+        with patch("preparation.prepare.pcm_info", side_effect=AssertionError("Audition must not calculate waveforms")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Audition must not run FFT")):
+            preview = self.prepare.prepare(self.track_id, audition=True)
+        self.assertEqual(preview["frames"], 96000)
+        self.assertNotIn("peaks", preview)
+        self.assertNotIn("fine_features", preview)
+        with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Deck upgrade must reuse audition PCM")):
+            deck = self.prepare.prepare(self.track_id)
+        self.assertEqual(deck["pcm_hash"], preview["pcm_hash"])
+        self.assertGreater(len(deck["peaks"]), 0)
+        manifest = self.prepare.audio_path(deck["artifact_id"]).parent / "manifest.json"
+        value = json.loads(manifest.read_text())
+        value["waveform_feature_version"] = 0
+        manifest.write_text(json.dumps(value))
+        with patch("preparation.prepare.spectral_features", side_effect=AssertionError("Audition must not repair unused features")), patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Audition must reuse decoded PCM")):
+            self.assertEqual(self.prepare.prepare(self.track_id, audition=True), preview)
+
     def test_full_duration_stereo_peaks_and_no_analysis_dependency(self):
         descriptor = self.prepare.prepare(self.track_id)
         self.assertEqual(descriptor["frames"], 96000)

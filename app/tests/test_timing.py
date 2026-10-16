@@ -91,7 +91,8 @@ class TimingTests(unittest.TestCase):
         for references in [[-1], [2], [.1, .2, .3], [float('nan')], [True], 'bad']:
             with self.assertRaises(ValueError):
                 timing.save(row['id'], grid, references)
-        (timing.root / (row['source_hash'] + '.json')).write_text('{}')
+        digest = self.track(manager)['source_hash']
+        (manager.content.root / 'timing' / (digest + '.json')).write_text('{}')
         self.assertEqual(timing.get(row['id'])['state'], 'stale')
 
 

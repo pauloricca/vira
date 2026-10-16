@@ -18,8 +18,35 @@ test('startup lists metadata and refresh reconciles removed files', async () => 
   expect(screen.getByText('2:05')).toBeTruthy();
   expect(screen.getByText('Not analysed')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await screen.findByText(/No files in the music bin/);
+  await screen.findByText(/No files in this collection/);
   expect(invoke.mock.calls).toEqual([['open_library'], ['refresh_library']]);
+});
+test('expanding and restoring the library preserves its search, selection and mounted panels', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const libraryPanel = screen.getByRole('region', { name: 'Music library' });
+  const workspace = libraryPanel.closest('main')!;
+  const decks = workspace.querySelector('.decks');
+  const patches = workspace.querySelector('.performance-slots');
+  const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
+  fireEvent.change(search, { target: { value: 'Filename' } });
+  const row = screen.getByText('Unknown artist').closest('tr')!;
+  fireEvent.click(row);
+  const expand = screen.getByRole('button', { name: 'Expand music library' });
+  expect(screen.getByRole('button', { name: 'Refresh' }).nextElementSibling).toBe(expand);
+  fireEvent.click(expand);
+  expect(workspace.classList.contains('library-expanded')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Restore library size' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('region', { name: 'Music library' })).toBe(libraryPanel);
+  expect(search.value).toBe('Filename');
+  expect(row.getAttribute('aria-selected')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'Restore library size' }));
+  expect(workspace.classList.contains('library-expanded')).toBe(false);
+  expect(workspace.querySelector('.decks')).toBe(decks);
+  expect(workspace.querySelector('.performance-slots')).toBe(patches);
+  expect(search.value).toBe('Filename');
+  expect(row.getAttribute('aria-selected')).toBe('true');
 });
 test('library track actions do not open the timing dialog', async () => {
   invoke.mockResolvedValue(library);
@@ -177,7 +204,7 @@ test('late request cannot restore a removed source after Refresh', async () => {
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'Analyse Artist - Filename' }));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await screen.findByText(/No files in the music bin/);
+  await screen.findByText(/No files in this collection/);
   await act(async () => { finish(snapshot('needs_review', 3, estimate)); });
   expect(screen.queryByText('D minor')).toBeNull();
 });
@@ -673,4 +700,220 @@ test('deck key menus keep focus through the app focus policy and follow shifted 
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'pitch', value: 2, generation: 1 }));
   const shifted = await screen.findByRole('button', { name: 'Key deck A: E minor, shifted' });
   expect(shifted.textContent).toContain('E minor*');
+});
+
+test('the audition column follows the index and its button never loads a deck', async () => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'audition_track' ? 12 : library));
+  render(<App />);
+  const button = await screen.findByRole('button', { name: 'Audition Artist - Filename through cue headphones' });
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+  expect(button.closest('td')?.previousElementSibling?.classList.contains('row-number')).toBe(true);
+  fireEvent.click(button);
+  fireEvent.doubleClick(button);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('audition_track', { trackId: 'one', output: 'cue' }));
+  expect(screen.getByRole('group', { name: 'Library audition' })).toBeTruthy();
+  expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
+});
+
+test('collection dropdown filters search and analysis while preserving the loaded deck', async () => {
+  const first = { ...library.tracks[0], collection: '/fixed/music' };
+  const second = { ...first, id: 'two', title: 'Second collection track', collection: '/other/Dance' };
+  invoke.mockResolvedValue({ ...library, collections: ['/fixed/music', '/other/Dance', '/other/Empty'], tracks: [first, second] });
+  render(<App />);
+  await screen.findByText(first.title);
+  audioInvoke.mockClear();
+  expect(screen.queryByText(second.title)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Dance' }));
+  await screen.findByText(second.title);
+  expect(screen.queryByText(first.title)).toBeNull();
+  expect(localStorage.getItem('vira.collection')).toBe('/other/Dance');
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'absent' } });
+  expect(screen.queryByText(second.title)).toBeNull();
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Analyse all' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('analyse_track', { trackId: 'two' }));
+  expect(invoke.mock.calls.filter(([command]) => command === 'analyse_track')).toHaveLength(1);
+  expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track' || command === 'deck_control')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Empty' }));
+  expect(screen.getByText(/No files in this collection/)).toBeTruthy();
+  localStorage.removeItem('vira.collection');
+});
+
+test('adding a music folder in Settings refreshes collections immediately', async () => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'choose_library_folder'
+    ? { selected: { music: '/fixed/music', musicFolders: ['/fixed/music', '/other/Jazz'], patches: '/fixed/patches' }, active: { music: '/fixed/music', musicFolders: ['/fixed/music', '/other/Jazz'], patches: '/fixed/patches' }, restartRequired: false }
+    : command === 'refresh_library' ? { ...library, collections: ['/fixed/music', '/other/Jazz'] } : library));
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const add = await screen.findByRole('button', { name: 'Add music folder…' });
+  await waitFor(() => expect((add as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(add);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('refresh_library'));
+  fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  expect(screen.getByRole('menuitemradio', { name: 'Jazz' })).toBeTruthy();
+});
+
+test('deck analysis refreshes BPM, key and grids on both loaded copies without reloading', async () => {
+  let current = library;
+  let applied = false;
+  const grid = { bpm: estimate.grid.bpm, downbeat_seconds: estimate.grid.offset_seconds, reviewed: false };
+  invoke.mockImplementation((command: string) => {
+    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: 'artifact', fine_peaks: [], fine_peak_frames: 0 });
+    if (command === 'track_timing') return Promise.resolve({ grid: null, suggestion: current.tracks[0].analysis.result ? grid : null, reference_beats: [], state: 'unprepared' });
+    if (command === 'apply_timing') { applied = true; return Promise.resolve(); }
+    if (command === 'analyse_track') current = snapshot('queued', 2);
+    return Promise.resolve(current);
+  });
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: { track_id: 'one', artifact_id: 'artifact', title: 'Loaded', artist: '', filename: '', duration_seconds: 125.4, frames: 6019200, peak_frames: 0, peaks: [] },
+      grid: applied ? grid : null, target_bpm: applied ? grid.bpm : undefined,
+      position_seconds: 12, playing: true, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  const button = await screen.findByRole('button', { name: 'Analyse deck A' });
+  expect(button.nextElementSibling?.getAttribute('aria-label')).toBe('BPM deck A');
+  fireEvent.click(button);
+  await waitFor(() => expect(button.textContent).toBe('Analysing…'));
+  expect((button as HTMLButtonElement).disabled).toBe(true);
+  current = snapshot('needs_review', 3, estimate);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid }), { timeout: 2500 });
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 1, generation: 1, grid }));
+  expect(screen.queryByRole('button', { name: 'Analyse deck A' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Analyse deck B' })).toBeNull();
+  expect(screen.getByLabelText('BPM deck A').textContent).toBe('121.3');
+  expect(screen.getByLabelText('BPM deck B').textContent).toBe('121.3');
+  expect(screen.getAllByText('7A / Dmin').length).toBeGreaterThan(0);
+  expect(document.querySelector('.deck-overview .waveform path[opacity="0.25"]')).toBeTruthy();
+  expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(0);
+});
+
+test('expanded sort mode locks column sorting and persists drag order', async () => {
+  localStorage.removeItem('vira.track-order');
+  invoke.mockResolvedValue({ ...library, tracks: [...library.tracks, { ...library.tracks[0], id: 'two', title: 'Second song' }] });
+  render(<App />);
+  await screen.findByText('Second song');
+  expect(screen.queryByRole('button', { name: /^Sort$/ })).toBeNull();
+  fireEvent.click(screen.getByLabelText('Expand music library'));
+  fireEvent.click(screen.getByRole('button', { name: /^Sort$/ }));
+  expect((screen.getByLabelText('Sort by Title') as HTMLButtonElement).disabled).toBe(true);
+  const transfer = { setData: vi.fn(), effectAllowed: '', dropEffect: '' };
+  fireEvent.dragStart(screen.getByText('Second song').closest('tr')!, { dataTransfer: transfer });
+  const dragged = screen.getByText('Second song').closest('tr')!;
+  const target = screen.getAllByText('Unknown artist').find(element => element.closest('tr') !== dragged)!.closest('tr')!;
+  fireEvent.dragOver(target, { dataTransfer: transfer, clientY: 0 });
+  expect(dragged.parentElement!.firstElementChild).toBe(dragged);
+  expect(localStorage.getItem('vira.track-order')).toBeNull();
+  expect(dragged.classList.contains('track-dragging')).toBe(true);
+  expect(screen.getByRole('button', { name: /^Sort$/ }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.drop(dragged, { dataTransfer: transfer });
+  expect(JSON.parse(localStorage.getItem('vira.track-order')!)['/fixed/music']).toEqual(['two', 'one']);
+  fireEvent.dragStart(target, { dataTransfer: transfer });
+  fireEvent.dragOver(dragged, { dataTransfer: transfer, clientY: 0 });
+  expect(target.parentElement!.firstElementChild).toBe(target);
+  fireEvent.dragEnd(target);
+  expect(dragged.parentElement!.firstElementChild).toBe(dragged);
+  expect(JSON.parse(localStorage.getItem('vira.track-order')!)['/fixed/music']).toEqual(['two', 'one']);
+  fireEvent.click(screen.getByRole('button', { name: /^Sort$/ }));
+  expect((screen.getByLabelText('Sort by Title') as HTMLButtonElement).disabled).toBe(false);
+  localStorage.removeItem('vira.track-order');
+});
+
+test('audition output uses the collection menu style only in the expanded library', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  expect(screen.queryByLabelText('Audition output')).toBeNull();
+  fireEvent.click(screen.getByLabelText('Expand music library'));
+  const trigger = screen.getByRole('button', { name: 'Audition output' });
+  expect(trigger.classList.contains('collection-trigger')).toBe(true);
+  fireEvent.click(trigger);
+  expect(screen.getByRole('menu', { name: 'Audition outputs' }).classList.contains('collection-menu')).toBe(true);
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Play on Master' }));
+  expect(trigger.textContent).toContain('Play on Master');
+  fireEvent.click(screen.getByLabelText('Restore library size'));
+  expect(screen.queryByLabelText('Audition output')).toBeNull();
+});
+
+
+test('the audition row button becomes Stop during loading and stops without loading a deck', async () => {
+  let finish!: (generation: number) => void;
+  invoke.mockImplementation((command: string) => command === 'audition_track'
+    ? new Promise<number>(resolve => { finish = resolve; })
+    : Promise.resolve(command === 'audition_control' ? undefined : library));
+  render(<App />);
+  const play = await screen.findByRole('button', { name: 'Audition Artist - Filename through cue headphones' });
+  await waitFor(() => expect((play as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(play);
+  const stop = screen.getByRole('button', { name: 'Stop auditioning Artist - Filename' });
+  expect(stop.querySelector('rect')).toBeTruthy();
+  fireEvent.click(stop);
+  await screen.findByRole('button', { name: 'Audition Artist - Filename through cue headphones' });
+  await act(async () => finish(9));
+  expect(screen.queryByRole('group', { name: 'Library audition' })).toBeNull();
+  expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
+});
+
+test('expanded Play All uses the shared overlap setting without a library selector', async () => {
+  localStorage.setItem('vira.auto-bars', '32');
+  const native = { running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, playing: false, loading: false, track: null, generation: 0 })) };
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'audition_track' ? 8 : command === 'get_audio_state' ? native : undefined));
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'audition_track' ? 8 : command === 'audition_control' || command === 'queue_audition' ? undefined : library));
+  const { unmount } = render(<App />);
+  await screen.findByText('Unknown artist');
+  expect(screen.queryByText('Play All')).toBeNull();
+  fireEvent.click(screen.getByLabelText('Expand music library'));
+  fireEvent.click(screen.getByRole('button', { name: 'Play All' }));
+  expect(screen.queryByLabelText('Play All overlap')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Audition Artist - Filename through cue headphones' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('audition_control', expect.objectContaining({ action: 'sequence', value: 32 })));
+  localStorage.removeItem('vira.auto-bars');
+  unmount();
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, playing: deck === 0, loading: false, track: null, generation: 0 })) });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByLabelText('Expand music library'));
+  expect(screen.queryByText('Play All')).toBeNull();
+});
+
+test('automatic transition settings persist overlap, mode and tempo choice and send them to the engine', async () => {
+  localStorage.removeItem('vira.auto-bars');
+  localStorage.removeItem('vira.auto-tempo');
+  localStorage.removeItem('vira.auto-style');
+  invoke.mockResolvedValue(library);
+  const view = render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const overlap = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition overlap' });
+  expect(Array.from(overlap.options).map(option => option.value)).toEqual(['0', '1', '2', '4', '8', '16', '32']);
+  expect(overlap.value).toBe('8');
+  const mode = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition mode' });
+  expect(Array.from(mode.options).map(option => option.textContent)).toEqual(['Crossfade', 'Bass swap', 'Smart']);
+  expect(mode.value).toBe('crossfade');
+  fireEvent.change(mode, { target: { value: 'smart' } });
+  expect(localStorage.getItem('vira.auto-style')).toBe('smart');
+  fireEvent.change(overlap, { target: { value: '4' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Automatic transition tempo' }), { target: { value: 'keep' } });
+  expect(localStorage.getItem('vira.auto-bars')).toBe('4');
+  expect(localStorage.getItem('vira.auto-tempo')).toBe('false');
+  await waitFor(() => {
+    expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_style', value: 2 }));
+    expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_bars', value: 4 }));
+    expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_tempo', value: 0 }));
+  });
+  view.unmount();
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition overlap' }).value).toBe('4');
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition tempo' }).value).toBe('keep');
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition mode' }).value).toBe('smart');
+  localStorage.removeItem('vira.auto-style');
+  localStorage.removeItem('vira.auto-bars');
+  localStorage.removeItem('vira.auto-tempo');
 });

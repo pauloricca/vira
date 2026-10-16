@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type Patch } from '@pauloricca/teia-hosted';
-import { gainPatch, prepare, type Parameter, type TeiaState } from './teiaModel';
+import { gainPatch, prepare, type Parameter, type TeiaRecord, type TeiaState } from './teiaModel';
 
 type Entry = { slot: number; state: TeiaState };
 type Library = { files: string[] };
 const ORDER_KEY = 'vira.patch-order';
 const PATCH_MIME = 'application/x-vira-patch-slot';
+const patchName = (record: TeiaRecord) => record.document?.name?.trim() || record.name.replace(/\.json$/, '');
 const isControl = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('button, input, select, textarea, [role=slider], [contenteditable=true]'));
 function savedOrder(): string[] {
   try { const value: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? '[]'); return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === 'string'))] : []; }
@@ -15,7 +16,10 @@ function savedOrder(): string[] {
 export const emptyPatch = (name: string): Patch => ({ name, nodes: [
   { id: 'input', type: 'AudioInput', params: { gain: 1, level: 1 }, position: { x: 80, y: 160 } },
   { id: 'output', type: 'AudioOut', params: { level: 1 }, position: { x: 480, y: 160 } },
-], links: [] });
+], links: [
+  { from: { node: 'input', port: 'left' }, to: { node: 'output', port: 'left' } },
+  { from: { node: 'input', port: 'right' }, to: { node: 'output', port: 'right' } },
+] });
 // An unconnected AudioOut is an editable draft, not an executable Teia graph.
 // Keep that document intact and run silence until its first valid editor apply.
 export function preparePatchInstance(document: Patch) {
@@ -108,6 +112,20 @@ export function Patches() {
     try { localStorage.setItem(ORDER_KEY, JSON.stringify(names)); }
     catch { setError('Patch order changed, but could not be saved for the next launch.'); }
   };
+  const previousNames = useRef(new Map<number, string>());
+  useEffect(() => {
+    const renames = new Map<string, string>();
+    for (const entry of entries) {
+      const name = entry.state.record?.name;
+      const previous = previousNames.current.get(entry.slot);
+      if (name && previous && name !== previous) renames.set(previous, name);
+    }
+    previousNames.current = new Map(entries.filter(e => e.state.record).map(e => [e.slot, e.state.record!.name]));
+    if (renames.size) {
+      saveOrder(order.map(name => renames.get(name) ?? name));
+      setSelected(name => name ? renames.get(name) ?? name : null);
+    }
+  }, [entries]);
 
   const refresh = async () => {
     const [library, next] = await Promise.all([invoke<Library>('teia_library'), invoke<Entry[]>('patches_state')]);
@@ -188,7 +206,7 @@ export function Patches() {
       const record = entry.state.record!;
       const bypass = pending.current.get(`${entry.slot}:bypass`) ?? (record.bypass ? 1 : 0);
       return <div className={`patch-row${bypass ? ' patch-off' : ''}${selected === record.name ? ' patch-selected' : ''}${dragging === entry.slot ? ' patch-dragging' : ''}${dropTarget?.slot === entry.slot ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`} key={entry.slot}
-        role="listitem" aria-label={record.name.replace(/\.json$/, '')} aria-current={selected === record.name ? 'true' : undefined} data-patch-name={record.name} title="Click to select · Double-click to edit · Drag to reorder" tabIndex={-1} draggable={!busy}
+        role="listitem" aria-label={patchName(record)} aria-current={selected === record.name ? 'true' : undefined} data-patch-name={record.name} title="Click to select · Double-click to edit · Drag to reorder" tabIndex={-1} draggable={!busy}
         onPointerDownCapture={e => { dragAllowed.current = !isControl(e.target); if (dragAllowed.current && e.button === 0) e.currentTarget.focus({ preventScroll: true }); }}
         onDoubleClick={e => { if (busy || isControl(e.target)) return; setSelected(record.name); void run(async () => { await invoke('teia_open_editor', { slot: entry.slot }); }); }}
         onDragStart={e => {
@@ -208,15 +226,15 @@ export function Patches() {
           const rect = e.currentTarget.getBoundingClientRect();
           reorder(entry.slot, e.clientY >= rect.top + rect.height / 2); finishDrag();
         }} onDragEnd={finishDrag}>
-        <button className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${record.name.replace(/\.json$/, '')}`} disabled={busy || !entry.state.running} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</button>
-        <strong className="patch-name" title={record.name}>{record.name.replace(/\.json$/, '')}</strong>
+        <button className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${patchName(record)}`} disabled={busy || !entry.state.running} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</button>
+        <strong className="patch-name" title={record.name}>{patchName(record)}</strong>
         {entry.state.suspended && <span className="patch-recovering" role="status">Recovering audio…</span>}
         {record.prepared.parameters.map(p => <PatchKnob key={`${entry.state.generation}:${p.id}`} parameter={p} value={pending.current.get(`${entry.slot}:${p.id}`) ?? entry.state.parameters?.[p.id] ?? record.overrides[p.id] ?? p.defaultValue} disabled={busy || !entry.state.running || Boolean(entry.state.suspended)} change={value => control(entry, 'parameter', p.id, value)} />)}
       </div>;
     })}{!active.length && <div className="slots-empty"><span>PATCHES</span><p>Add a patch to start playing</p></div>}</div>
     {removing && <dialog className="patch-confirmation" ref={confirmation} aria-labelledby="remove-patch-title" onCancel={e => { e.preventDefault(); if (!busy) setRemoving(null); }} onKeyDown={e => e.stopPropagation()}>
       <h2 id="remove-patch-title">Remove patch?</h2>
-      <p>Remove “{removing.state.record?.name.replace(/\.json$/, '')}” and its routing connections? The saved patch stays in your library.</p>
+      <p>Remove “{removing.state.record && patchName(removing.state.record)}” and its routing connections? The saved patch stays in your library.</p>
       <div><button autoFocus disabled={busy} onClick={() => setRemoving(null)}>Cancel</button><button disabled={busy} onClick={() => void remove()}>{busy ? 'Removing…' : 'Remove patch'}</button></div>
       {error && <p className="error" role="alert">{error}</p>}
     </dialog>}

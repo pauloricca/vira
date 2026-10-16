@@ -9,14 +9,27 @@ beforeEach(() => { localStorage.clear(); HTMLDialogElement.prototype.showModal =
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const state = { generation: '7', runtimeGeneration: '7', record: null, editorOpen: false, peak: 0, renderFailures: 0, restoreError: null, running: true };
 const loaded = { ...state, record: { name: 'Gain.json', prepared: prepare(gainPatch), overrides: {}, bypass: false } };
-test('new patches contain only disconnected stereo input and output nodes', () => {
+test('new patches connect each stereo input channel to its matching output', () => {
   const patch = emptyPatch('Empty');
   expect(patch.nodes.map(n => n.type)).toEqual(['AudioInput', 'AudioOut']);
-  expect(patch.links).toEqual([]);
+  expect(patch.links).toEqual([
+    { from: { node: 'input', port: 'left' }, to: { node: 'output', port: 'left' } },
+    { from: { node: 'input', port: 'right' }, to: { node: 'output', port: 'right' } },
+  ]);
   expect(preparePatchInstance(patch).prepared.parameters).toEqual([]);
-  expect(preparePatchInstance(patch).draft).toBe(true);
+  expect(preparePatchInstance(patch).draft).toBe(false);
 });
 test.each([[4000, '4k'], [4200, '4.2k'], [-4200, '-4.2k'], [123.456, '123'], [0.123, '0.12'], [999999, '1M'], [0.00001, '1e-5']])('formats %s as %s', (value, result) => expect(formatPatchValue(Number(value))).toBe(result));
+test('the patch panel follows the name edited in the document before and after saving', async () => {
+  let record = { ...loaded.record, document: { ...gainPatch, name: 'My stereo effect' } };
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: [record.name] } : command === 'patches_state' ? [{ slot: 0, state: { ...loaded, record } }] : undefined));
+  render(<Patches />);
+  await screen.findByRole('listitem', { name: 'My stereo effect' });
+  expect(screen.getByRole('switch', { name: 'Enable My stereo effect' })).toBeTruthy();
+  expect(screen.getByText('My stereo effect').title).toBe('Gain.json');
+  record = { ...record, name: 'My stereo effect.json' };
+  await waitFor(() => expect(screen.getByText('My stereo effect').title).toBe('My stereo effect.json'));
+});
 test('the dropdown lists every saved patch, prevents duplicates, and adds the selected patch', async () => {
   let entries = [{ slot: 0, state: loaded }];
   invoke.mockImplementation((command: string) => {

@@ -22,14 +22,23 @@ see the handover for exact bounds and remaining acceptance checks.
 After a package refresh, reopen the rebuilt app and explicitly reload the patch
 so its cached program uses the new snapshot.
 
-In **Settings → Folders**, choose the music and Teia patch directories with the
-native folder picker. Choices persist in
-`~/Library/Application Support/uk.ricca.vira/paths.json` and apply after quitting
-and reopening VIRA. Files are not moved. Keep `assets/` and `buffers/` beside
-patches when moving a library. The preparation service remounts only the selected
-music folder read-only; Docker Desktop must be running and allow access to that
-folder. Different music folders have separate generated indexes/analysis/timing
-caches. The original default library retains its existing cache. `VIRA_APP_DIR`
+In **Settings → Folders**, add or remove music folders and choose the Teia patch
+directory with the native folder picker. Each music folder is a collection named
+after its folder. Select a collection to the left of the library search; search,
+sorting, track counts and Analyse all apply to that collection. The selection is
+remembered, and changing collections keeps loaded decks playing. Choices persist in
+`~/Library/Application Support/uk.ricca.vira/paths.json`. Music folder changes
+apply immediately and refresh the collections. Teia patch folder changes apply
+after quitting and reopening VIRA. Files are not moved. Keep `assets/` and `buffers/` beside
+patches when moving a library. The preparation service mounts only the configured
+music folders read-only; Docker Desktop must be running and allow access to those
+folders. Collections have separate indexes; saved analysis and timing overrides
+are shared by content in `generated/content/`. Opening or refreshing a collection
+does not calculate audio hashes. Analyse or loading a track identifies that file
+and restores matching saved work before doing any new analysis. Moving or renaming
+unchanged files therefore preserves saved work on recognition. Legacy folder caches
+are migrated lazily on use; the newest saved analysis and newest timing overrides
+win independently. Recognition preserves save times. Identical copies share settings. `VIRA_APP_DIR`
 can locate `app/compose.yaml` if the development checkout moves. A failed mount
 is reported in the library; startup details are in the app support directory's
 `preparation-start.log`. Refresh retries preparation startup.
@@ -37,6 +46,73 @@ is reported in the library; startup details are in the app support directory's
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
 single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
+**AUTO NOW / AUTO END**, to the left of the loop controls, transition from the playing
+deck to the loaded, stopped deck. Both tracks need usable timing grids and released
+loops. AUTO NOW waits for the next phrase boundary counted from the playable track
+start; AUTO END overlaps the final bars. The incoming deck starts exactly at its
+cue point (or its normal track start when no cue has been moved). If the chosen
+length no longer fits, AUTO tries each shorter supported overlap, down to no
+overlap at the end. The incoming track's length after its cue also limits the
+overlap. This does not change the saved overlap setting. The
+selected button blinks while armed and during the crossfade; press it again to
+cancel. During the overlap, the outgoing deck fader falls from its current position
+to zero, and the incoming fader rises from zero to the outgoing deck's starting
+level. Arming either mode first lowers the stopped incoming deck's fader, so it
+starts silently. The outgoing fader stays unchanged while AUTO is waiting. An off-center
+crossfader moves gradually to center over the first bar (or a shorter overlap).
+Cancellation stops the incoming deck and restores the starting faders and crossfader,
+leaving master BPM at its current value and both decks locked. Manual transport,
+timing, tempo, crossfader or active-transition fader changes also cancel the transition.
+Moving the incoming fader while armed cancels AUTO and applies the manual position.
+Cancelling before playback restores its previous fader position.
+Loop IN/OUT, loop lengths and loop release remain performance controls during AUTO.
+They do not cancel either transition mode or stop the incoming deck. The master
+beat clock keeps the planned launch, fader, tempo and bass-swap timing advancing
+even when source positions repeat in a loop. This also applies to loops added
+while AUTO is waiting for its scheduled boundary.
+
+While AUTO is engaged, both deck overview waveforms and both rolling waveforms
+show the scheduled transition: teal START/END guides and a shaded overlap, white
+OUT FADE / IN FULL guides for Crossfade, or an amber BASS SWAP / SMART BASS guide.
+The markers use the native plan, including cue points, shorter overlaps and Smart's
+selected drop or midpoint fallback. No overlap shows one HANDOFF marker. Markers
+clear on completion or cancellation. Looping rolling waveforms retain the output
+clock countdown, while overviews project upcoming events onto the looped source.
+
+**Transition mode** in Settings offers **Crossfade**, **Bass swap** and **Smart**. Crossfade
+raises the incoming fader from zero to its target over the first 80% of the
+transition. The outgoing fader stays at its starting level for the first 20%,
+then fades to zero over the remaining 80%. This keeps more energy in the middle.
+Bass swap holds the outgoing fader during the first half while
+raising the incoming fader from zero to match it, with the incoming bass killed. A quick
+10 ms EQ swap just before the halfway beat kills the outgoing bass and restores
+the incoming bass to unity. The outgoing fader then falls to zero over the second
+half. The stopped deck's previous bass setting is restored at the end; cancelling
+restores both starting bass settings. Moving LO during a bass swap cancels it and
+applies the manual setting. Mid/high EQ, trim and filter stay under manual control.
+The selected mode also applies to library Play All; changes affect the next transition.
+
+**Smart** uses the Bass swap method with a conservative bass-return detector. It
+looks for at least two bass-light bars followed by an audible, sustained bass
+return on an incoming bar boundary inside the overlap. The incoming fader reaches
+the outgoing level at that drop, the bass swaps just before it, and the outgoing
+fader falls to zero over the remaining overlap. If no clear candidate fits, every
+fader, EQ and tempo action follows Bass swap's midpoint timing exactly. Cues,
+shorter-overlap fallback and creative loops retain their existing behavior.
+Smart also applies to library Play All. It detects bass returns rather than
+promising to identify every musical drop; fills, swells and off-bar returns are
+rejected conservatively. The raw stereo PCM is analyzed once on the ordinary
+loading thread into a compact bass-energy profile shared with the loaded source.
+Arming a transition inspects at most 32 bar boundaries, using the current timing
+grid and cue; the playback path does no PCM analysis or FFT work.
+
+**Settings → Automatic transitions** remembers the overlap (none, 1, 2, 4, 8,
+16 or 32 bars) and whether master BPM moves gradually to the incoming track's original
+BPM across the overlap or stays fixed. Both decks lock when engaged. No overlap
+hands off at the end. Settings changes apply to the next transition. Automatic
+fader transitions also work with the manual crossfader hidden. Library Play All uses the
+same overlap setting; change it in Settings → Automatic transitions.
+
 Deck volume faders control native volume independently of the **GN** trim (−12 to +12 dB).
 **LO / MD / HI** use a three-band kill EQ (−∞ to +6 dB, unity at the midpoint),
 with 24 dB/oct crossovers at 250 Hz and 2.5 kHz. **FL** sweeps a low-pass to the
@@ -60,6 +136,39 @@ immediately on each peak and falls at 24 dB/sec on the shared animation loop,
 from −48 to 0 dBFS. Master gain and crossfading remain deferred.
 Use each library row's **•••** menu for timing, analysis and Load A / Load B;
 dragging rows onto decks remains available.
+Use the thin play column after the row number to audition a library track through
+**Cue headphones** (selected on AUDIO). The row button changes to Stop while
+loading or playing. Auditioning uses an independent player
+at the source's original speed outside Play All overlaps and never replaces or changes decks A/B. The
+compact controls beside **Music library** show pause/resume, Stop, a seek slider
+and elapsed/total time. Stop cancels pending preparation, releases the preview
+and hides the controls. Audition playback joins any selected deck cue in the
+headphones. The expanded library also offers **Play on Master** while both decks
+are stopped; starting a deck stops a master audition.
+
+In the expanded library, **Play All** is available while both decks are stopped.
+Enable it and choose the overlap in **Settings → Automatic transitions**
+(**No overlap**, **1**, **2**, **4**, **8**, **16** or **32 bars**),
+and audition any row to continue through the remaining playable rows in the
+currently displayed order (including its search and sorting). This order is
+captured when auditioning starts; the last track ends playback without looping.
+The next track preloads while the current track plays. With an overlap, their
+beat grids share the same bar phase and BPM, with a gradual tempo ramp from the
+outgoing track's original BPM to the incoming track's original BPM using the
+selected transition mode. Pitch stays unchanged. The incoming track continues at its original
+BPM after the transition. Missing/stale grids, BPM ratios outside 0.5–2×, tracks
+too short for the chosen overlap, or loading past the overlap boundary use
+consecutive playback instead. Starting either deck stops Play All. Turning Play
+All off keeps the current track playing at its original BPM. Changing overlap
+length during a transition applies to the following transition.
+
+Audition preparation skips deck waveform peaks and frequency shading and returns
+only audio metadata. The native engine retains up to two recent audition sources
+within a 256 MiB total cache, so repeat previews can reuse verified PCM after
+source validation. Cold previews still decode and load the complete song before
+starting; playback is not streamed. Deck loading adds waveform data on demand
+while reusing the already decoded PCM.
+
 Collection rows show number, cover tile, title, artist, rounded BPM, Camelot and
 musical key (for example, 8B / Cmaj), A/B key compatibility, length and analysis
 status. Compatibility dots range from red to green using Camelot wheel distance;
@@ -127,18 +236,17 @@ scans return a retry message. The native request has a 120-second total timeout;
 very large/problematic bins can exceed it in this initial serial implementation.
 
 At startup, the app first shows saved library rows whose files still have the same
-size. A background scan then probes and hashes every readable source and replaces
-the provisional rows with verified results. New files and files with changed sizes
-appear after that scan. Loading a provisional row still checks its full source hash;
-same-size changes cannot silently load an old prepared track. **Refresh** waits for
-a complete scan.
+size. A background scan probes file metadata and reconciles the collection without
+hashing audio or searching shared saved work. New files and changed files appear
+after that scan. **Refresh** waits for a complete metadata scan.
 
 Each successful scan writes `generated/library-v2.json` atomically (the original
-metadata-only v1 snapshot is also retained). IDs encode relative filename, size,
-mtime and SHA-256 content hash. Refresh rereads metadata and hashes readable
-sources, so even content changed with a preserved size/mtime invalidates estimates.
-No snapshot is silently substituted when the service fails. The UI labels any
-previous table as potentially out of date and allows Refresh to retry.
+metadata-only v1 snapshot is also retained). Row IDs encode collection, relative
+filename, size and mtime. Content hashes are separate and may be absent until a
+track is analysed or loaded. Unchanged local entries can show saved analysis using
+file stats; same-size/mtime byte changes are detected when the file is used, not
+while browsing. No snapshot is silently substituted when the service fails. The
+UI labels any previous table as potentially out of date and allows Refresh to retry.
 
 ## Analyse one file
 
@@ -185,12 +293,22 @@ warnings select **Needs review**. Explicit approval changes the status to
 The baseline's general half/double-tempo/phase
 advisory is retained in the result data for every non-silent result.
 
-Click **Reanalyse** for a fresh job or **Retry** after a failure. Queued, analysing,
+Click **Reanalyse** or **Retry** to identify the file and restore compatible saved
+work if available; otherwise a new analysis runs. Queued, analysing,
 analysed, needs review, stale and failed states are distinct. BPM/key stay blank
 for unfinished, failed or stale results. Request/job errors are local to the row.
 
 Each per-filename file in `generated/analysis/` contains the schema version,
 analyzer version, source ID/revision/content hash, state and complete result.
+Completed analysis and approval are also saved in `generated/content/analysis/`
+by content hash, independently of the collection and filename. Analysis requests
+copy/hash only the requested source, check shared saved work, then skip numerical
+analysis when a compatible completed result exists. Deck preparation also identifies
+the requested file and restores its saved analysis before reading timing. A lookup
+is not a save: timestamps change only for actual analysis/approval or manual timing
+edits. Old per-folder caches are inspected lazily on first recognition; when entries
+conflict, their saved timestamp (or legacy file modification time) selects the newest
+analysis and newest timing independently. Legacy files remain available on disk.
 Writes use temporary files and atomic replacement. Reopening and Refresh restore
 matching completed results without reanalysis. Source or analyzer changes mark
 old entries stale; corrupt entries remain retryable. Interrupted queued/running
@@ -394,8 +512,8 @@ The click is off initially, uses a short native sine burst and accents downbeats
 checkbox. **Reset to analysis suggestion** restores the fitted phase/BPM as an
 unreviewed preview, never a detected downbeat. Raw detected beats and diagnostics
 remain in the analysis review. **Save timing** writes only separate version-1
-content-hash records under `generated/timing/`. Reanalysis cannot overwrite them;
-identical renamed sources reuse them. A filename pointer signals stale corrections
+content-hash records under `generated/content/timing/`. Reanalysis cannot overwrite them;
+identical moved, renamed or copied sources reuse them on recognition. A filename pointer signals stale corrections
 when bytes change. Stale values cannot be loaded or used for sync; explicitly
 prepare/review the changed source. **Apply to deck** saves, then applies only to
 that deck generation. Other loaded decks keep their applied grid until Apply or
@@ -447,11 +565,14 @@ changing BPM; the earliest grid beat in the track becomes bar 1, beat 1.
 The second flag fits BPM so both flags fall on beats. A third flag replaces the
 oldest. Flags appear on the rolling and full-track waveforms while the panel is
 open. The adjusted source grid, BPM, and flags are saved with the track and
-restored after restarting VIRA. The panel's **Detected BPM**, **Set BPM**, **Half BPM**,
+restored after restarting VIRA. The panel's **Track BPM**, **Set BPM**, **Half BPM**,
 **Double BPM**, and **Original BPM** controls save and apply source-grid corrections
 while stopped. Original BPM restores the analysis suggestion's BPM, preserving
 the downbeat and reference flags. Corrections clear timing review and deck sync.
 Playback BPM remains controlled by the deck header.
+Track BPM can also be entered before analysis: Set BPM creates and saves a draft
+grid starting at the track's playable start (zero for an unanalysed track).
+The grid is immediately available for playback, tempo lock, and reference-beat adjustments.
 
 The top A/B rows retain a fixed central playhead and use a shared output-time
 window: eight beats at master tempo. Shared zoom offers 4/8/16/32

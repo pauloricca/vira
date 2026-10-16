@@ -98,6 +98,34 @@ def valid_features(value, info):
     return value.get("waveform_feature_hash") == feature_hash(value)
 
 
+def valid_pcm(value, path):
+    try:
+        length = path.stat().st_size
+        return (length > 0 and length % 8 == 0 and value["pcm_bytes"] == length
+                and value["frames"] == length // 8
+                and value["duration_seconds"] == value["frames"] / 48000
+                and isinstance(value["pcm_hash"], str) and len(value["pcm_hash"]) == 64
+                and all(c in "0123456789abcdef" for c in value["pcm_hash"]))
+    except (OSError, KeyError, TypeError):
+        return False
+
+
+def audio_info(path):
+    """Audition needs PCM integrity and duration, with no waveform or FFT work."""
+    import numpy as np
+    length = path.stat().st_size
+    if not length or length % 8:
+        raise ValueError("Prepared audio is empty or has incomplete stereo frames.")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(65536):
+            if not np.isfinite(np.frombuffer(block, dtype="<f4")).all():
+                raise ValueError("Prepared audio contains non-finite samples.")
+            digest.update(block)
+    return dict(frames=length // 8, duration_seconds=length / 8 / 48000,
+                pcm_bytes=length, pcm_hash=digest.hexdigest())
+
+
 def valid_cached_audio(value, path):
     """Check the descriptor without rereading or recomputing the prepared PCM."""
     try:
@@ -170,7 +198,7 @@ class Preparation:
             if self.requests[deck] == generation:
                 self.requests[deck] = 0
 
-    def prepare(self, track_id, deck=None, generation=None):
+    def prepare(self, track_id, deck=None, generation=None, audition=False):
         if deck is not None:
             with self.requests_lock:
                 if generation < self.requests[deck]:
@@ -189,7 +217,8 @@ class Preparation:
         with self.lock:
             if not current():
                 raise ValueError("Load superseded by a newer selection")
-            self.source_matches(row)
+            # Resolve content once on use, restoring saved analysis before timing is read.
+            row = self.jobs.identify(track_id)
             identity = artifact_id(row["source_hash"])
             directory = self.root / identity
             manifest = directory / "manifest.json"
@@ -197,9 +226,12 @@ class Preparation:
             try:
                 value = json.loads(manifest.read_text())
                 if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == CONVERSION_VERSION and value["source_hash"] == row["source_hash"] and value["settings"] == SETTINGS:
-                    if valid_cached_audio(value, directory / "audio.f32"):
+                    if valid_pcm(value, directory / "audio.f32"):
                         cached = value
-                        if not valid_features(value, value):
+                        if not audition and not valid_cached_audio(value, directory / "audio.f32"):
+                            cached.update(pcm_info(directory / "audio.f32", current=current))
+                            atomic_json(manifest, cached)
+                        if not audition and not valid_features(value, value):
                             fine_features, features = spectral_features(directory / "audio.f32", value["frames"], value["peak_frames"], current)
                             cached.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
                             cached["waveform_feature_hash"] = feature_hash(cached)
@@ -246,7 +278,7 @@ class Preparation:
                         raise ValueError("Cannot decode this source for playback.") from exc
                     cached = {"schema_version": 1, "conversion_version": CONVERSION_VERSION,
                               "settings": SETTINGS, "source_hash": row["source_hash"], "artifact_id": identity,
-                              **pcm_info(pcm, current=current)}
+                              **(audio_info(pcm) if audition else pcm_info(pcm, current=current))}
                     if not current():
                         raise ValueError("Load superseded by a newer selection")
                     self.source_matches(row)
@@ -260,6 +292,8 @@ class Preparation:
             with self.jobs.lock:
                 if track_id not in self.jobs.rows:
                     raise ValueError("Source revision was superseded while preparing. Refresh and retry.")
+            if audition:
+                cached = {key: cached[key] for key in ("schema_version", "conversion_version", "settings", "source_hash", "artifact_id", "frames", "duration_seconds", "pcm_bytes", "pcm_hash")}
             return {**cached, "track_id": track_id, "title": row["title"], "artist": row["artist"], "filename": row["filename"]}
 
     def audio_path(self, identity):

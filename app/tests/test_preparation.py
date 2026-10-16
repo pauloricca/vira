@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
-from preparation.service import library_storage, make_handler, quick_snapshot, scan_bin
+from preparation.service import make_collections_handler, library_storage, make_handler, quick_snapshot, scan_bin
 
 
 class MetadataTests(unittest.TestCase):
@@ -79,6 +79,98 @@ class MetadataTests(unittest.TestCase):
             worker.join()
             server.RequestHandlerClass.jobs.close()
 
+    def test_collections_have_unique_rows_but_identical_content_shares_timing(self):
+        import shutil
+        self.audio("same.wav")
+        other = self.root / "Music é"
+        other.mkdir()
+        shutil.copy2(self.music / "same.wav", other / "same.wav")
+        handler = make_collections_handler([
+            {"path": "/Music", "mount": str(self.music)},
+            {"path": "/Other/Music é", "mount": str(other)},
+        ], self.generated)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        url = f"http://127.0.0.1:{server.server_port}"
+        def post(endpoint, body=None):
+            raw = json.dumps(body).encode() if body is not None else None
+            return json.load(urllib.request.urlopen(urllib.request.Request(url + endpoint, data=raw, method="POST")))
+        try:
+            health = json.load(urllib.request.urlopen(url + "/health"))
+            self.assertEqual(health["music_folders"], ["/Music", "/Other/Music é"])
+            library = post("/v1/library/scan")
+            tracks = library["tracks"]
+            self.assertEqual(len(tracks), 2)
+            self.assertNotEqual(tracks[0]["id"], tracks[1]["id"])
+            self.assertEqual([row["collection"] for row in tracks], health["music_folders"])
+            grid = {"bpm": 120, "downbeat_seconds": .1, "reviewed": True}
+            post("/v1/timing/save", {"track_id": tracks[1]["id"], "grid": grid})
+            self.assertEqual(post("/v1/timing/get", {"track_id": tracks[1]["id"]})["grid"], grid)
+            self.assertEqual(post("/v1/timing/get", {"track_id": tracks[0]["id"]})["grid"], grid)
+            audition = post("/v1/prepare", {"track_id": tracks[1]["id"], "audition": True})
+            self.assertEqual(audition["track_id"], tracks[1]["id"])
+            self.assertNotIn("peaks", audition)
+            self.assertNotIn("fine_features", audition)
+            prepared = post("/v1/prepare", {"track_id": tracks[1]["id"]})
+            self.assertEqual(prepared["track_id"], tracks[1]["id"])
+            pcm = urllib.request.urlopen(url + "/v1/prepared/" + prepared["artifact_id"] + "/pcm").read()
+            self.assertGreater(len(pcm), 100)
+            refreshed = post("/v1/library/scan")
+            self.assertEqual([row["id"] for row in refreshed["tracks"]], [row["id"] for row in tracks])
+            with self.assertRaises(urllib.error.HTTPError):
+                post("/v1/prepare", {"track_id": "a" * 64})
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+            for _, single in handler.collection_handlers:
+                single.jobs.close()
+
+    def test_collection_namespace_preserves_existing_analysis_cache_and_saved_rows(self):
+        from preparation.jobs import LibraryJobs, blank
+        self.audio("same.wav")
+        cache = library_storage(self.generated, "/Custom/Music")
+        legacy = LibraryJobs(self.music, cache)
+        try:
+            old = legacy.reconcile(scan_bin(self.music, cache)["tracks"])["tracks"][0]
+            old["analysis"] = blank("failed", "Saved failure")
+            legacy.persist(old)
+        finally:
+            legacy.close()
+        current = LibraryJobs(self.music, cache, namespace="/Custom/Music")
+        try:
+            new = current.reconcile(scan_bin(self.music, cache)["tracks"])["tracks"][0]
+            self.assertNotEqual(new["id"], old["id"])
+            self.assertEqual(new["analysis"], old["analysis"])
+            # Saved namespaced rows remain stable through a warm startup.
+            from preparation.jobs import atomic_json
+            atomic_json(cache / "library-v2.json", current.state())
+            restored = LibraryJobs(self.music, cache, namespace="/Custom/Music")
+            try:
+                saved = restored.seed(quick_snapshot(self.music, cache))["tracks"][0]
+                self.assertEqual(saved["id"], new["id"])
+            finally:
+                restored.close()
+        finally:
+            current.close()
+
+    def test_empty_collections_have_a_valid_empty_library(self):
+        handler = make_collections_handler([], self.generated)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/v1/library/open"
+            library = json.load(urllib.request.urlopen(urllib.request.Request(url, method="POST")))
+            self.assertEqual(library["collections"], [])
+            self.assertEqual(library["tracks"], [])
+            self.assertFalse(library["scan_pending"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+
     def test_refresh_reconciles_and_changes_revision(self):
         self.audio("one.wav")
         first = self.scan()[0]
@@ -90,7 +182,7 @@ class MetadataTests(unittest.TestCase):
         path.unlink()
         self.assertEqual([r["filename"] for r in self.scan()], ["two.wav"])
 
-    def test_quick_snapshot_uses_size_and_background_scan_verifies_hash(self):
+    def test_open_and_refresh_never_hash_audio(self):
         self.audio("one.wav")
         first_handler = make_handler(self.music, self.generated)
         first_server = ThreadingHTTPServer(("127.0.0.1", 0), first_handler)
@@ -112,14 +204,7 @@ class MetadataTests(unittest.TestCase):
         stat = path.stat()
         os.utime(path, ns=(stat.st_atime_ns, int(original["modified_ns"])))
         self.assertEqual(quick_snapshot(self.music, self.generated)[0]["id"], original["id"])
-        entered = threading.Event()
-        release = threading.Event()
-        from preparation.jobs import source_hash
-        def delayed_hash(*args, **kwargs):
-            entered.set()
-            release.wait(5)
-            return source_hash(*args, **kwargs)
-        with patch("preparation.jobs.source_hash", side_effect=delayed_hash):
+        with patch("preparation.jobs.source_hash", side_effect=AssertionError("Collection scans must not hash audio")):
             handler = make_handler(self.music, self.generated)
             server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
             worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -128,9 +213,6 @@ class MetadataTests(unittest.TestCase):
             try:
                 opened = json.load(urllib.request.urlopen(urllib.request.Request(url + "/v1/library/open", method="POST")))
                 self.assertEqual(opened["tracks"][0]["id"], original["id"])
-                self.assertTrue(opened["scan_pending"])
-                self.assertTrue(entered.wait(5))
-                release.set()
                 import time
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -139,9 +221,11 @@ class MetadataTests(unittest.TestCase):
                         break
                     time.sleep(.02)
                 self.assertFalse(verified["scan_pending"])
-                self.assertNotEqual(verified["tracks"][0]["id"], original["id"])
+                self.assertEqual(verified["tracks"][0]["id"], original["id"])
+                self.assertIsNone(verified["tracks"][0]["source_hash"])
+                refreshed = json.load(urllib.request.urlopen(urllib.request.Request(url + "/v1/library/scan", method="POST")))
+                self.assertIsNone(refreshed["tracks"][0]["source_hash"])
             finally:
-                release.set()
                 server.shutdown()
                 server.server_close()
                 worker.join()

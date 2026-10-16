@@ -39,16 +39,9 @@ class Timing:
         self.root = jobs.generated / "timing"
 
     def row(self, track_id):
-        row = self.jobs.rows.get(track_id)
-        if not row or row["status"] != "ready":
-            raise ValueError("Source unavailable. Refresh the library.")
-        digest, _ = source_hash(self.jobs.music / row["filename"])
-        if digest != row["source_hash"]:
-            raise ValueError("Source changed. Refresh before reviewing timing.")
-        return row
+        return self.jobs.identify(track_id)
 
     def read(self, row):
-        path = self.root / (row["source_hash"] + ".json")
         stale = False
         # A filename pointer only signals stale corrections; it never reuses them.
         pointer = self.root / ("name-" + hashlib.sha256(row["filename"].encode()).hexdigest() + ".json")
@@ -59,7 +52,9 @@ class Timing:
         grid = None
         references = []
         try:
-            envelope = json.loads(path.read_text())
+            envelope = self.jobs.content.read("timing", row["source_hash"])
+            if envelope is None:
+                raise FileNotFoundError()
             if envelope["schema_version"] != 1 or envelope["source_hash"] != row["source_hash"]:
                 raise ValueError("Incompatible timing")
             grid = validate_grid(envelope["grid"], row["duration_seconds"])
@@ -90,9 +85,8 @@ class Timing:
             row = self.row(track_id)
             validate_grid(grid, row["duration_seconds"])
             references = validate_references(reference_beats if reference_beats is not None else [], row["duration_seconds"])
-            atomic_json(self.root / (row["source_hash"] + ".json"),
-                        {"schema_version": 1, "source_hash": row["source_hash"], "grid": grid,
-                         "reference_beats": references})
+            self.jobs.content.write("timing", row["source_hash"],
+                        {"schema_version": 1, "grid": grid, "reference_beats": references})
             atomic_json(self.root / ("name-" + hashlib.sha256(row["filename"].encode()).hexdigest() + ".json"),
                         {"source_hash": row["source_hash"]})
             return self.read(row)

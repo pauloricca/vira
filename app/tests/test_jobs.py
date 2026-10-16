@@ -102,7 +102,7 @@ class JobTests(unittest.TestCase):
         reopened.reconcile([self.row()])
         self.assertEqual(self.track(reopened)["analysis"]["state"], "approved")
 
-    def test_changed_content_even_with_same_size_mtime_is_stale(self):
+    def test_same_stat_content_changes_are_checked_on_use_not_scan(self):
         manager = self.manager()
         manager.reconcile([self.row()])
         old_id = self.track(manager)["id"]
@@ -115,11 +115,14 @@ class JobTests(unittest.TestCase):
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         manager.reconcile([self.row()])
         row = self.track(manager)
-        self.assertNotEqual(row["id"], old_id)
-        self.assertEqual(row["analysis"]["state"], "stale")
-        self.assertIsNone(row["analysis"]["result"])
-        with self.assertRaises(ValueError):
-            manager.request(old_id)
+        self.assertEqual(row["id"], old_id)  # Scanning deliberately uses only file stats.
+        with self.assertRaisesRegex(ValueError, "Source changed"):
+            manager.identify(old_id)
+        self.assertEqual(self.track(manager)["analysis"]["state"], "stale")
+        self.assertIsNone(self.track(manager)["analysis"]["result"])
+        manager.request(old_id)
+        manager.pending.join()
+        self.assertEqual(self.track(manager)["analysis"]["state"], "analysed")
 
     def test_late_result_cannot_replace_new_source_result(self):
         started = threading.Event()
@@ -262,7 +265,7 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.track(manager)["analysis"]["state"], "not_analysed")
         self.assertEqual(manager.pending.unfinished_tasks, 0)
         original = manager.persist
-        def cannot_complete(row):
+        def cannot_complete(row, shared=False):
             if row["analysis"]["state"] == "queued":
                 original(row)
             else:

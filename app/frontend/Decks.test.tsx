@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { RollingRow } from './RollingRow';
-import { AudioState, Deck, DeckState, Mixer, TRACK_MIME, useDecks } from './Decks';
+import { AudioState, Deck, DeckState, Mixer, RollingWaveforms, TRACK_MIME, useDecks } from './Decks';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
@@ -201,7 +201,7 @@ test('timing BPM controls correct the source instead of changing playback tempo'
   render(<Deck state={{...state,grid:{bpm:118.999072,downbeat_seconds:0,reviewed:false}}} running loading={false} error={null} load={vi.fn()} control={control} />);
   fireEvent.click(screen.getByText('Half BPM')); fireEvent.click(screen.getByText('Double BPM'));
   fireEvent.click(screen.getByText('Original BPM'));
-  const input = screen.getByRole('spinbutton', { name: 'Detected BPM' });
+  const input = screen.getByRole('spinbutton', { name: 'Track BPM' });
   expect((input as HTMLInputElement).value).toBe('118.999072');
   fireEvent.change(input, { target: { value: '125' } });
   fireEvent.click(screen.getByText('Set BPM'));
@@ -271,6 +271,49 @@ test('reference edits load saved flags, save source timing, and replace the olde
   await waitFor(() => expect(screen.getByTestId('references').textContent).toBe('[18,26]'));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: expect.any(Object), referenceBeats: [18, 26] });
 });
+test('manual track BPM creates and applies a grid without analysis', async () => {
+  let native: AudioState = { running: true, error: null, telemetry: {}, decks: [{ ...state, grid: null }, { ...state, deck: 1, track: null }] };
+  invoke.mockImplementation((command: string, args?: { grid?: { bpm: number; downbeat_seconds: number; reviewed: boolean } }) => {
+    if (command === 'get_audio_state') return Promise.resolve(native);
+    if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? null, suggestion: null, state: args?.grid ? 'draft' : 'unprepared', reference_beats: [] });
+    if (command === 'apply_timing') native = { ...native, decks: native.decks.map(d => d.deck === 0 ? { ...d, grid: args!.grid, target_bpm: args!.grid!.bpm, speed: 1, synced: false } : d) };
+    if (command === 'timing_waveform') return Promise.resolve(state.track);
+    return Promise.resolve();
+  });
+  function Harness() {
+    const decks = useDecks();
+    return <Deck state={decks.audio.decks[0]} running={decks.audio.running} loading={false} error={decks.errors[0]} load={decks.load} control={decks.control} />;
+  }
+  render(<Harness />);
+  const input = screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement;
+  await waitFor(() => expect(input.disabled).toBe(false));
+  expect(input.value).toBe('');
+  const set = screen.getByRole('button', { name: 'Set BPM' }) as HTMLButtonElement;
+  expect(set.disabled).toBe(true);
+  for (const value of ['29', '301', '']) {
+    fireEvent.change(input, { target: { value } });
+    expect(set.disabled).toBe(true);
+  }
+  fireEvent.change(input, { target: { value: '125' } });
+  expect(set.disabled).toBe(false);
+  fireEvent.click(set);
+  const grid = { bpm: 125, downbeat_seconds: 0, reviewed: false };
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid }));
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid, referenceBeats: [] });
+  await waitFor(() => expect(screen.getByRole('slider', { name: 'Waveform seek deck A' }).querySelectorAll('path[stroke="currentColor"]').length).toBeGreaterThan(0));
+  expect((screen.getByRole('button', { name: 'Lock deck A to master tempo' }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: 'Set reference beat' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(invoke.mock.calls.some(([command]) => command === 'analyse_track')).toBe(false);
+});
+
+test('track BPM entry is unavailable while playing or without a loaded track', () => {
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control: vi.fn() };
+  const { rerender } = render(<Deck state={{ ...state, playing: true }} {...props} />);
+  expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(true);
+  rerender(<Deck state={{ ...state, track: null }} {...props} />);
+  expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(true);
+});
+
 test('BPM correction and original reset persist and apply the grid with its existing anchor and flags', async () => {
   const grid = { bpm: 120, downbeat_seconds: .25, reviewed: true };
   const loaded = { ...state, grid, target_bpm: 130, synced: true };
@@ -285,7 +328,7 @@ test('BPM correction and original reset persist and apply the grid with its exis
     return <Deck state={decks.audio.decks[0]} running={decks.audio.running} loading={false} error={null} load={decks.load} control={decks.control} />;
   }
   render(<Harness />);
-  const input = await screen.findByRole('spinbutton', { name: 'Detected BPM' });
+  const input = await screen.findByRole('spinbutton', { name: 'Track BPM' });
   await waitFor(() => expect((input as HTMLInputElement).value).toBe('120'));
   fireEvent.change(input, { target: { value: '125' } });
   fireEvent.click(screen.getByText('Set BPM'));
@@ -339,7 +382,7 @@ test('deck lock lives beside BPM and disables manual tempo while locked', () => 
   expect(control).toHaveBeenCalledWith(0, 'sync', 1);
   rerender(<Deck state={{ ...reviewed, synced: true }} running loading={false} error={null} load={vi.fn()} control={control} />);
   expect(screen.getByLabelText('BPM deck A').getAttribute('aria-disabled')).toBe('true');
-  expect((screen.getByRole('spinbutton', { name: 'Detected BPM' }) as HTMLInputElement).disabled).toBe(false);
+  expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Unlock deck A to master tempo' }));
   expect(control).toHaveBeenCalledWith(0, 'sync', 0);
 });
@@ -562,4 +605,64 @@ test('headphone buttons toggle each deck independently and expose native selecti
   expect(control.mock.calls).toEqual([[0, 'headphone_cue', 1], [1, 'headphone_cue', 0]]);
   rerender(<Mixer audio={{ ...audio, decks: [{ ...state, headphone_cue: true }, { ...state, deck: 1 }] }} control={control} />);
   expect(a.getAttribute('aria-pressed')).toBe('true');
+});
+
+test.each(['not_analysed', 'stale', 'failed', 'queued', 'analysing', 'analysed', 'needs_review', 'approved'])('deck Analyze availability for %s', analysisState => {
+  const analyse = vi.fn();
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control: vi.fn(), analyse, analysisState };
+  const { rerender } = render(<Deck state={state} {...props} />);
+  const button = screen.queryByRole('button', { name: 'Analyse deck A' }) as HTMLButtonElement | null;
+  if (['analysed', 'needs_review', 'approved'].includes(analysisState)) expect(button).toBeNull();
+  else {
+    expect(button).toBeTruthy();
+    const busy = ['queued', 'analysing'].includes(analysisState);
+    expect(button!.disabled).toBe(busy);
+    fireEvent.click(button!);
+    expect(analyse).toHaveBeenCalledTimes(busy ? 0 : 1);
+  }
+  rerender(<Deck state={{ ...state, track: null }} {...props} />);
+  expect(screen.queryByRole('button', { name: 'Analyse deck A' })).toBeNull();
+});
+
+test('automatic buttons require an eligible outgoing deck and remain cancellable during overlap', () => {
+  const control = vi.fn();
+  const props = { state: { ...state, playing: true }, running: true, loading: false, error: null, load: vi.fn(), control };
+  const view = render(<Deck {...props} autoAvailable />);
+  const now = screen.getByRole<HTMLButtonElement>('button', { name: 'AUTO NOW deck A' });
+  const end = screen.getByRole<HTMLButtonElement>('button', { name: 'AUTO END deck A' });
+  expect(now.disabled).toBe(false);
+  fireEvent.click(now);
+  expect(control).toHaveBeenLastCalledWith(0, 'auto_now');
+  fireEvent.click(end);
+  expect(control).toHaveBeenLastCalledWith(0, 'auto_end');
+  view.rerender(<Deck {...props} autoAvailable={false} autoMode={1} />);
+  expect(now.disabled).toBe(false);
+  expect(now.getAttribute('aria-pressed')).toBe('true');
+  expect(now.classList.contains('auto-engaged')).toBe(true);
+  expect(end.disabled).toBe(true);
+  fireEvent.click(now);
+  expect(control).toHaveBeenLastCalledWith(0, 'auto_now');
+  view.rerender(<Deck {...props} autoAvailable={false} />);
+  expect(now.disabled).toBe(true);
+  expect(end.disabled).toBe(true);
+});
+
+test('transition guides appear on both overview and rolling waveforms and clear when cancelled', () => {
+  const transition = { from: 0, style: 'smart' as const, started: false, points: [[16, 22, 22, 22, 32], [7, 13, 13, 13, 23]] as [[number, number, number, number, number], [number, number, number, number, number]], remaining_beats: [4, 16, 16, 16, 36] as [number, number, number, number, number] };
+  const states = [state, { ...state, deck: 1 }];
+  function Guides({ engaged }: { engaged: boolean }) {
+    const plan = engaged ? transition : null;
+    return <><RollingWaveforms audio={{ running: false, error: null, telemetry: {}, decks: states, auto_transition: plan }} />{states.map(d => <Deck key={d.deck} transition={plan} state={d} running={false} loading={false} error={null} load={vi.fn()} control={vi.fn()} />)}</>;
+  }
+  const view = render(<Guides engaged />);
+  for (const deck of ['A', 'B']) {
+    const overview = screen.getByRole('slider', { name: `Waveform seek deck ${deck}` });
+    expect(overview.querySelector('[data-transition-marker="bass"]')).toBeTruthy();
+    expect(overview.querySelector('[data-transition-marker="out"]')).toBeNull();
+    expect(screen.getByRole('group', { name: `Automatic transition guides rolling deck ${deck}` }).textContent).toContain('SMART BASS');
+  }
+  expect(screen.getByRole('group', { name: 'Automatic transition guides deck B' }).textContent).toContain('SMART BASS at 0:13.0');
+  view.rerender(<Guides engaged={false} />);
+  expect(document.querySelector('[data-transition-marker]')).toBeNull();
+  expect(screen.queryByRole('group', { name: /Automatic transition guides/ })).toBeNull();
 });

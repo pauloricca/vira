@@ -12,6 +12,7 @@ pub mod paths;
 pub mod routing;
 pub mod runtime;
 mod scheduling;
+mod smart;
 pub mod source;
 pub mod teia;
 pub mod teia_audio;
@@ -51,6 +52,8 @@ pub struct Track {
     pub analysis: Analysis,
     #[serde(default)]
     pub artwork_available: bool,
+    #[serde(default)]
+    pub collection: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,6 +81,8 @@ pub struct Library {
     pub schema_version: u32,
     #[serde(default)]
     pub music_bin: String,
+    #[serde(default)]
+    pub collections: Vec<String>,
     pub tracks: Vec<Track>,
     pub revision: u64,
     pub instance_id: String,
@@ -106,11 +111,10 @@ impl Library {
                     .duration_seconds
                     .is_some_and(|d| !d.is_finite() || d <= 0.0)
                 || (matches!(track.status, FileStatus::Ready) && track.duration_seconds.is_none())
-                || (matches!(track.status, FileStatus::Ready)
-                    && !track
-                        .source_hash
-                        .as_ref()
-                        .is_some_and(|hash| valid_id(hash)))
+                || track
+                    .source_hash
+                    .as_ref()
+                    .is_some_and(|hash| !valid_id(hash))
                 || (matches!(
                     track.analysis.state,
                     AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved
@@ -387,6 +391,56 @@ pub fn run() {
         Ok(state.audio_levels())
     }
     #[tauri::command]
+    async fn audition_track(
+        track_id: String,
+        output: Option<String>,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<u64, String> {
+        let engine = state.inner().clone();
+        let master = output.as_deref() == Some("master");
+        let generation = engine.begin_audition(master).map_err(|e| e.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            engine
+                .load_audition(generation, &track_id, master)
+                .map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn queue_audition(
+        generation: u64,
+        index: u64,
+        track_id: String,
+        output: Option<String>,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<(), String> {
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            engine
+                .queue_audition(
+                    generation,
+                    index,
+                    &track_id,
+                    output.as_deref() == Some("master"),
+                )
+                .map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    fn audition_control(
+        action: String,
+        generation: u64,
+        value: Option<f64>,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<(), String> {
+        state
+            .audition_control(&action, generation, value)
+            .map_err(|e| format!("{e:#}"))
+    }
+    #[tauri::command]
     async fn load_track(
         deck: usize,
         track_id: String,
@@ -516,6 +570,20 @@ pub fn run() {
             .map_err(|e| e.to_string())?
     }
     #[tauri::command]
+    async fn remove_music_folder(
+        window: tauri::WebviewWindow,
+        path: String,
+    ) -> Result<paths::Settings, String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            paths::remove_music(std::path::Path::new(&path)).map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
     async fn choose_library_folder(
         window: tauri::WebviewWindow,
         kind: String,
@@ -538,6 +606,7 @@ pub fn run() {
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
             get_path_settings,
+            remove_music_folder,
             choose_library_folder,
             open_library,
             refresh_library,
@@ -553,6 +622,9 @@ pub fn run() {
             get_audio_devices,
             set_audio_devices,
             load_track,
+            audition_track,
+            queue_audition,
+            audition_control,
             deck_control,
             track_timing,
             apply_timing,
@@ -621,6 +693,9 @@ mod tests {
         assert!(bad.validate().is_err());
         let mut bad = library("test.wav");
         bad.tracks[0].source_hash = None;
+        assert!(bad.validate().is_ok()); // Collection rows are not hashed until use.
+        let mut bad = library("test.wav");
+        bad.tracks[0].source_hash = Some("invalid".into());
         assert!(bad.validate().is_err());
     }
 

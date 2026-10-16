@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { BRIDGE_VERSION, HostedSession, NATIVE_PROFILE, type HostBridge, type HostCommand, type HostEvent, type HostReply, type Patch } from '@pauloricca/teia-hosted';
+import { BRIDGE_VERSION, HostedSession, NATIVE_PROFILE, readDocument, type HostBridge, type HostCommand, type HostEvent, type HostReply, type Patch } from '@pauloricca/teia-hosted';
 import { HostedNodeEditor } from '@pauloricca/teia-hosted/editor';
 import '@pauloricca/teia-hosted/flow.css';
 import '@pauloricca/teia-hosted/themes.css';
@@ -13,6 +13,11 @@ import { assets } from './teiaAssets';
 import { hostNodeTypes } from './teiaModel';
 
 type Initial = { bridgeVersion: number; sessionId: string; document: Patch; draft: Patch; generation: string; filename: string; needsApply?: boolean };
+// Match HostedSession's saved baseline when reading documents back from JSON.
+const editorDocument = (document: Patch): Patch => {
+  const read = readDocument(document);
+  return read.patch && !read.diagnostics.some(d => d.severity === 'error' || d.code === 'discarded-content') ? read.patch : document;
+};
 export function Editor() {
   const [session, setSession] = useState<HostedSession | null>(null);
   const current = useRef<HostedSession | null>(null);
@@ -81,7 +86,7 @@ export function Editor() {
         nodeTypes: hostNodeTypes,
       }, bridge, initial.generation === '0' ? null : initial.generation);
       current.current = controller;
-      if (initial.needsApply || JSON.stringify(initial.document) !== JSON.stringify(initial.draft)) await controller.edit(initial.draft, true);
+      if (initial.needsApply || JSON.stringify(initial.document) !== JSON.stringify(initial.draft)) await controller.edit(editorDocument(initial.draft), true);
       if (disposed) { controller.dispose(); return; }
       setSession(controller);
       const poll = async () => {
@@ -107,9 +112,11 @@ export function Editor() {
       if (choice === 'save' && !await session.save()) throw new Error(session.getSnapshot().saveDiagnostics?.map(d => d.message).join('\n') || 'Save was not acknowledged');
       if (choice === 'discard') {
         const initial = await invoke<Initial>('teia_editor_init');
-        await session.edit(initial.document);
+        // Discard must install the saved graph even when it is already the
+        // working document: its earlier apply may still be pending or cancelled.
+        await session.edit(editorDocument(initial.document), true);
         const snapshot = session.getSnapshot();
-        if (snapshot.installedRevision !== snapshot.revision) throw new Error('Saved document could not be restored to audio; keep the draft or cancel');
+        if (snapshot.installedRevision !== snapshot.revision) throw new Error(snapshot.diagnostics.filter(d => d.severity === 'error').map(d => d.message).join('\n') || 'Saved document could not be restored to audio; keep the draft or cancel');
       }
       if (await session.close()) await getCurrentWindow().destroy();
       else throw new Error('The document changed while closing; review the latest edit');

@@ -23,7 +23,9 @@ pub struct Prepared {
     /// Playable zero in source coordinates; file timestamps remain unchanged.
     #[serde(default)]
     pub start_seconds: f64,
+    #[serde(default)]
     pub peak_frames: usize,
+    #[serde(default)]
     pub peaks: Vec<[f32; 2]>,
     #[serde(default)]
     pub fine_peak_frames: usize,
@@ -38,6 +40,7 @@ pub struct Prepared {
 }
 
 pub struct Source {
+    pub(crate) bass_profile: crate::smart::BassProfile,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
 }
@@ -51,7 +54,7 @@ impl Source {
 }
 
 impl Prepared {
-    pub fn validate(&self, track_id: &str, hash: &str) -> Result<()> {
+    pub fn validate_audio(&self, track_id: &str, hash: &str) -> Result<()> {
         ensure!(
             self.schema_version == 1 && self.conversion_version == "ffmpeg-stereo-f32le-48000-v1",
             "Prepared audio version mismatch"
@@ -87,6 +90,10 @@ impl Prepared {
                 && (self.duration_seconds - self.frames as f64 / RATE as f64).abs() < 1e-6,
             "Prepared duration mismatch"
         );
+        Ok(())
+    }
+    pub fn validate(&self, track_id: &str, hash: &str) -> Result<()> {
+        self.validate_audio(track_id, hash)?;
         ensure!(
             self.peak_frames > 0
                 && self.peaks.len() == self.frames.div_ceil(self.peak_frames)
@@ -159,11 +166,22 @@ impl Prepared {
             format!("{:x}", hash.finalize()) == self.pcm_hash,
             "Prepared PCM content hash mismatch; retry loading"
         );
-        Ok(Arc::new(Source { left, right }))
+        let bass_profile = crate::smart::BassProfile::analyze(&left, &right, current)?;
+        Ok(Arc::new(Source {
+            left,
+            right,
+            bass_profile,
+        }))
     }
 }
 
 pub fn prepare_track(track_id: &str, request: Option<(usize, u64)>) -> Result<Prepared> {
+    prepare(track_id, request, false)
+}
+pub fn prepare_audition(track_id: &str) -> Result<Prepared> {
+    prepare(track_id, None, true)
+}
+fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Result<Prepared> {
     ensure!(valid_id(track_id), "Loading requires a library track ID");
     let library = crate::library_state().map_err(anyhow::Error::msg)?;
     let track = library
@@ -177,12 +195,33 @@ pub fn prepare_track(track_id: &str, request: Option<(usize, u64)>) -> Result<Pr
             Some((deck, generation)) => {
                 serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation})
             }
+            None if audition => serde_json::json!({"track_id":track_id,"audition":true}),
             None => serde_json::json!({"track_id":track_id}),
         }),
         true,
     )
     .map_err(anyhow::Error::msg)?
     .json::<Prepared>()?;
-    value.validate(track_id, track.source_hash.as_deref().unwrap_or(""))?;
+    // The listing may not have identified this content yet. Preparation publishes
+    // the verified hash on the same row; validate against that authoritative state.
+    let identified;
+    let expected_hash = if track.source_hash.as_deref() == Some(value.source_hash.as_str()) {
+        track.source_hash.as_deref().unwrap()
+    } else {
+        identified = crate::library_state().map_err(anyhow::Error::msg)?;
+        identified
+            .tracks
+            .iter()
+            .find(|t| t.id == track_id)
+            .and_then(|t| t.source_hash.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Source was replaced while preparing. Refresh the library")
+            })?
+    };
+    if audition {
+        value.validate_audio(track_id, expected_hash)?;
+    } else {
+        value.validate(track_id, expected_hash)?;
+    }
     Ok(value)
 }

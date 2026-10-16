@@ -1,0 +1,30 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import { CollectionSelector } from './CollectionSelector';
+afterEach(cleanup);
+test('collection menu shares key dropdown styles, selection, keyboard navigation and dismissal', () => {
+  const select = vi.fn();
+  render(<CollectionSelector collections={['/Music', '/Other/Dance', '/Other/Jazz']} value="/Music" select={select} />);
+  const trigger = screen.getByRole('button', { name: 'Music collection' });
+  expect(trigger.className).toContain('key-trigger');
+  fireEvent.click(trigger);
+  expect(screen.getByRole('menu').className).toContain('key-menu');
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Music' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Dance' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'End' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Jazz' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'd' });
+  expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Dance' }));
+  fireEvent.click(document.activeElement!);
+  expect(select).toHaveBeenCalledWith('/Other/Dance');
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole('menu')).toBeNull();
+});
