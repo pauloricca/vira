@@ -255,8 +255,11 @@ test('analysis approval works while playing; beat and bar controls require a sto
   const approveAnalysis = vi.fn();
   const grid = { bpm: 120, downbeat_seconds: 0, reviewed: false };
   const { rerender } = render(<Deck state={{ ...state, playing: true, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState="needs_review" approveAnalysis={approveAnalysis} />);
-  for (const name of ['Set reference beat', 'Shift bar start back one beat on deck A', 'Shift bar start forward one beat on deck A', 'Set BPM', 'Half BPM', 'Double BPM', 'Original BPM']) {
+  for (const name of ['Set reference beat', 'Shift bar start back one beat on deck A', 'Shift bar start forward one beat on deck A']) {
     expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
+  }
+  for (const name of ['Set BPM', 'Half BPM', 'Double BPM', 'Original BPM']) {
+    expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
   }
   expect((screen.getByRole('button', { name: 'Approve analysis' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
@@ -316,7 +319,7 @@ test('manual track BPM creates and applies a grid without analysis', async () =>
   expect(set.disabled).toBe(false);
   fireEvent.click(set);
   const grid = { bpm: 125, downbeat_seconds: 0, reviewed: false };
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid, preserveSpeed: true }));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid, referenceBeats: [] });
   await waitFor(() => expect(screen.getByRole('slider', { name: 'Waveform seek deck A' }).querySelectorAll('path[stroke="currentColor"]').length).toBeGreaterThan(0));
   expect((screen.getByRole('button', { name: 'Lock deck A to master tempo' }) as HTMLButtonElement).disabled).toBe(false);
@@ -324,17 +327,17 @@ test('manual track BPM creates and applies a grid without analysis', async () =>
   expect(invoke.mock.calls.some(([command]) => command === 'analyse_track')).toBe(false);
 });
 
-test('track BPM entry is unavailable while playing or without a loaded track', () => {
+test('track BPM entry is available while playing and unavailable without a loaded track', () => {
   const props = { running: true, loading: false, error: null, load: vi.fn(), control: vi.fn() };
   const { rerender } = render(<Deck state={{ ...state, playing: true }} {...props} />);
-  expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(false);
   rerender(<Deck state={{ ...state, track: null }} {...props} />);
   expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(true);
 });
 
 test('BPM correction and original reset persist and apply the grid with its existing anchor and flags', async () => {
   const grid = { bpm: 120, downbeat_seconds: .25, reviewed: true };
-  const loaded = { ...state, grid, target_bpm: 130, synced: true };
+  const loaded = { ...state, grid, target_bpm: 130, speed: 130 / 120, synced: true, playing: true };
   invoke.mockImplementation((command: string, args?: { grid?: typeof grid | null }) => {
     if (command === 'get_audio_state') return Promise.resolve({ running: true, error: null, telemetry: {}, decks: [loaded, { ...state, deck: 1, track: null }] });
     if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? grid, suggestion: { ...grid, bpm: 118.999072 }, reference_beats: [10] });
@@ -350,10 +353,10 @@ test('BPM correction and original reset persist and apply the grid with its exis
   await waitFor(() => expect((input as HTMLInputElement).value).toBe('120'));
   fireEvent.change(input, { target: { value: '125' } });
   fireEvent.click(screen.getByText('Set BPM'));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 125, reviewed: false } }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 125, reviewed: false }, preserveSpeed: true }));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { ...grid, bpm: 125, reviewed: false }, referenceBeats: [10] });
   fireEvent.click(screen.getByText('Original BPM'));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 118.999072, reviewed: false } }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 118.999072, reviewed: false }, preserveSpeed: true }));
   expect(invoke.mock.calls.some(([command]) => command === 'deck_control')).toBe(false);
 });
 test('bar start buttons save and apply adjacent downbeats while retaining reference flags', async () => {
@@ -712,5 +715,54 @@ test('planned transition points and areas intercept seeking on both overview and
         view.unmount();
       }
     }
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+test('double-clicking AUTO selects only the fast overlap and fast state blinks distinctly', () => {
+  vi.useFakeTimers();
+  try {
+    const control = vi.fn();
+    const props = { state: { ...state, playing: true }, running: true, loading: false, error: null, load: vi.fn(), control, autoAvailable: true, autoFastBars: 2 };
+    const view = render(<Deck {...props} />);
+    for (const mode of ['NOW', 'END']) {
+      control.mockClear();
+      const button = screen.getByRole('button', { name: `AUTO ${mode} deck A` });
+      fireEvent.click(button, { detail: 1 });
+      fireEvent.click(button, { detail: 2 });
+      fireEvent.doubleClick(button);
+      act(() => vi.advanceTimersByTime(500));
+      expect(control.mock.calls).toEqual([[0, mode === 'NOW' ? 'auto_now_fast' : 'auto_end_fast', 2]]);
+    }
+    view.rerender(<Deck {...props} autoMode={2} autoFast />);
+    const end = screen.getByRole('button', { name: 'AUTO END deck A' });
+    expect(end.classList.contains('auto-fast')).toBe(true);
+    control.mockClear();
+    fireEvent.click(end, { detail: 1 });
+    act(() => vi.advanceTimersByTime(400));
+    expect(control.mock.calls).toEqual([[0, 'auto_end']]);
+    view.rerender(<Deck {...props} autoMode={2} />);
+    expect(end.classList.contains('auto-fast')).toBe(false);
+  } finally { vi.useRealTimers(); }
+});
+
+test('transition dragging takes priority over phrase-jump arrows inside its region', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    const control = vi.fn().mockResolvedValue(undefined);
+    const deckState = { ...state, playing: true, position_seconds: 46, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } };
+    const transition = { from: 0, style: 'bass-swap' as const, started: false, points: [[20,40,40,40,60], [20,40,40,40,60]] as [import('./TransitionGuides').TransitionPoints, import('./TransitionGuides').TransitionPoints], remaining_beats: [40,72,72,72,104] as import('./TransitionGuides').TransitionPoints };
+    render(<Deck state={deckState} transition={transition} running loading={false} error={null} load={vi.fn()} control={control} />);
+    const waveform = screen.getByRole('slider', { name: 'Waveform seek deck A' });
+    vi.spyOn(waveform, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    Object.assign(waveform, { setPointerCapture: vi.fn() });
+    const arrow = screen.getByRole('button', { name: 'Jump 8 bars back on deck A' });
+    await act(async () => {
+      fireEvent.pointerDown(arrow, { button: 0, clientX: 30 });
+      fireEvent.pointerMove(waveform, { clientX: 38 });
+      fireEvent.pointerUp(waveform, { clientX: 38 });
+      fireEvent.click(arrow, { clientX: 38 });
+    });
+    expect(control.mock.calls).toEqual([[0, 'auto_move', 28]]);
   } finally { vi.unstubAllGlobals(); }
 });

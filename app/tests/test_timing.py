@@ -56,6 +56,28 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["grid"], grid)
         self.assertEqual(Timing(restarted).get(self.track(restarted)["id"])["reference_beats"], references)
 
+    def test_library_publishes_corrected_bpm_without_changing_analysis(self):
+        manager = self.manager()
+        manager.reconcile([self.row()])
+        row = self.track(manager)
+        timing = Timing(manager)
+        grid = {"bpm": 123.45, "downbeat_seconds": .123, "reviewed": False}
+        timing.save(row["id"], grid)
+        revision = manager.state()["revision"]
+        self.assertEqual(self.track(manager)["timing_bpm"], 123.45)
+        self.assertIsNone(self.track(manager)["analysis"]["result"])
+        timing.save(row["id"], {**grid, "bpm": 125})
+        self.assertGreater(manager.state()["revision"], revision)
+        self.assertEqual(self.track(manager)["timing_bpm"], 125)
+        manager.reconcile([self.row()])
+        self.assertEqual(self.track(manager)["timing_bpm"], 125)
+        restarted = self.manager()
+        restarted.reconcile([self.row()])
+        self.assertEqual(self.track(restarted)["timing_bpm"], 125)
+        (self.music / "one.wav").write_bytes(b"changed source")
+        restarted.reconcile([self.row()])
+        self.assertIsNone(self.track(restarted)["timing_bpm"])
+
     def test_changed_bytes_stale_even_preserved_timestamp(self):
         manager = self.manager()
         manager.reconcile([self.row()])

@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -182,11 +183,29 @@ def recover_opening_beats(y, grid, candidates):
             'opening_anchor_before_recovery_seconds': anchor}
 
 
-def estimate(y):
+def fast_genre(genre):
+    """Recognise genre tags, including subgenres and multi-genre tag values."""
+    if not isinstance(genre, str):
+        return False
+    normalized = re.sub(r'[^a-z0-9]+', ' ', genre.casefold()).strip()
+    return bool(re.search(
+        r'\b(?:drum (?:and |n )?bass|drumandbass|drumnbass|d b|d n b|dnb|'
+        r'jungle|break ?beat|breakcore|neurofunk|liquid (?:funk|dnb)|'
+        r'jump ?up|techstep|darkstep|drumstep|hardstep)\b', normalized))
+
+
+def estimate(y, genre=None):
     if len(y) < SR or np.max(abs(y)) < 1e-6:
         return {'grid': None, 'beats_seconds': [], 'keys': [], 'window_keys': [], 'flags': ['silence_or_too_short']}
     onset = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
     tempo, frames = librosa.beat.beat_track(onset_envelope=onset, sr=SR, hop_length=HOP, trim=True)
+    if fast_genre(genre) and 0 < float(np.asarray(tempo).flat[0]) <= 100:
+        # Select the faster metrical level before fitting/calibrating the grid.
+        # Re-track actual onsets so timestamps and diagnostics agree with BPM.
+        while float(np.asarray(tempo).flat[0]) <= 100:
+            tempo = tempo * 2
+        tempo, frames = librosa.beat.beat_track(
+            onset_envelope=onset, sr=SR, hop_length=HOP, bpm=tempo, trim=True)
     beats = librosa.frames_to_time(frames, sr=SR, hop_length=HOP)
     grid = align_grid_to_attacks(y, grid_diagnostics(beats), beats)
     _, opening_frames = librosa.beat.beat_track(

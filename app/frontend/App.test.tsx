@@ -21,6 +21,14 @@ test('startup lists metadata and refresh reconciles removed files', async () => 
   await screen.findByText(/No files in this collection/);
   expect(invoke.mock.calls).toEqual([['open_library'], ['refresh_library']]);
 });
+test('stale analysis displays only its short status', async () => {
+  const detail = 'Source or analyzer version changed. Reanalyse this file.';
+  invoke.mockResolvedValue({ ...library, tracks: [{ ...library.tracks[0], analysis: { state: 'stale', result: estimate, error: detail } }] });
+  render(<App />);
+  await screen.findByText('Stale');
+  expect(screen.queryByText(detail)).toBeNull();
+  expect(screen.getByText('121')).toBeTruthy();
+});
 test('expanding and restoring the library preserves its search, selection and mounted panels', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -285,6 +293,26 @@ test('library headers sort every data column in both directions and keep missing
   }
   expect(screen.getByText('1', { selector: '.track-index' }).closest('tr')?.querySelector('.title')?.textContent).toBe('Zebra');
 });
+test('library polling updates corrected BPM and sorts by it even without analysis', async () => {
+  vi.useFakeTimers();
+  const detected = { ...library.tracks[0], analysis: { state: 'analysed' as const, result: estimate, error: null } };
+  let current = { ...library, tracks: [detected, { ...library.tracks[0], id: 'two', title: 'Manual only', timing_bpm: 130 }] };
+  invoke.mockImplementation(() => Promise.resolve(current));
+  await act(async () => { render(<App />); });
+  const bpmCell = () => screen.getByText(detected.title, { selector: '.title' }).closest('tr')!.cells[5];
+  expect(bpmCell().textContent).toBe(String(Math.round(estimate.grid.bpm)));
+  current = { ...current, revision: 2, tracks: [{ ...detected, timing_bpm: 140.25 }, current.tracks[1]] };
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(bpmCell().textContent).toBe('140');
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by BPM' }));
+  const titles = () => Array.from(document.querySelectorAll('.collection-table tbody .title'), row => row.textContent);
+  expect(titles()).toEqual(['Manual only', detected.title]);
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by BPM' }));
+  expect(titles()).toEqual([detected.title, 'Manual only']);
+  current = { ...current, revision: 3, tracks: [detected, current.tracks[1]] };
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(bpmCell().textContent).toBe(String(Math.round(estimate.grid.bpm)));
+});
 test('library compatibility indicators follow loaded deck keys and sort numerically', async () => {
   const withKey = (id: string, title: string, key: string | null): Library['tracks'][number] => ({
     ...library.tracks[0], id, title,
@@ -365,6 +393,36 @@ test('space does not start a library search', async () => {
   fireEvent.keyDown(window, { key: ' ' });
   expect(search.value).toBe('');
   expect(document.activeElement).not.toBe(search);
+});
+test('typing BPM in either deck or the master field keeps focus and leaves library search unchanged', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({
+    deck, loading: false, error: null,
+    track: { track_id: 'one', artifact_id: `artifact-${deck}`, title: 'Loaded track', artist: '', filename: '', duration_seconds: 125, frames: 6000000, peak_frames: 0, peaks: [] },
+    position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1,
+    grid: { bpm: 120, downbeat_seconds: 0, reviewed: false },
+  })) });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
+  fireEvent.change(search, { target: { value: 'Filename' } });
+  for (const name of ['A', 'B']) {
+    fireEvent.click(screen.getByLabelText(`Timing & tempo deck ${name}`));
+    const panel = screen.getByLabelText(`Timing & tempo deck ${name}`).closest('details')!;
+    const input = panel.querySelector<HTMLInputElement>('input[type="number"]')!;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    input.focus();
+    for (const key of '130.5') expect(fireEvent.keyDown(input, { key })).toBe(true);
+    expect(document.activeElement).toBe(input);
+    expect(search.value).toBe('Filename');
+    fireEvent.change(input, { target: { value: '130.5' } });
+    expect(input.value).toBe('130.5');
+  }
+  fireEvent.click(screen.getByLabelText('Master BPM'));
+  const master = screen.getByRole('textbox', { name: 'Target master BPM' });
+  for (const key of '130.5') expect(fireEvent.keyDown(master, { key })).toBe(true);
+  expect(document.activeElement).toBe(master);
+  expect(search.value).toBe('Filename');
 });
 test('space plus an arrow toggles the corresponding loaded deck', async () => {
   invoke.mockResolvedValue(library);
@@ -904,6 +962,7 @@ test('expanded Play All uses the shared overlap setting without a library select
 
 test('automatic transition settings persist overlap, mode and tempo choice and send them to the engine', async () => {
   localStorage.removeItem('vira.auto-bars');
+  localStorage.removeItem('vira.auto-fast-bars');
   localStorage.removeItem('vira.auto-tempo');
   localStorage.removeItem('vira.auto-style');
   invoke.mockResolvedValue(library);
@@ -913,6 +972,10 @@ test('automatic transition settings persist overlap, mode and tempo choice and s
   const overlap = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition overlap' });
   expect(Array.from(overlap.options).map(option => option.value)).toEqual(['0', '1', '2', '4', '8', '16', '32']);
   expect(overlap.value).toBe('8');
+  const fastOverlap = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Fast transition overlap' });
+  expect(fastOverlap.value).toBe('4');
+  fireEvent.change(fastOverlap, { target: { value: '2' } });
+  expect(localStorage.getItem('vira.auto-fast-bars')).toBe('2');
   const mode = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition mode' });
   expect(Array.from(mode.options).map(option => option.textContent)).toEqual(['Crossfade', 'Bass swap', 'Smart']);
   expect(mode.value).toBe('crossfade');
@@ -932,6 +995,8 @@ test('automatic transition settings persist overlap, mode and tempo choice and s
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition overlap' }).value).toBe('4');
+  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Fast transition overlap' }).value).toBe('2');
+  localStorage.removeItem('vira.auto-fast-bars');
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition tempo' }).value).toBe('keep');
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition mode' }).value).toBe('smart');
   localStorage.removeItem('vira.auto-style');

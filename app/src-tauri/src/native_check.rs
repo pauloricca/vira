@@ -411,6 +411,7 @@ fn timing_session(engine: Arc<EngineHandle>, seconds: u64, a: &str, b: &str) -> 
                 downbeat_seconds: 0.1,
                 reviewed: true,
             },
+            false,
         )?;
         engine.control(d, "gain", Some(0.08))?;
     }

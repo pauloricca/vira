@@ -1,11 +1,60 @@
 """Source-time and grid regression tests; run in the preparation container."""
 import unittest
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import librosa
 import numpy as np
-from preparation.baseline import SR, HOP, grid_diagnostics, align_grid_to_attacks, recover_opening_beats, checks
+import soundfile as sf
+from preparation.baseline import SR, HOP, grid_diagnostics, align_grid_to_attacks, recover_opening_beats, checks, estimate, fast_genre
 
 
 class BeatTests(unittest.TestCase):
+    def test_worker_uses_original_file_genre_metadata(self):
+        worker = Path(__file__).resolve().parents[1] / 'preparation' / 'analysis_worker.py'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            y = librosa.clicks(times=.5 + np.arange(32) * .75, sr=SR, length=25 * SR)
+            sf.write(root / 'source.wav', y, SR)
+            for extension in ['wav', 'mp3']:
+                with self.subTest(extension=extension):
+                    tagged = root / f'tagged.{extension}'
+                    subprocess.run(['ffmpeg', '-v', 'error', '-i', str(root / 'source.wav'),
+                                    '-metadata', 'genre=Drum & Bass', str(tagged)], check=True)
+                    output = root / 'analysis.json'
+                    subprocess.run([sys.executable, str(worker), '--input', str(tagged),
+                                    '--output', str(output)], check=True)
+                    result = json.loads(output.read_text())
+                    self.assertAlmostEqual(result['grid']['bpm'], 160, delta=1)
+                    self.assertAlmostEqual(result['tracker_bpm'], 160, delta=2)
+
+    def test_fast_genre_aliases_and_boundaries(self):
+        for genre in ['Drum & Bass', 'drum and bass', 'D&B', 'DnB', 'D n B',
+                      'Drum-n-Bass', 'drumandbass', 'Jungle', 'Breakbeat', 'Break Beat',
+                      'Electronic; Liquid Funk', 'Neurofunk', 'Jump-Up', 'Techstep',
+                      'Darkstep', 'Drumstep', 'Hardstep', 'Breakcore']:
+            with self.subTest(genre=genre):
+                self.assertTrue(fast_genre(genre))
+        for genre in [None, '', 'ambient', 'hip hop', 'house', 'junglepop', 'dubstep']:
+            with self.subTest(genre=genre):
+                self.assertFalse(fast_genre(genre))
+
+    def test_genre_hint_retracks_half_time_and_preserves_other_tempos(self):
+        for bpm in [60, 80, 120]:
+            with self.subTest(bpm=bpm):
+                beats = .5 + np.arange(int(24 * bpm / 60)) * 60 / bpm
+                y = librosa.clicks(times=beats, sr=SR, length=25 * SR)
+                original = estimate(y)
+                hinted = estimate(y, genre='Drum & Bass')
+                self.assertGreater(hinted['grid']['bpm'], 100)
+                factor = 2 if bpm <= 100 else 1
+                self.assertAlmostEqual(hinted['grid']['bpm'], original['grid']['bpm'] * factor, delta=1)
+                self.assertAlmostEqual(60 / np.median(np.diff(hinted['beats_seconds'])),
+                                       hinted['grid']['bpm'], delta=2)
+                self.assertEqual(estimate(y, genre='ambient'), original)
+
     def test_opening_recovery_uses_attacks_without_refitting_the_grid(self):
         for first_attack in [.01, .25, .387, 2.25, 10.25]:
             with self.subTest(first_attack=first_attack):

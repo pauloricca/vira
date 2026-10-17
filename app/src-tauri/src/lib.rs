@@ -127,7 +127,7 @@ impl Library {
                 ) && track.analysis.result.is_none())
                 || (!matches!(
                     track.analysis.state,
-                    AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved
+                    AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved | AnalysisState::Stale
                 ) && track.analysis.result.is_some())
             {
                 return Err("Preparation service returned invalid track metadata.".into());
@@ -570,10 +570,11 @@ pub fn run() {
         deck: usize,
         generation: u64,
         grid: timing::Grid,
+        preserve_speed: Option<bool>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         state
-            .apply_grid(deck, generation, grid)
+            .apply_grid(deck, generation, grid, preserve_speed.unwrap_or(false))
             .map_err(|e| format!("{e:#}"))
     }
     #[tauri::command]
@@ -789,6 +790,10 @@ mod tests {
         let mut bad = library("test.wav");
         bad.tracks[0].analysis.result = Some(serde_json::json!({"grid": {"bpm": 120}}));
         assert!(bad.validate().is_err());
+        let mut stale = library("test.wav");
+        stale.tracks[0].analysis.state = AnalysisState::Stale;
+        stale.tracks[0].analysis.result = Some(serde_json::json!({"grid": {"bpm": 120}}));
+        assert!(stale.validate().is_ok());
         let mut bad = library("test.wav");
         bad.tracks[0].source_hash = None;
         assert!(bad.validate().is_ok()); // Collection rows are not hashed until use.

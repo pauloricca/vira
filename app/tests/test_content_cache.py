@@ -118,7 +118,7 @@ class ContentCacheTests(unittest.TestCase):
         self.assertEqual(self.calls, ["first", "second"])
         self.assertNotEqual(self.second.state()["tracks"][0]["source_hash"], original["source_hash"])
         self.assertIsNone(Timing(self.second).get(moved["id"])["grid"])
-    def test_old_analyzer_is_recalculated_without_erasing_manual_overrides(self):
+    def test_old_analyzer_keeps_approval_and_manual_overrides(self):
         original, grid = self.analysed()
         path = self.content.root / "analysis" / (original["source_hash"] + ".json")
         value = json.loads(path.read_text())
@@ -127,9 +127,47 @@ class ContentCacheTests(unittest.TestCase):
         moved = self.move()
         self.second.request(moved["id"])
         self.second.pending.join()
+        self.assertEqual(self.calls, ["first"])
+        self.assertEqual(self.second.state()["tracks"][0]["analysis"]["state"], "approved")
+        self.assertEqual(Timing(self.second).get(moved["id"])["grid"], grid)
+
+    def test_local_and_legacy_approval_survives_analyzer_update(self):
+        original, _ = self.analysed()
+        path = self.first.cache_path(original["filename"])
+        value = json.loads(path.read_text())
+        value["analyzer_version"] = "old-analyzer"
+        atomic_json(path, value)
+        self.assertEqual(self.first.cached(original)["state"], "approved")
+        shutil.rmtree(self.content.root)
+        legacy = ContentStore(self.generated)
+        self.assertEqual(legacy.read("analysis", original["source_hash"])["analysis"]["state"], "approved")
+        self.assertEqual(self.first.cached({**original, "modified_ns": "0"})["state"], "stale")
+        value["schema_version"] = 0
+        atomic_json(path, value)
+        self.assertEqual(self.first.cached(original)["state"], "stale")
+        value["schema_version"] = ANALYSIS_SCHEMA
+        value["analysis"]["state"] = "analysed"
+        atomic_json(path, value)
+        self.assertEqual(self.first.cached(original)["state"], "stale")
+        self.assertEqual(self.first.cached(original)["result"], original["analysis"]["result"])
+
+    def test_stale_shared_data_remains_usable_until_reanalysis(self):
+        original, _ = self.analysed()
+        path = self.content.root / "analysis" / (original["source_hash"] + ".json")
+        value = json.loads(path.read_text())
+        value["analyzer_version"] = "old-analyzer"
+        value["analysis"]["state"] = "analysed"
+        atomic_json(path, value)
+        moved = self.move()
+        restored = self.second.identify(moved["id"])
+        self.assertEqual(restored["analysis"]["state"], "stale")
+        self.assertEqual(restored["analysis"]["result"], original["analysis"]["result"])
+        self.assertEqual(Timing(self.second).get(moved["id"])["suggestion"]["bpm"], 120)
+        self.assertEqual(self.second.cached(restored)["result"], original["analysis"]["result"])
+        self.second.request(moved["id"])
+        self.second.pending.join()
         self.assertEqual(self.calls, ["first", "second"])
         self.assertEqual(self.second.state()["tracks"][0]["analysis"]["state"], "analysed")
-        self.assertEqual(Timing(self.second).get(moved["id"])["grid"], grid)
 
     def test_recognising_an_existing_legacy_row_keeps_its_approval_and_save_time(self):
         original, _ = self.analysed()

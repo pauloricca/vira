@@ -1,4 +1,4 @@
-import { useEffect, useRef, type PointerEvent } from 'react';
+import { useEffect, useRef, type PointerEvent, type MouseEvent } from 'react';
 import type { DeckState } from './Decks';
 import type { TransitionPlan } from './TransitionGuides';
 
@@ -16,8 +16,9 @@ export function transitionHit(plan: TransitionPlan | null | undefined, deck: num
 /** Intercept transition edits before the normal waveform seek/scrub gesture. */
 export function useTransitionDrag(state: DeckState, running: boolean, plan: TransitionPlan | null | undefined,
   control: ((deck: number, action: string, value?: number) => Promise<void>) | undefined,
-  secondsAt: (element: Element, clientX: number) => number, span: number, fallback: Handlers): Handlers {
+  secondsAt: (element: Element, clientX: number) => number, span: number, fallback: Handlers): Handlers & { onPointerDownCapture: (event: PointerEvent<Element>) => void; onClickCapture: (event: MouseEvent<Element>) => void } {
   const drag = useRef<{ pointer: number; x: number; scale: number; origin: number; step: number; kind: Kind; last: number } | null>(null);
+  const consumed = useRef(false);
   const pending = useRef<{ kind: Kind; seconds: number } | null>(null);
   const busy = useRef(false);
   const epoch = useRef(0);
@@ -55,14 +56,20 @@ export function useTransitionDrag(state: DeckState, running: boolean, plan: Tran
     return true;
   }
   return {
-    onPointerDown(event) {
-      if (drag.current) return;
+    onPointerDownCapture(event) {
+      if (drag.current) { event.stopPropagation(); return; }
+      consumed.current = false;
       const kind = event.button === 0 ? hit(event) : null;
-      if (!kind || !plan || !state.grid) { fallback.onPointerDown(event); return; }
+      if (!kind || !plan || !state.grid) return;
+      consumed.current = true;
       event.preventDefault(); event.stopPropagation();
       const index = kind === 'auto_swap' ? 3 : kind === 'auto_finish' ? 4 : 0;
       drag.current = { pointer: event.pointerId, x: event.clientX, scale: span / Math.max(1, event.currentTarget.getBoundingClientRect().width), origin: plan.points[state.deck][index], step: 16 * 60 / state.grid.bpm, kind, last: 0 };
       event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    onPointerDown(event) { fallback.onPointerDown(event); },
+    onClickCapture(event) {
+      if (consumed.current) { event.preventDefault(); event.stopPropagation(); consumed.current = false; }
     },
     onPointerMove(event) {
       if (drag.current) { move(event); return; }

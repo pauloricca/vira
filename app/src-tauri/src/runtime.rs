@@ -27,6 +27,7 @@ struct Shared {
     cue_device_errors: AtomicU64,
     headphone_cue: [AtomicBool; 2],
     auto_mode: [AtomicU64; 2],
+    auto_fast: AtomicBool,
     auto_points: [[AtomicU64; 5]; 2],
     auto_remaining: [AtomicU64; 5],
     auto_style: AtomicU64,
@@ -104,6 +105,7 @@ impl Shared {
             cue_device_errors: 0.into(),
             headphone_cue: std::array::from_fn(|_| false.into()),
             auto_mode: std::array::from_fn(|_| 0.into()),
+            auto_fast: false.into(),
             auto_points: std::array::from_fn(|_| std::array::from_fn(|_| 0.into())),
             auto_remaining: std::array::from_fn(|_| 0.into()),
             auto_style: 0.into(),
@@ -182,6 +184,7 @@ impl Shared {
                 audition_index: self.audition_index.load(Relaxed),
                 audition_playing: self.audition_playing.load(Relaxed),
                 auto_mode: std::array::from_fn(|d| self.auto_mode[d].load(Relaxed) as u8),
+                auto_fast: self.auto_fast.load(Relaxed),
                 auto_points: std::array::from_fn(|d| {
                     std::array::from_fn(|i| f64::from_bits(self.auto_points[d][i].load(Relaxed)))
                 }),
@@ -979,9 +982,10 @@ impl EngineHandle {
                 };
                 Command::EditAuto(deck, generations, kind, seconds)
             }
-            "auto_now" | "auto_end" => {
-                let end = action == "auto_end";
-                if snapshot.auto_mode[deck] != if end { 2 } else { 1 } {
+            "auto_now" | "auto_end" | "auto_now_fast" | "auto_end_fast" => {
+                let end = action.starts_with("auto_end");
+                let fast = action.ends_with("_fast");
+                if fast || snapshot.auto_mode[deck] != if end { 2 } else { 1 } {
                     ensure!(
                         snapshot.playing[deck] && !snapshot.playing[1 - deck],
                         "Only the outgoing deck can be playing"
@@ -996,7 +1000,16 @@ impl EngineHandle {
                         "Release loops before an automatic transition"
                     );
                 }
-                Command::AutoTransition(deck, generations, end)
+                if fast {
+                    let bars = value.unwrap_or(4.);
+                    ensure!(
+                        [0., 1., 2., 4., 8., 16., 32.].contains(&bars),
+                        "Unsupported fast overlap"
+                    );
+                    Command::FastAutoTransition(deck, generations, end, bars as u8)
+                } else {
+                    Command::AutoTransition(deck, generations, end)
+                }
             }
 
             "headphone_cue" => {
@@ -1203,6 +1216,7 @@ impl EngineHandle {
         deck: usize,
         generation: u64,
         grid: crate::timing::Grid,
+        preserve_speed: bool,
     ) -> Result<()> {
         ensure!(deck < 2, "Deck must be A or B");
         let snapshot = self.shared.audible();
@@ -1216,7 +1230,11 @@ impl EngineHandle {
             .get(&generation)
             .ok_or_else(|| anyhow::anyhow!("Load a source first"))?;
         grid.validate(track.duration_seconds)?;
-        self.send(Command::Grid(deck, generation, grid))
+        self.send(if preserve_speed {
+            Command::ReinterpretGrid(deck, generation, grid)
+        } else {
+            Command::Grid(deck, generation, grid)
+        })
     }
     pub fn state(&self) -> Value {
         self.state_for_frontend(None)
@@ -1319,7 +1337,7 @@ impl EngineHandle {
             "from":from, "style":match snapshot.auto_style { 2 => "smart", 1 => "bass-swap", _ => "crossfade" },
             "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
         }));
-        json!({"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
@@ -1659,6 +1677,7 @@ fn native_output(
                 for i in 0..5 {
                     cb.auto_remaining[i].store(last.auto_remaining[i].to_bits(), Relaxed);
                 }
+                cb.auto_fast.store(last.auto_fast, Relaxed);
                 cb.auto_style.store(last.auto_style as u64, Relaxed);
                 cb.auto_started.store(last.auto_started, Relaxed);
                 cb.master_bpm.store(last.master_bpm.to_bits(), Relaxed);

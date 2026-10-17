@@ -1,5 +1,6 @@
 const shortcutCategories = [
   { title: 'Deck playback & tempo', shortcuts: [
+    ['Double-click AUTO NOW / AUTO END', 'Arm a transition using Fast transition overlap (default 4 bars); button blinks faster', 'Decks page; eligible outgoing deck playing; both decks loaded with timing grids; no loops or scrubbing'],
     ['Enter / Escape', 'Apply target master BPM (15–600) / cancel editing; clicking elsewhere also cancels', 'Master BPM text field is focused after clicking the header BPM number'],
     ['Alt + ←', 'Make deck A active', 'Decks page; outside text fields'],
     ['Alt + →', 'Make deck B active', 'Decks page; outside text fields'],
@@ -22,7 +23,7 @@ const shortcutCategories = [
     ['Cmd + ←', 'Load selected library track onto deck A', 'Decks page; readable track; deck stopped'],
     ['Cmd + →', 'Load selected library track onto deck B', 'Decks page; readable track; deck stopped'],
     ['↑ / ↓', 'Select previous / next library track in the selected collection', 'Decks page; collection selector closed'],
-    ['Type text', 'Focus library search and append to query', 'Decks page; without Cmd, Ctrl or Alt; collection selector closed'],
+    ['Type text', 'Focus library search and append to query', 'Decks page; outside typing fields; without Cmd, Ctrl or Alt; collection selector closed'],
   ] },
   { title: 'Track timing & analysis', shortcuts: [
     ['Cmd + B', 'Set reference beat at the playhead', 'Decks page; active loaded deck, or first loaded deck; stopped with a timing grid'],

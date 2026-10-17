@@ -105,7 +105,9 @@ length no longer fits, AUTO tries each shorter supported overlap, down to no
 overlap at the end. The incoming track's length after its cue also limits the
 overlap. This does not change the saved overlap setting. The
 selected button blinks while armed and during the crossfade; press it again to
-cancel. During the overlap, the outgoing deck fader falls from its current position
+cancel. Double-click AUTO NOW or AUTO END to use **Fast transition overlap**
+(default 4 bars) from Settings → Automatic transitions. Fast transitions blink
+more quickly and leave the normal overlap setting unchanged. During the overlap, the outgoing deck fader falls from its current position
 to zero, and the incoming fader rises from zero to the outgoing deck's starting
 level. Arming either mode first lowers the stopped incoming deck's fader, so it
 starts silently. The outgoing fader stays unchanged while AUTO is waiting. An off-center
@@ -635,8 +637,11 @@ oldest. Flags appear on the rolling and full-track waveforms while the panel is
 open. The adjusted source grid, BPM, and flags are saved with the track and
 restored after restarting VIRA. The panel's **Track BPM**, **Set BPM**, **Half BPM**,
 **Double BPM**, and **Original BPM** controls save and apply source-grid corrections
-while stopped. Original BPM restores the analysis suggestion's BPM, preserving
-the downbeat and reference flags. Corrections clear timing review and deck sync.
+during playback without changing the deck’s speed or tempo lock. A locked deck
+updates the master BPM by the same ratio (Half/Double BPM halves/doubles it).
+Original BPM restores the analysis suggestion's BPM, preserving
+the downbeat and reference flags. BPM corrections clear timing review. Reference and bar-start edits require a
+stopped deck and clear deck sync.
 Playback BPM remains controlled by the deck header.
 Track BPM can also be entered before analysis: Set BPM creates and saves a draft
 grid starting at the track's playable start (zero for an unanalysed track).

@@ -14,10 +14,21 @@ import time
 import uuid
 
 # Kept here too so the HTTP service never imports the numerical toolchain.
-ANALYZER_VERSION = "librosa-0.11.0-poc-v4-opening-beats"
+ANALYZER_VERSION = "librosa-0.11.0-poc-v5-genre-tempo"
 ANALYSIS_SCHEMA = 1
 LIBRARY_SCHEMA = 2
 MAX_PENDING = 32
+
+
+def compatible_analysis(envelope):
+    return isinstance(envelope, dict) and envelope.get("schema_version") == ANALYSIS_SCHEMA
+
+
+def saved_analysis(envelope):
+    analysis = envelope["analysis"]
+    if envelope.get("analyzer_version") != ANALYZER_VERSION and analysis["state"] != "approved":
+        return {**analysis, "state": "stale", "error": None}
+    return analysis
 
 
 def atomic_json(path, value):
@@ -132,12 +143,13 @@ class ContentStore:
                         if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
                             continue
                         if kind == "analysis":
-                            if value.get("schema_version") != ANALYSIS_SCHEMA or value.get("analyzer_version") != ANALYZER_VERSION:
+                            if not compatible_analysis(value):
                                 continue
                             analysis = value["analysis"]
-                            if analysis["state"] not in ("analysed", "needs_review", "approved"):
+                            if analysis["state"] not in ("analysed", "needs_review", "approved", "stale"):
                                 continue
                             validate_result(analysis["result"])
+                            value = {**value, "analysis": saved_analysis(value)}
                         elif value.get("schema_version") != 1 or not isinstance(value.get("grid"), dict):
                             continue
                         value = {**value, "source_hash": digest, "saved_ns": value.get("saved_ns", path.stat().st_mtime_ns)}
@@ -206,15 +218,19 @@ class LibraryJobs:
             return blank()
         try:
             envelope = json.loads(path.read_text(encoding="utf-8"))
-            if (envelope["schema_version"] != ANALYSIS_SCHEMA or envelope["analyzer_version"] != ANALYZER_VERSION
+            if (not compatible_analysis(envelope)
                     or any(envelope["source"].get(key) != row[key] for key in ("filename", "size_bytes", "modified_ns"))
                     or (row.get("source_hash") is not None and envelope["source"].get("source_hash") != row["source_hash"])):
                 return blank("stale", "Source or analyzer version changed. Reanalyse this file.")
             analysis = envelope["analysis"]
+            if envelope.get("analyzer_version") != ANALYZER_VERSION and analysis.get("result") is None:
+                return blank("stale")
             if analysis["state"] in ("queued", "analysing"):
                 return blank("failed", "Analysis was interrupted by a service restart. Retry this file.")
-            if analysis["state"] in ("analysed", "needs_review", "approved"):
+            if analysis["state"] in ("analysed", "needs_review", "approved", "stale") and analysis.get("result") is not None:
                 validate_result(analysis["result"])
+            elif analysis["state"] == "not_analysed" and analysis.get("result") is None and analysis.get("error") is None:
+                pass
             elif analysis["state"] != "failed":
                 raise ValueError("Invalid cached state")
             elif not isinstance(analysis.get("error"), str) or analysis.get("result") is not None:
@@ -226,7 +242,7 @@ class LibraryJobs:
                 raise ValueError("Saved analysis is missing its source hash")
             row["analysis_saved_ns"] = envelope.get("saved_ns", path.stat().st_mtime_ns)
             row["source_hash"] = digest
-            return analysis
+            return saved_analysis(envelope)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return blank("stale", "Cached analysis is unreadable or incompatible. Reanalyse this file.")
 
@@ -253,6 +269,15 @@ class LibraryJobs:
             row["id"] = hashlib.sha256((self.namespace + local).encode()).hexdigest() if self.namespace else local
         return tracks
 
+    def restore_timing_bpm(self, row):
+        # Read saved metadata only; scans must never hash audio to find corrections.
+        try:
+            from .timing import Timing
+        except ImportError:
+            from timing import Timing
+        grid = Timing(self).read(row)["grid"] if row.get("source_hash") else None
+        row["timing_bpm"] = grid["bpm"] if grid else None
+
     def reconcile(self, tracks):
         # Metadata/stat reconciliation never reads or hashes source audio.
         self.namespace_rows(tracks)
@@ -268,6 +293,7 @@ class LibraryJobs:
                     row["analysis"] = copy.deepcopy(old["analysis"])
                 else:
                     row["analysis"] = self.cached(row)
+                self.restore_timing_bpm(row)
                 self.rows[row["id"]] = row
             self.revision += 1
             return self.state()
@@ -275,11 +301,11 @@ class LibraryJobs:
     def shared_analysis(self, digest):
         value = self.content.read("analysis", digest)
         try:
-            if (value["schema_version"] != ANALYSIS_SCHEMA or value["analyzer_version"] != ANALYZER_VERSION
-                    or value["source_hash"] != digest or value["analysis"]["state"] not in ("analysed", "needs_review", "approved")):
+            if (not compatible_analysis(value)
+                    or value["source_hash"] != digest or value["analysis"]["state"] not in ("analysed", "needs_review", "approved", "stale")):
                 return None
             validate_result(value["analysis"]["result"])
-            return value
+            return {**value, "analysis": saved_analysis(value)}
         except (TypeError, ValueError, KeyError):
             return None
 
@@ -293,6 +319,7 @@ class LibraryJobs:
                 current = self.rows.get(track_id)
                 if current:
                     current["source_hash"] = None
+                    current["timing_bpm"] = None
                     current["analysis"] = blank("stale", "Source changed. Analyse to identify the new content.")
                     self.revision += 1
             raise ValueError("Source changed. Refresh the library.")
@@ -302,6 +329,7 @@ class LibraryJobs:
             if current is None:
                 raise ValueError("Source was removed. Refresh the library.")
             current["source_hash"] = digest
+            self.restore_timing_bpm(current)
             # A running job owns its row until completion.
             if restored and current["analysis"]["state"] not in ("queued", "analysing"):
                 current["analysis"] = restored["analysis"]
@@ -317,6 +345,7 @@ class LibraryJobs:
                 return self.state()
             for row in self.namespace_rows(tracks):
                 row["analysis"] = self.cached(row)
+                self.restore_timing_bpm(row)
                 self.rows[row["id"]] = row
             self.revision += 1
             return self.state()
@@ -422,6 +451,8 @@ class LibraryJobs:
                     raise ValueError("Source changed before analysis. Refresh and retry.")
                 requested["source_hash"] = digest
                 restored = self.shared_analysis(digest)
+                if restored is not None and restored["analysis"]["state"] == "stale":
+                    restored = None
                 if restored is None:
                     self.background()
                     result = validate_result(self.analyzer(snapshot, work))

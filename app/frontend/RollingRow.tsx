@@ -96,7 +96,7 @@ export function RollingRow({ state, running, window, control, transition, master
   },[state.playing,state.launch_pending,running,visible,state.generation]);
   return <div className={`rolling-row deck-${state.deck}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}><span className={`deck-badge${active ? ' active' : ''}`} title={`Deck ${state.deck===0 ? 'A' : 'B'}${active ? ' · active' : ''}`}>{state.deck===0 ? 'A' : 'B'}</span>
     <canvas {...waveformHandlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
-      onPointerDownCapture={event => { if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
+      onPointerDownCapture={event => { waveformHandlers.onPointerDownCapture(event); if (event.defaultPrevented) return; if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
       onDoubleClick={event => {
         if (!timingOpen || !running || state.playing || !state.track || !state.grid || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();

@@ -89,4 +89,8 @@ class Timing:
                         {"schema_version": 1, "grid": grid, "reference_beats": references})
             atomic_json(self.root / ("name-" + hashlib.sha256(row["filename"].encode()).hexdigest() + ".json"),
                         {"source_hash": row["source_hash"]})
+            for current in self.jobs.rows.values():
+                if current.get("source_hash") == row["source_hash"]:
+                    current["timing_bpm"] = grid["bpm"]
+            self.jobs.revision += 1
             return self.read(row)

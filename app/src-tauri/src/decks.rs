@@ -727,11 +727,13 @@ pub enum Command {
     Mixer(usize, u64, u8, f32),
     Remove(usize, u64),
     Grid(usize, u64, Grid),
+    ReinterpretGrid(usize, u64, Grid),
     Tempo(usize, [u64; 2], f64),
     Pitch(usize, u64, f64),
     Click(usize, u64, f32),
     ClickPanel(usize, u64, bool),
     AutoTransition(usize, [u64; 2], bool),
+    FastAutoTransition(usize, [u64; 2], bool, u8),
     EditAuto(usize, [u64; 2], u8, f64),
     AutoBars(u8),
     AutoTempo(bool),
@@ -759,6 +761,7 @@ pub struct Frame {
     pub routing_cross: [f32; 2],
     pub routing_cue: [f32; 2],
     pub auto_mode: [u8; 2],
+    pub auto_fast: bool,
     pub auto_points: [[f64; 5]; 2],
     pub auto_remaining: [f64; 5],
     pub auto_style: u8,
@@ -801,6 +804,7 @@ pub struct Frame {
 
 #[derive(Clone, Copy)]
 struct AutoTransition {
+    fast: bool,
     from: usize,
     generations: [u64; 2],
     end: bool,
@@ -988,6 +992,7 @@ impl Decks {
             })
             .ok_or_else(|| anyhow::anyhow!("No playable transition remains"))?;
         let auto = AutoTransition {
+            fast: false,
             from,
             generations,
             end,
@@ -1408,7 +1413,8 @@ impl Decks {
             | Command::CueRelease(d, g)
             | Command::ScrubStart(d, g, _)
             | Command::Scrub(d, g, _, _)
-            | Command::Grid(d, g, _) => {
+            | Command::Grid(d, g, _)
+            | Command::ReinterpretGrid(d, g, _) => {
                 self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
             }
             Command::Gain(d, g, _) => {
@@ -1447,6 +1453,25 @@ impl Decks {
             }
             Command::EditAuto(d, generations, kind, seconds) => {
                 self.edit_auto(d, generations, kind, seconds);
+            }
+            Command::FastAutoTransition(d, generations, end, bars) => {
+                if self.matches(generations)
+                    && !self.auto.is_some_and(|a| a.started)
+                    && [0, 1, 2, 4, 8, 16, 32].contains(&bars)
+                {
+                    self.cancel_auto();
+                    let saved = self.auto_bars;
+                    self.auto_bars = bars;
+                    let result = self.arm_auto(d, generations, end);
+                    self.auto_bars = saved;
+                    if result.is_ok() {
+                        if let Some(auto) = &mut self.auto {
+                            auto.fast = true;
+                        }
+                    } else if let Some(v) = &mut self.voices[d] {
+                        v.timing_error = 4;
+                    }
+                }
             }
             Command::AutoTransition(d, generations, end) => {
                 if self.matches(generations) {
@@ -1936,6 +1961,25 @@ impl Decks {
                     self.voices[d].as_mut().unwrap().apply_grid(grid);
                 }
             }
+            Command::ReinterpretGrid(d, g, grid) => {
+                if let Some(v) = self.voices[d].as_mut().filter(|v| {
+                    v.generation == g && grid.validate(v.source.len() as f64 / 48000.).is_ok()
+                }) {
+                    let ratio = v.grid.map_or(1., |old| grid.bpm / old.bpm);
+                    // Only reinterpret the beat count: leave the transport, prepared
+                    // DSP samples, pitch, loop endpoints and playhead untouched.
+                    v.grid = Some(grid);
+                    v.target_bpm = grid.bpm * v.clock.speed;
+                    v.loop_length = v.loop_length.map(|beats| beats * ratio);
+                    v.loop_phase_offset = None;
+                    v.loop_release_beat = None;
+                    if v.synced {
+                        self.master_bpm = v.target_bpm;
+                        self.tempo_target = None;
+                        self.drift_target = None;
+                    }
+                }
+            }
             Command::Click(d, g, gain) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
@@ -2040,6 +2084,7 @@ impl Decks {
         }
         self.advance_auto();
         let mut frame = Frame {
+            auto_fast: self.auto.is_some_and(|a| a.fast),
             auto_mode: std::array::from_fn(|d| {
                 self.auto
                     .filter(|a| a.from == d)
@@ -2409,6 +2454,63 @@ mod tests {
     }
 
     #[test]
+    fn source_bpm_corrections_preserve_live_audio_speed_and_lock() {
+        for locked in [false, true] {
+            for bpm in [60., 240., 119.] {
+                let setup = || {
+                    let mut decks = Decks::new();
+                    install(&mut decks, 0, 1, source());
+                    let v = decks.voices[0].as_mut().unwrap();
+                    v.apply_grid(Grid {
+                        bpm: 120.,
+                        downbeat_seconds: 0.,
+                        reviewed: true,
+                    });
+                    v.tempo(126.).unwrap();
+                    v.synced = locked;
+                    decks.master_bpm = 126.;
+                    decks.master_bpm_set = true;
+                    decks.command(Command::Play(0, 1), [1, 0]);
+                    for _ in 0..4096 {
+                        decks.next().unwrap();
+                    }
+                    decks
+                };
+                let mut original = setup();
+                let mut corrected = setup();
+                let before = corrected.voices[0].as_ref().unwrap();
+                let epoch = before.position_epoch;
+                let position = before.clock.at(before.output);
+                corrected.command(
+                    Command::ReinterpretGrid(
+                        0,
+                        1,
+                        Grid {
+                            bpm,
+                            downbeat_seconds: 0.,
+                            reviewed: false,
+                        },
+                    ),
+                    [1, 0],
+                );
+                let v = corrected.voices[0].as_ref().unwrap();
+                assert_eq!(v.clock.at(v.output), position);
+                assert_eq!(v.position_epoch, epoch);
+                assert_eq!(v.clock.speed, 1.05);
+                assert_eq!(v.target_bpm, bpm * 1.05);
+                assert_eq!(v.synced, locked);
+                assert_eq!(corrected.master_bpm, if locked { bpm * 1.05 } else { 126. });
+                for _ in 0..4096 {
+                    let a = original.next().unwrap();
+                    let b = corrected.next().unwrap();
+                    assert_eq!(a.deck_samples, b.deck_samples);
+                    assert_eq!(a.positions[0], b.positions[0]);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn explicit_master_before_first_play_is_preserved() {
         let mut decks = Decks::new();
         install(&mut decks, 0, 1, source());
@@ -2641,6 +2743,27 @@ mod tests {
         decks.command(Command::Play(from, 1), [1, 1]);
         decks
     }
+    #[test]
+    fn fast_auto_uses_its_own_overlap_and_retains_normal_settings() {
+        for from in [0, 1] {
+            for end in [false, true] {
+                let mut decks = auto_decks(from, 8, false);
+                decks.command(Command::FastAutoTransition(from, [1, 1], end, 4), [1, 1]);
+                let auto = decks.auto.unwrap();
+                assert!(auto.fast);
+                assert_eq!(auto.beats, 16.);
+                assert_eq!(auto.end, end);
+                assert_eq!(decks.auto_bars, 8);
+                assert!(decks.next().unwrap().auto_fast);
+                decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                assert!(decks.auto.is_none());
+                decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                assert_eq!(decks.auto.unwrap().beats, 32.);
+                assert!(!decks.auto.unwrap().fast);
+            }
+        }
+    }
+
     #[test]
     fn thirty_two_bar_overlap_is_supported_by_decks_and_library_play_all() {
         let source = Arc::new(Source {
