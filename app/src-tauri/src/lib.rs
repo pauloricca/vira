@@ -274,16 +274,12 @@ pub fn track_artwork(track_id: &str) -> Result<Option<String>, String> {
     if !valid_id(track_id) {
         return Err("Artwork requires a library track ID.".into());
     }
-    let library = library_state()?;
-    let track = library
-        .tracks
-        .iter()
-        .find(|track| track.id == track_id)
-        .ok_or("Track is unavailable or changed. Refresh the library.")?;
-    if !matches!(track.status, FileStatus::Ready) || !track.artwork_available {
+    // The artwork endpoint resolves and validates the opaque ID itself. Fetching
+    // the whole library here multiplies analysis payloads by the number of covers.
+    let response = service_response(&format!("/v1/artwork/{track_id}"), None, false)?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
         return Ok(None);
     }
-    let response = service_response(&format!("/v1/artwork/{track_id}"), None, false)?;
     let mime = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)

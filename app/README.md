@@ -83,7 +83,15 @@ When the eligible tracks are exhausted, it waits for a manual choice or a new se
 
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
-single collection, and an empty performance-slot panel. The header shows an independent master BPM, unset until the first deck plays. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
+single collection, and an empty performance-slot panel. Covers are requested only
+near the viewport. Deck loads take priority through preparation, PCM transfer and
+timing setup: background covers, library polls, scan steps and queued analysis jobs
+wait until all pending deck loads finish. In-flight work finishes its current step;
+an analysis process already running uses a lower CPU priority. Background work
+resumes after success or failure, and abandoned service reservations expire.
+
+The workspace uses
+an independent master BPM in the header, unset until the first deck plays. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
 **AUTO NOW / AUTO END**, to the left of the loop controls, transition from the playing
 deck to the loaded, stopped deck. Both tracks need usable timing grids and released
 loops. AUTO NOW waits for the next matching phrase position on the beat grids;

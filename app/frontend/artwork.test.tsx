@@ -1,10 +1,33 @@
 // @vitest-environment jsdom
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { TrackArtwork } from './artwork';
+import { beginDeckLoad } from './loadPriority';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); invoke.mockReset(); });
+
+test('requests artwork only near the viewport and waits for every deck load', async () => {
+  let intersect: IntersectionObserverCallback;
+  const observe = vi.fn(), disconnect = vi.fn();
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+    observe = observe;
+    disconnect = disconnect;
+  });
+  invoke.mockResolvedValue(null);
+  render(<TrackArtwork trackId="lazy-priority" className="cover" />);
+  expect(observe).toHaveBeenCalledTimes(1);
+  expect(invoke).not.toHaveBeenCalled();
+  const finishA = beginDeckLoad(), finishB = beginDeckLoad();
+  await act(async () => { intersect!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
+  expect(invoke).not.toHaveBeenCalled();
+  await act(async () => finishA());
+  expect(invoke).not.toHaveBeenCalled();
+  await act(async () => finishB());
+  await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+  expect(disconnect).toHaveBeenCalled();
+});
 
 test('bounds concurrent cover requests and drains the queue after failures', async () => {
   let active = 0, peak = 0;

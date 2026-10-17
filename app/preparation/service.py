@@ -13,9 +13,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     from .jobs import LibraryJobs, ContentStore, LIBRARY_SCHEMA, atomic_json, blank, entry_id
     from .prepare import Preparation
+    from .priority import LoadPriority, priority_request
 except ImportError:
     from jobs import LibraryJobs, ContentStore, LIBRARY_SCHEMA, atomic_json, blank, entry_id
     from prepare import Preparation
+    from priority import LoadPriority, priority_request
 
 SCHEMA_VERSION = 1
 PROBE_TIMEOUT = 15
@@ -74,12 +76,13 @@ def inspect_file(path: Path) -> dict:
     return row
 
 
-def scan_bin(music: Path, generated: Path) -> dict:
+def scan_bin(music: Path, generated: Path, background=lambda: None) -> dict:
     # A failed directory scan is a service-level error; failed files remain individual rows.
     if not music.is_dir():
         raise ValueError("Music bin is unavailable. Check the read-only music mount, then Refresh.")
     tracks = []
     for path in sorted(music.iterdir(), key=lambda p: (p.name.casefold(), p.name)):
+        background()
         if path.is_dir() and not path.is_symlink():
             continue  # Direct files only; recursive scanning is intentionally deferred.
         row = inspect_file(path)
@@ -88,6 +91,7 @@ def scan_bin(music: Path, generated: Path) -> dict:
         identity = json.dumps([path.name, row["size_bytes"], row["modified_ns"]], ensure_ascii=False)
         row["id"] = hashlib.sha256(identity.encode()).hexdigest()
         tracks.append(row)
+    background()
     result = dict(schema_version=SCHEMA_VERSION, tracks=tracks)
     generated.mkdir(parents=True, exist_ok=True)
     name = None
@@ -146,14 +150,18 @@ def quick_snapshot(music: Path, generated: Path) -> list:
     return rows
 
 
-def make_handler(music: Path, generated: Path, namespace="", content=None):
+def make_handler(music: Path, generated: Path, namespace="", content=None, priority=None):
+    priority = priority if priority is not None else LoadPriority()
     scan_lock = threading.Lock()
     jobs = LibraryJobs(music, generated, namespace=namespace, content=content)
+    jobs.background = priority.background
     preparation = Preparation(jobs)
 
     def scan():
         try:
-            result = jobs.reconcile(scan_bin(music, generated)["tracks"])
+            tracks = scan_bin(music, generated, priority.background)["tracks"]
+            priority.background()
+            result = jobs.reconcile(tracks)
             atomic_json(generated / "library-v2.json", result)
             jobs.scan_error = None
         except (OSError, ValueError) as exc:
@@ -170,6 +178,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path.startswith("/v1/artwork/"):
+                priority.background()
                 try:
                     track_id = self.path[len("/v1/artwork/"):]
                     if len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id):
@@ -218,13 +227,17 @@ def make_handler(music: Path, generated: Path, namespace="", content=None):
                         self.respond(404, {"error": str(exc)})
                 return
             if self.path == "/health":
-                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "content_cache": 1, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
+                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "content_cache": 1, "load_priority": 1, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
             elif self.path == "/v1/library/state":
+                priority.background()
                 self.respond(200, jobs.state())
             else:
                 self.respond(404, {"error": "Unknown endpoint."})
 
         def do_POST(self):
+            if self.path == "/v1/load-priority":
+                priority_request(self, priority)
+                return
             if self.path in ("/v1/timing/get", "/v1/timing/save"):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -256,6 +269,8 @@ def make_handler(music: Path, generated: Path, namespace="", content=None):
                         raise ValueError("Analysis requires a valid library track ID.")
                     if self.path == "/v1/prepare":
                         deck, generation = body.get("deck"), body.get("generation")
+                        if deck is None:
+                            priority.background()
                         if "audition" in body and body["audition"] is not True:
                             raise ValueError("Invalid audition request.")
                         if deck is not None and (type(deck) is not int or deck not in (0, 1) or type(generation) is not int or generation < 1):
@@ -267,8 +282,10 @@ def make_handler(music: Path, generated: Path, namespace="", content=None):
                                 preparation.complete(deck, generation)
                         self.respond(200, result)
                     elif self.path == "/v1/analysis/approve":
+                        priority.background()
                         self.respond(200, jobs.approve(track_id))
                     else:
+                        priority.background()
                         self.respond(202, jobs.request(track_id))
                 except (ValueError, OSError) as exc:
                     self.respond(400, {"error": str(exc)})
@@ -299,7 +316,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None):
                     self.respond(503, {"error": str(exc)})
                 return
             try:
-                result = jobs.reconcile(scan_bin(music, generated)["tracks"])
+                result = jobs.reconcile(scan_bin(music, generated, priority.background)["tracks"])
                 atomic_json(generated / "library-v2.json", result)
                 jobs.scan_error = None
                 self.respond(200, result)
@@ -333,10 +350,11 @@ def make_collections_handler(collections, generated):
     """Keep every root mounted; route opaque track/artifact IDs to its own cache."""
     handlers = []
     content = ContentStore(generated)
+    priority = LoadPriority()
     for item in collections:
         host = item["path"]
         namespace = "" if host == "/Users/pauloricca/Desktop/projects/vira/music" else host
-        handler = make_handler(Path(item["mount"]), library_storage(generated, host), namespace, content)
+        handler = make_handler(Path(item["mount"]), library_storage(generated, host), namespace, content, priority)
         handlers.append((host, handler))
     instance = hashlib.sha256("".join(handler.jobs.instance_id for _, handler in handlers).encode()).hexdigest()
 
@@ -374,8 +392,9 @@ def make_collections_handler(collections, generated):
 
         def do_GET(self):
             if self.path == "/health":
-                self.respond(200, dict(schema_version=LIBRARY_SCHEMA, content_cache=1, music_folders=[host for host, _ in handlers]))
+                self.respond(200, dict(schema_version=LIBRARY_SCHEMA, content_cache=1, load_priority=1, music_folders=[host for host, _ in handlers]))
             elif self.path == "/v1/library/state":
+                priority.background()
                 self.respond(200, state())
             elif self.path.startswith("/v1/artwork/"):
                 handler = self.track_handler(self.path[len("/v1/artwork/"):])
@@ -397,6 +416,9 @@ def make_collections_handler(collections, generated):
                 self.respond(404, {"error": "Unknown endpoint."})
 
         def do_POST(self):
+            if self.path == "/v1/load-priority":
+                priority_request(self, priority)
+                return
             if self.path in ("/v1/library/open", "/v1/library/scan"):
                 if self.headers.get("Content-Length", "0") != "0" or self.headers.get("Transfer-Encoding"):
                     self.respond(400, {"error": "Scan does not accept a request body."})

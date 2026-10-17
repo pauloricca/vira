@@ -1,4 +1,4 @@
-use crate::{service_response, valid_id, FileStatus};
+use crate::{service_response, valid_id};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -6,6 +6,35 @@ use std::{io::Read, sync::Arc};
 
 pub const RATE: usize = 48000;
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024 * 1024;
+
+pub(crate) struct LoadPriority(String);
+impl LoadPriority {
+    pub(crate) fn begin() -> Result<Self> {
+        let token = format!(
+            "{:x}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
+        service_response(
+            "/v1/load-priority",
+            Some(serde_json::json!({"token":token,"active":true})),
+            true,
+        )
+        .map_err(anyhow::Error::msg)?;
+        Ok(Self(token))
+    }
+}
+impl Drop for LoadPriority {
+    fn drop(&mut self) {
+        let _ = service_response(
+            "/v1/load-priority",
+            Some(serde_json::json!({"token":self.0,"active":false})),
+            true,
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prepared {
@@ -183,12 +212,6 @@ pub fn prepare_audition(track_id: &str) -> Result<Prepared> {
 }
 fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Result<Prepared> {
     ensure!(valid_id(track_id), "Loading requires a library track ID");
-    let library = crate::library_state().map_err(anyhow::Error::msg)?;
-    let track = library
-        .tracks
-        .iter()
-        .find(|t| t.id == track_id && matches!(t.status, FileStatus::Ready))
-        .ok_or_else(|| anyhow::anyhow!("Track is unavailable. Refresh the library"))?;
     let value = service_response(
         "/v1/prepare",
         Some(match request {
@@ -202,22 +225,10 @@ fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Res
     )
     .map_err(anyhow::Error::msg)?
     .json::<Prepared>()?;
-    // The listing may not have identified this content yet. Preparation publishes
-    // the verified hash on the same row; validate against that authoritative state.
-    let identified;
-    let expected_hash = if track.source_hash.as_deref() == Some(value.source_hash.as_str()) {
-        track.source_hash.as_deref().unwrap()
-    } else {
-        identified = crate::library_state().map_err(anyhow::Error::msg)?;
-        identified
-            .tracks
-            .iter()
-            .find(|t| t.id == track_id)
-            .and_then(|t| t.source_hash.as_deref())
-            .ok_or_else(|| {
-                anyhow::anyhow!("Source was replaced while preparing. Refresh the library")
-            })?
-    };
+    // Preparation resolves the current row and verifies source bytes before it
+    // returns. Validate that descriptor directly, without a whole-library fetch.
+    ensure!(valid_id(&value.source_hash), "Invalid prepared source hash");
+    let expected_hash = &value.source_hash;
     if audition {
         value.validate_audio(track_id, expected_hash)?;
     } else {

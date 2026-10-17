@@ -11,6 +11,7 @@ import { useWaveformZoom, waveformZoomIntervals } from './zoom';
 import { DisplayPosition, animate } from './transport';
 import { Grid, TimingRecord, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
 import { TrackArtwork } from './artwork';
+import { beginDeckLoad } from './loadPriority';
 import { LevelMeter, useMeterFeed } from './LevelMeter';
 import { PeakMeter } from './meter';
 import { KeySelector } from './KeySelector';
@@ -114,13 +115,14 @@ export function useDecks() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, []);
   async function load(deck: number, trackId: string, preserveLock = true, resetMixer = true) {
+    const finishLoad = beginDeckLoad();
     const request = ++requests.current[deck];
     setLoadingTrackIds(previous => previous.map((id, d) => d === deck ? trackId : id));
     setErrors(previous => previous.map((v, d) => d === deck ? null : v));
     setLoading(previous => previous.map((v, d) => d === deck ? true : v));
     try { await invoke('load_track', { deck, trackId, preserveLock, resetMixer }); }
     catch (e) { if (request === requests.current[deck]) setErrors(previous => previous.map((v, d) => d === deck ? String(e) : v)); }
-    finally { if (request === requests.current[deck]) setLoading(previous => previous.map((v, d) => d === deck ? false : v)); }
+    finally { finishLoad(); if (request === requests.current[deck]) setLoading(previous => previous.map((v, d) => d === deck ? false : v)); }
   }
   async function refreshTiming(deck: number, generation: number) {
     const state = currentAudio.current.decks[deck];

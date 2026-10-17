@@ -824,6 +824,7 @@ impl EngineHandle {
         preserve_lock: bool,
         reset_mixer: bool,
     ) -> Result<()> {
+        let _priority = source::LoadPriority::begin()?;
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"

@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { RenderProbe } from './RenderProbe';
 import { Deck, Mixer, RollingWaveforms, TRACK_MIME, useDecks } from './Decks';
 import { TrackArtwork } from './artwork';
+import { waitForDeckLoads } from './loadPriority';
 import { Audio } from './Audio';
 import { CpuUsage } from './CpuUsage';
 import { Routing } from './Routing';
@@ -224,7 +225,7 @@ export function App() {
     if (reset || (value.instance_id === instance.current && value.revision >= revision.current)) {
       instance.current = value.instance_id;
       revision.current = value.revision;
-      setLibrary(value);
+      setLibrary(previous => reset || !previous || value.instance_id !== previous.instance_id || value.revision !== previous.revision || value.scan_pending !== previous.scan_pending || value.scan_error !== previous.scan_error ? value : previous);
     }
   }
   async function refresh() {
@@ -267,10 +268,13 @@ export function App() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
+      await waitForDeckLoads();
+      if (cancelled) return;
       const current = generation.current;
       if (!scanning.current) {
         try {
           const value = await invoke<Library>('get_library_state');
+          await waitForDeckLoads();
           if (!cancelled && current === generation.current && !scanning.current) {
             if (value.instance_id !== instance.current) setPollError('Preparation service restarted. Click Refresh to restore the library.');
             else { apply(value); setPollError(value.scan_error ?? null); }

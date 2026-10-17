@@ -94,7 +94,7 @@ def validate_result(result):
 def run_analysis(snapshot, work):
     result_path = work / "result.json"
     try:
-        subprocess.run([sys.executable, str(Path(__file__).with_name("analysis_worker.py")),
+        subprocess.run(["nice", "-n", "10", sys.executable, str(Path(__file__).with_name("analysis_worker.py")),
                         "--input", str(snapshot), "--output", str(result_path)],
                        check=True, capture_output=True, timeout=600)
     except subprocess.TimeoutExpired as exc:
@@ -182,6 +182,7 @@ class ContentStore:
 
 class LibraryJobs:
     def __init__(self, music, generated, analyzer=run_analysis, capacity=MAX_PENDING, namespace="", content=None):
+        self.background = lambda: None
         self.music, self.generated, self.analyzer = music, generated, analyzer
         self.namespace = namespace
         self.content = content if content is not None else ContentStore(generated)
@@ -394,6 +395,7 @@ class LibraryJobs:
             try:
                 if item is None:
                     return
+                self.background()
                 self._analyze(*item)
             except Exception as exc:
                 print(f"Analysis worker error: {exc}", file=sys.stderr, flush=True)
@@ -410,6 +412,7 @@ class LibraryJobs:
         result, failure, restored = None, None, None
         digest = None
         try:
+            self.background()
             with tempfile.TemporaryDirectory(prefix="vira-analysis-") as directory:
                 work = Path(directory)
                 snapshot = work / ("source" + Path(requested["filename"]).suffix)
@@ -420,12 +423,14 @@ class LibraryJobs:
                 requested["source_hash"] = digest
                 restored = self.shared_analysis(digest)
                 if restored is None:
+                    self.background()
                     result = validate_result(self.analyzer(snapshot, work))
         except Exception as exc:
             failure = str(exc) or "Analysis failed. Retry this file."
         # Check again even without Refresh: never publish a result for changed content.
         unchanged = False
         try:
+            self.background()
             after_digest, stat = source_hash(self.music / requested["filename"])
             unchanged = after_digest == requested["source_hash"] and (stat.st_size, str(stat.st_mtime_ns)) == (requested["size_bytes"], requested["modified_ns"])
         except (OSError, ValueError):

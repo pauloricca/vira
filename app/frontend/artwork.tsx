@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { waitForDeckLoads } from './loadPriority';
 
 const artwork = new Map<string, string | null>();
 const pending = new Map<string, Promise<string | null>>();
@@ -7,6 +8,7 @@ const waiting: (() => void)[] = [];
 let activeRequests = 0;
 
 async function acquire() {
+  await waitForDeckLoads();
   if (activeRequests < 4) { activeRequests++; return; }
   await new Promise<void>(resolve => waiting.push(resolve));
 }
@@ -23,7 +25,9 @@ function load(trackId: string) {
   const request = (async () => {
     await acquire();
     try {
+      await waitForDeckLoads();
       const value = await invoke<string | null>('get_track_artwork', { trackId });
+      await waitForDeckLoads();
       const result = typeof value === 'string' && value.startsWith('data:image/') ? value : null;
       artwork.set(trackId, result);
       return result;
@@ -52,6 +56,17 @@ export function useArtwork(trackId: string | null | undefined, available = true)
 }
 
 export function TrackArtwork({ trackId, available = true, className, fallback = null, alt = '' }: { trackId: string; available?: boolean; className: string; fallback?: React.ReactNode; alt?: string }) {
-  const source = useArtwork(trackId, available);
-  return source ? <img className={className} src={source} alt={alt} /> : <span className={className} aria-hidden={alt ? undefined : true}>{fallback}</span>;
+  const [element, setElement] = useState<HTMLElement | null>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+  useEffect(() => {
+    if (!element || nearViewport) return;
+    if (typeof IntersectionObserver === 'undefined') { setNearViewport(true); return; }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) setNearViewport(true);
+    }, { rootMargin: '200px' });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element, nearViewport]);
+  const source = useArtwork(trackId, available && nearViewport);
+  return source ? <img ref={setElement} className={className} src={source} alt={alt} /> : <span ref={setElement} className={className} aria-hidden={alt ? undefined : true}>{fallback}</span>;
 }
