@@ -43,14 +43,56 @@ can locate `app/compose.yaml` if the development checkout moves. A failed mount
 is reported in the library; startup details are in the app support directory's
 `preparation-start.log`. Refresh retries preparation startup.
 
+**Start Session** in the library header shows a sortable **Played** column. A track
+becomes **Yes** and its row dims as soon as it plays on either deck, including a
+track already playing when the session starts. Loading a track or waiting for a
+scheduled launch does not count. History covers every collection and remains when
+a track stops or leaves a deck. **End Session** clears the history and hides the
+column. Sessions last until ended
+or the app is closed.
+
+Select a readable library track and click **Play Next** or press **Cmd + N** to
+mark an idea for later. Marked rows turn orange; the **Next** column appears only
+while tracks are marked and numbers them in the order marked, across collections. Click **Cancel Play Next** or press
+**Cmd + N** again to remove one and close the numbering gap. Sorting and searching
+keep this order intact. When a track starts playing on either deck, its marker
+is removed and the remaining tracks are renumbered. Loading alone or waiting for a
+scheduled launch does not remove it. Planning marks work independently of sessions
+and do not start playback automatically; they last until the app is closed.
+The shortcut is available on the Decks page, outside text fields and dropdowns.
+
+**Autopilot**, after Play Next, blinks while enabled. It starts a session if needed
+and keeps an unplayed recommendation marked next when no manual plans remain.
+Candidates come from the current collection and selected tags, ignoring search.
+Settings has independent 0–100 weights for BPM proximity (within 10% of the
+playing track's original BPM), shared tags, harmonic compatibility (the same
+key, neighbouring fifths, or relative major/minor), BPM direction, and randomness.
+BPM direction adds a full factor score for continuing the previous completed
+handoff's rise or fall in original BPM. The first track, equal BPM, or unknown BPM
+gives no direction preference. Manual handoffs also establish direction while
+Autopilot is off; ending the session resets it. Randomness adds an independent
+uniform 0–1 value per candidate, multiplied by its weight, on each recommendation.
+Its default weight is zero; BPM direction defaults to 50. Equal scores use a random
+choice; played tracks are never automatically recommended again in that session.
+The next track loads onto the stopped deck and the playing deck arms AUTO END
+once both decks have timing grids and their loops are released. Manual Play Next
+choices and tracks loaded onto the stopped deck take priority over recommendations.
+Cancelling AUTO END or ending the session disables Autopilot. Enabling it never
+starts playback; with empty decks it loads a random eligible track for you to start.
+When the eligible tracks are exhausted, it waits for a manual choice or a new session.
+
 The deck workspace follows the minimalist interface reference: blue/orange shared
 waveforms, one seekable full-track overview per deck, a central mixer, a searchable
-single collection, and an empty performance-slot panel. The header shows an independent master BPM, starting at 120. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
+single collection, and an empty performance-slot panel. The header shows an independent master BPM, unset until the first deck plays. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
 **AUTO NOW / AUTO END**, to the left of the loop controls, transition from the playing
 deck to the loaded, stopped deck. Both tracks need usable timing grids and released
-loops. AUTO NOW waits for the next phrase boundary counted from the playable track
-start; AUTO END overlaps the final bars. The incoming deck starts exactly at its
-cue point (or its normal track start when no cue has been moved). If the chosen
+loops. AUTO NOW waits for the next matching phrase position on the beat grids;
+AUTO END uses the latest matching position that leaves room for the overlap.
+Phrase length follows the selected overlap, counted from each grid’s first downbeat.
+The incoming deck starts exactly at its cue point (or its normal track start when
+no cue has been moved), and the outgoing launch matches that cue’s phrase phase.
+Partial bars and audio tails at EOF do not shift the mix off the grids; the
+outgoing track may therefore finish fading before the file ends. If the chosen
 length no longer fits, AUTO tries each shorter supported overlap, down to no
 overlap at the end. The incoming track's length after its cue also limits the
 overlap. This does not change the saved overlap setting. The
@@ -63,6 +105,22 @@ crossfader moves gradually to center over the first bar (or a shorter overlap).
 Cancellation stops the incoming deck and restores the starting faders and crossfader,
 leaving master BPM at its current value and both decks locked. Manual transport,
 timing, tempo, crossfader or active-transition fader changes also cancel the transition.
+While AUTO is planned and waiting, drag its start, end or bass-swap marker on either
+waveform to move that point on both decks by the same number of beats. Drag inside
+the shaded transition away from a marker to move the whole region on that deck only.
+All edits jump in four-bar steps relative to the original points, preserving phrase
+position. Points stay ordered and within playable audio; the outgoing start must
+remain ahead of playback. Crossfade mode allows start/end edits and adjusts its fade
+points proportionally. Editing stops when the transition begins. Jumping to another
+position on the outgoing deck while AUTO is waiting relocates that deck's region
+and preserves the incoming deck's edited points. If too little outgoing material
+remains, AUTO shortens the overlap while keeping the incoming start.
+Waveform seeks during an active transition preserve fade and tempo progress and
+recalculate the transition markers around the new playhead positions. The remaining
+overlap shortens when needed to fit the playable material left on either deck.
+Seeking the outgoing deck while AUTO is waiting replans its launch boundary.
+EQ adjustments also leave AUTO running; scheduled bass changes still occur once,
+and later manual EQ adjustments remain effective.
 Moving the incoming fader while armed cancels AUTO and applies the manual position.
 Cancelling before playback restores its previous fader position.
 Loop IN/OUT, loop lengths and loop release remain performance controls during AUTO.
@@ -73,7 +131,7 @@ while AUTO is waiting for its scheduled boundary.
 
 While AUTO is engaged, both deck overview waveforms and both rolling waveforms
 show the scheduled transition: teal START/END guides and a shaded overlap, white
-OUT FADE / IN FULL guides for Crossfade, or an amber BASS SWAP / SMART BASS guide.
+OUT FADE / IN FULL guides for Crossfade, or an amber BASS SWAP guide.
 The markers use the native plan, including cue points, shorter overlaps and Smart's
 selected drop or midpoint fallback. No overlap shows one HANDOFF marker. Markers
 clear on completion or cancellation. Looping rolling waveforms retain the output
@@ -137,7 +195,7 @@ from −48 to 0 dBFS. Master gain and crossfading remain deferred.
 Use each library row's **•••** menu for timing, analysis and Load A / Load B;
 dragging rows onto decks remains available.
 Use the thin play column after the row number to audition a library track through
-**Cue headphones** (selected on AUDIO). The row button changes to Stop while
+**Cue headphones** (selected in Settings). The row button changes to Stop while
 loading or playing. Auditioning uses an independent player
 at the source's original speed outside Play All overlaps and never replaces or changes decks A/B. The
 compact controls beside **Music library** show pause/resume, Stop, a seek slider
@@ -375,12 +433,14 @@ separate R3/transport states.
   the loop resumes at the background position. It pauses and follows tempo with
   the deck, and stays enabled when another track loads on that deck.
 - **Cue** uses Pioneer-style transport behavior. While paused away from Cue,
-  press to set it at the current position. During playback, press to return to Cue
+  press to set it at the current position. On a locked deck, it snaps to the nearest
+  bar or beat according to Settings → Locked deck start, within the playable track.
+  During playback, press to return to Cue
   and pause. While paused at Cue, hold to audition; release returns and pauses.
   Press Play while holding Cue to continue playing after release. Pointer and
   Space/Enter holds are supported, and cancellation/window focus loss ends audition.
   The amber overview marker shows Cue. Each newly loaded deck starts with Cue at
-  zero; Cue is temporary for that load. Cue actions are exact and immediate,
+  zero; Cue is temporary for that load. Returning to Cue and auditioning are immediate,
   including on a deck locked to the master tempo.
 - **Stop** pauses and returns to the beginning, preserving Cue.
 - On paused/stopped decks, drag the full-track overview playhead to seek silently.
@@ -527,7 +587,7 @@ producer boundary using the current precise source anchor, discard old prepared
 DSP output and crossfade from the last output over 5 ms. This is a short transition,
 not a guarantee that stretched song attacks remain sample-exact.
 
-The master BPM is independent of either deck and starts at 120. The lock icon beside
+The master BPM is independent of either deck and is unset until the first deck plays at its current tempo. The lock icon beside
 an applied deck's BPM locks it to the master if it has a timing grid and
 the master fits its supported speed range. Draft grids can be locked, so review
 their musical timing before relying on alignment. Both decks can lock at once. A locked
@@ -673,7 +733,7 @@ FFT analysis when frequency features are valid.
 
 ### Master and headphone outputs
 
-Open **AUDIO** in the header, select **Master out** and **Cue headphones**, then
+Open **SETTINGS** in the workspace tabs, select **Master out** and **Cue headphones**, then
 click **Apply outputs**. Master defaults to the system output; cue starts off.
 Selections are saved in `~/Library/Application Support/uk.ricca.vira/audio.json`.
 Each output must support stereo float32 at 48 kHz. Devices with more channels use
@@ -684,7 +744,7 @@ cue. Cue follows trim, EQ and filter, and bypasses channel volume and crossfader
 The transport CUE button continues to set/return to the deck's cue point.
 Changing outputs preserves loaded tracks and transport. Disconnected explicit
 outputs wait for reconnection instead of falling back to another device; cue
-failure leaves master playback running. The Audio page refreshes the device list
+failure leaves master playback running. Settings refreshes the device list
 and displays output errors. A bounded stereo queue with interpolation compensates
 for small clock differences between devices; physical headphone latency remains
 device dependent. Dual-device listening still needs verification on macOS hardware.
@@ -694,15 +754,18 @@ device dependent. Dual-device listening still needs verification on macOS hardwa
 **ROUTING** opens a stereo audio patchbay. Deck A and B keep their labeled, color-coded groups;
 player → trim → EQ → filter → fader is the initial chain. These nodes retain the
 Decks page's controls. Crossfader/mix and cue mix retain their existing controls;
-Master and Headphone outputs use the devices selected on AUDIO. No MIDI routing
+Master and Headphone outputs use the devices selected in Settings. No MIDI routing
 is included.
 
 Drag an output port onto an input port. Release anywhere else to cancel.
 Multiple destinations create branches; multiple wires feeding an input sum their
 signals. Select a wire to change its linear gain (0–2×) or disconnect it. Choose a
-processor from the categorized menu opened by double-clicking a cable to splice
-it into that connection. The first inserted wire retains the original gain.
-Double-click empty space to create a node at that point. Drag node headers to
+node from the categorized left palette. Drag it onto the canvas to place it, or
+double-click its palette entry to place it in the visible canvas center. The
+palette includes effects, instruments and saved patches. Default deck components,
+mix nodes and outputs stay on the canvas and cannot be removed.
+**New patch** creates a saved patch, registers its session instance and opens Teia.
+Saved patches added here also appear in Decks; their ports here carry audio. Drag node headers to
 arrange the canvas. Zoom / Fit shows the whole graph; scroll to reach its full area.
 
 Built-in processors initially include Gain, a 4:1 Compressor with a named
@@ -717,15 +780,17 @@ this increment does not host third-party plug-ins.
 Edits are staged. **Apply routing** validates and publishes the complete graph;
 invalid ports, duplicate wires, non-finite/out-of-range values and all directed
 cycles are rejected without changing the current audio configuration. The graph
-is limited to 32 nodes and 128 wires. Select any node or cable, then press
-Delete / Backspace to remove it; removing a node also removes its cables.
+is limited to 32 nodes and 128 wires. Select an added node or any cable, then
+press Delete / Backspace to remove it; removing a node also removes its cables.
+Default nodes can still be moved and their cables edited.
 Disconnected outputs are silent. Revert edits restores the last accepted graph;
 Default chain stages the factory configuration. Cmd-Z / Cmd-Shift-Z undo and
 redo draft edits, including complete node moves and node/cable deletions.
 Drafts, selections and edit history survive switching to other workspace pages.
-Click empty space to deselect; Escape cancels a drag or closes the menu.
-Removing an output silences that output; removing a fader silences its meter.
-Undo or Default chain restores removed built-in nodes. Accepted graphs/layouts are
+Click empty space to deselect; Escape cancels a drag.
+Removing a
+patch node removes its canvas placement and cables, keeping the session instance
+in Decks and its file in the library. Accepted graphs/layouts are
 session-local, and opening VIRA again starts with the conventional chain.
 
 A graph compiler validates and orders nodes on an ordinary command thread. The
@@ -750,3 +815,177 @@ control-to-consumed-callback latency under a fixed two-deck EQ/filter workload.
 The second runs the existing native transport/lifecycle harness with a compressor
 between Deck A's EQ and filter, Deck B feeding its sidechain, and an additional
 parallel EQ send to master. Physical device latency requires loopback hardware.
+
+### Track tags
+
+The Tags sidebar sits to the left of the library table. Create a tag with the
+New tag field and + (or Enter), then drag a track onto the tag to assign it.
+A track can belong to several tags. Click tags to toggle filters; multiple
+selected tags show tracks matching **any** selected tag, combined with the
+current music folder and search. All clears the tag filter.
+
+Assigned tags appear beneath track titles. Open a track's Actions menu to check
+or uncheck its tags. Hover over a sidebar tag and click × to delete it after
+confirmation; Cancel or Escape leaves it intact. Deleting a tag removes only
+that tag and its assignments, never the songs or music files.
+
+Tags are saved atomically in `~/Library/Application Support/uk.ricca.vira/tags.json`,
+separately from analysis and folder scans, and persist across app restarts.
+
+In either library size, Cmd/Ctrl-click toggles individual tracks and Shift-click
+selects a range in the current displayed order (Cmd/Ctrl+Shift adds a range).
+Dragging any selected row onto a tag assigns that tag to the entire selection.
+Dragging an unselected row selects and drags that track alone.
+
+In the expanded library, **Tag tracks** switches the sidebar from filtering to
+assignment checkboxes for the selected tracks. A normal tick means every selected
+track has the tag; a grey tick means only some do. Click an empty or grey tick to
+assign the tag to all selected tracks, or a normal tick to remove it from all.
+Tag filters pause while Tag tracks is enabled; the folder and search still apply.
+Bulk assignments are saved together, and failed saves leave existing assignments
+intact.
+
+### Melodic patterns
+
+The **Patterns** workspace contains reusable, persistent MIDI loops. Create a
+pattern, select a CoreMIDI destination and channel, and launch it on the next beat
+or bar. Each pattern has its own transport; several can play together. The audio
+engine must be running. Patterns keep the master beat moving even when both decks
+are stopped, and use the same master tempo and phase as the decks.
+
+Click empty grid space to add a note, click a note to delete it, drag a note to
+move it, or drag its right edge to resize it. Grid values range from quarter notes
+to 32nd notes; loops span 1–16 bars in 4/4. The grid shows five octaves of scale
+degrees, with mapped MIDI notes beside them. Key, Major / Natural minor / Dorian /
+Mixolydian scale and base octave remap the melody without changing its stored
+degrees or octave offsets. Rename inline; duplicate and delete are in the editor
+header. Shortening a loop removes notes beyond its end and clips crossing notes.
+
+Output compensation sends MIDI **0–100 ms early**, with an optional override per
+pattern. The output setting is shared by every pattern using that destination.
+Compensation is manual: measure the external instrument/audio path and enter the
+required advance. It does not change Vira's audio routing. Pattern output currently
+supports CoreMIDI destinations; Teia instrument destinations are reserved for a
+later extension.
+
+Scheduling runs on a native worker from the Core Audio playback timestamp and
+master beat anchor; webview polling only displays the playhead. Events use exact
+CoreMIDI host timestamps and a 5 ms scheduling horizon, plus the configured early
+advance. Active note ownership is counted across patterns sharing a channel/pitch.
+Loop ends release notes before retriggering them. Stop is quantised; edits to a
+running pattern release its old notes and relaunch on its next selected boundary.
+Master phase jumps release and requeue patterns. Missing audio clock, MIDI device
+disconnection and application exit release owned notes. A stalled worker skips
+stale events instead of emitting a burst of old note-ons.
+
+Pattern definitions and output compensation are atomically saved to
+`~/Library/Application Support/uk.ricca.vira/patterns.json`. Play state is ephemeral;
+reopening the app never starts external instruments automatically. The version's
+`kind: melodic` and `mode: relative` fields separate the current editor from future
+drum and absolute-pitch representations. Real hardware latency and timing must be
+checked on macOS; container tests do not measure Core Audio / external MIDI timing.
+
+### Pattern patching canvas
+
+Patterns opens on a musical patching canvas. Double-click a pattern (or use its
+Expand button) for the piano roll; **Canvas** restores the overview without
+interrupting playback. Node positions, instruments and cables are saved with the
+pattern bank. Existing MIDI output selections migrate to instrument nodes and
+cables automatically.
+
+The categorized left palette lists reusable patterns, decks, MIDI destinations,
+MIDI sources and every saved Teia patch. Drag entries onto the canvas or
+double-click them to add at its visible center. **New patch** creates and opens
+a Teia patch; adding a saved patch loads the same session instance used in Decks
+and Routing. Patch ports on this canvas carry MIDI. Teia
+instruments use their existing audio connections on Routing. Instrument nodes
+expose a latched **note out** and a full **MIDI out** only when they have an
+available MIDI source. Destination-only endpoints show only **MIDI in**. External devices auto-match input/output names; select a specific source
+in the selection controls below the canvas, or add an input-only controller from MIDI sources.
+The device Channel selector offers **All** (the default) or channels **1–16**.
+A numbered channel filters its incoming MIDI and note value and selects the channel
+for MIDI sent to that device; All preserves each event’s original channel.
+Patterns also expose a latched **note out**, alongside **MIDI out**, and can run
+without a MIDI destination. Their last played note is shown on the canvas.
+Deck A/B expose their analysed key plus the deck's current pitch shift (major or
+natural minor); unknown deck keys leave the pattern's manual mapping in use.
+
+The **Active deck** entry in the Decks palette creates a moving deck node. It
+follows the only playing deck, otherwise the louder of the two playing decks,
+using a 100 ms stereo energy envelope after channel EQ and fader (before the
+crossfader). Equal levels follow the deck that started most recently. With both
+stopped it retains its previous target; initially it uses A. Quantised launches
+count when playback actually begins. The node shows its current A/B target and
+provides the same root-note, scale and note-input ports as a fixed deck. Switching
+replans existing MIDI routes and releases notes owned on the old destination.
+Selection is measured on the audio clock, independently of UI polling.
+
+Patch lime **note out** and orange **scale** outputs to the matching pattern
+inputs independently. Each mapping input accepts one source, and a source can feed
+several patterns. Drag cyan **MIDI out** to an instrument's **MIDI in** or a deck's
+**note in**. Multiple destinations can be patched from one pattern. Select a cable and choose Disconnect (or press
+Delete); drag either white endpoint to reconnect. Releasing outside a matching
+port cancels. Node headers drag, Escape cancels gestures, and Cmd+Z / Cmd+Shift+Z
+undo and redo canvas changes. Delete removes any selected node and its cables;
+pattern definitions remain available in the palette. Connections apply as they
+are saved. Empty-space and cable double-clicks do not create nodes.
+
+Every MIDI cable has a stable note owner. Removing or reconnecting it releases
+notes on its previous destination. External MIDI notes use destination/channel/
+pitch ownership counts. Teia events carry a route epoch: disconnecting invalidates
+queued note-ons before they reach the DSP, and the render boundary releases only
+that route's sounding notes. Another pattern sharing the same channel/pitch is
+kept sounding. Teia scheduling has a 40 ms horizon to precede the audio producer's
+bounded queue; quantised stops retain timestamped note-offs until the stop boundary.
+
+
+Patterns root note and scale use separate canvas ports. Note cables are lime,
+MIDI cables are cyan, and scale cables are orange. Either input may be patched independently; the unpatched
+setting remains editable. Existing combined key cables migrate to two separate
+cables without changing the saved note degrees.
+
+Each deck has a MIDI note input. Patch a pattern's MIDI output into it to sequence
+deck transposition on the audio render clock. C4 (MIDI 60) preserves the manual
+pitch; notes above/below add/subtract semitones, clamped to the existing ±6-semitone
+range. The latest held note wins, falling back to earlier held notes and then the
+manual pitch. Note release, cable disconnection/reconnection and track replacement
+clear the appropriate ownership, including future queued notes. External MIDI and
+Teia destinations remain available alongside deck targets. A deck root output
+cannot feed the same pattern that modulates its pitch, preventing pitch feedback.
+
+
+Pattern and device **note out** is a continuous last-note value: note-on updates it; note-off
+and velocity-zero note-on leave it unchanged. It remains latched until a new note
+is played, including when all keys have been released. A new cable immediately
+receives the current value. Disconnecting a cable restores an unpatched pattern's
+manual root and releases notes owned by that route. The display shows the last
+note received. Root mappings use its pitch class while retaining the pattern's
+octave setting. Deck key/root and scale outputs retain their separate meanings.
+
+Device **MIDI out** carries the original external MIDI messages, including note
+on/off, controller, pitch bend, pressure, program change, clock, system common and
+SysEx (up to 65,535 bytes per message). Streams preserve running status and realtime
+bytes interleaved with SysEx. Teia outputs carry the messages emitted by the patch;
+Teia inputs accept the note, controller and bend event types supported by the
+existing hosted engine. MIDI callbacks copy bounded packets to the ordinary MIDI
+worker. Device loss, overflow, source changes and cable reconnection release the
+old route's owned notes and cancel pending internal notes.
+
+
+The **Transformations** palette contains **Octave shift** and **Filter**. Each
+accepts one Note or MIDI cable and exposes both output types; transformations can
+be chained and their outputs can feed multiple destinations. Set Octaves inside
+the shift node (−10 to +10). Filter passes pitches strictly Above or Below its
+selected note; the threshold itself is excluded. Both transform note-on/off and
+polyphonic pressure consistently, preserve channels and other MIDI messages,
+and drop pitches outside 0–127. Note outputs retain their latched-value behavior.
+Changing settings or removing a route releases notes owned by the old route.
+
+Routing and the Patterns canvas share `frontend/Patching.tsx` and
+`frontend/patching.css`: page layout, headings, toolbar controls, node headers,
+node width, port geometry, borders, colours, selection, categorized palettes,
+drop/visible-center placement, node/cable deletion and keyboard handling. Audio
+and musical graphs retain their own signal validation and publishing rules.
+`frontend/patchLibrary.ts` shares patch creation and session loading with Decks.
+Keep canvas chrome in that stylesheet; `patterns.css` contains only the melodic
+editor and pattern-specific content such as its note preview.

@@ -9,6 +9,16 @@ beforeEach(() => { localStorage.clear(); HTMLDialogElement.prototype.showModal =
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const state = { generation: '7', runtimeGeneration: '7', record: null, editorOpen: false, peak: 0, renderFailures: 0, restoreError: null, running: true };
 const loaded = { ...state, record: { name: 'Gain.json', prepared: prepare(gainPatch), overrides: {}, bypass: false } };
+test('clears a transient library error after polling recovers', async () => {
+  let failed = true;
+  invoke.mockImplementation((command: string) => command === 'teia_library'
+    ? failed ? Promise.reject('Too many open files (os error 24)') : Promise.resolve({ files: [] })
+    : Promise.resolve([]));
+  render(<Patches />);
+  await screen.findByRole('alert');
+  failed = false;
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+});
 test('new patches connect each stereo input channel to its matching output', () => {
   const patch = emptyPatch('Empty');
   expect(patch.nodes.map(n => n.type)).toEqual(['AudioInput', 'AudioOut']);

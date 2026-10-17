@@ -5,7 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 typedef void (*Receiver)(void*,uint8_t,uint8_t,uint8_t,uint64_t);
-typedef struct {MIDIClientRef client; MIDIPortRef input,output; MIDIEndpointRef source,destination;Receiver receive;void* context;uint8_t status,data[2],count;atomic_flag reading;} ViraMidi;
+typedef void (*RawReceiver)(void*,const uint8_t*,size_t,uint64_t);
+typedef struct {RawReceiver raw; MIDIClientRef client; MIDIPortRef input,output; MIDIEndpointRef source,destination;Receiver receive;void* context;uint8_t status,data[2],count;atomic_flag reading;} ViraMidi;
 static _Atomic uint64_t time_numer=0,time_denom=1;
 uint64_t vira_midi_now_ns(void){
     uint64_t numer=atomic_load(&time_numer);
@@ -14,9 +15,13 @@ uint64_t vira_midi_now_ns(void){
 }
 static uint64_t from_ticks(uint64_t ticks){mach_timebase_info_data_t t;mach_timebase_info(&t);return ticks?(uint64_t)((long double)ticks*t.numer/t.denom):vira_midi_now_ns();}
 static void read_midi(const MIDIPacketList* list,void* context,void* source){
-    (void)source;ViraMidi* m=context;if(atomic_flag_test_and_set(&m->reading)){m->receive(m->context,0xff,0,0,vira_midi_now_ns());return;}
+    (void)source;ViraMidi* m=context;if(atomic_flag_test_and_set(&m->reading)){if(m->raw)m->raw(m->context,NULL,0,vira_midi_now_ns());else m->receive(m->context,0xff,0,0,vira_midi_now_ns());return;}
     const MIDIPacket* packet=&list->packet[0];
     for(UInt32 p=0;p<list->numPackets;p++){
+        if(m->raw){
+            for(size_t offset=0;offset<packet->length;offset+=256){size_t length=packet->length-offset;if(length>256)length=256;m->raw(m->context,packet->data+offset,length,from_ticks(packet->timeStamp));}
+            packet=MIDIPacketNext(packet);continue;
+        }
         for(UInt16 i=0;i<packet->length;i++){
             uint8_t b=packet->data[i];if(b>=0xf8)continue;
             if(b&0x80){m->status=b<0xf0?b:0;m->count=0;continue;}
@@ -58,5 +63,15 @@ int vira_midi_send(void* handle,uint8_t status,uint8_t a,uint8_t b,uint64_t ns){
     mach_timebase_info_data_t time;mach_timebase_info(&time);MIDITimeStamp stamp=(MIDITimeStamp)((long double)ns*time.denom/time.numer);
     union {MIDIPacketList aligned;Byte bytes[512];} buffer;MIDIPacketList* list=&buffer.aligned;MIDIPacket* packet=MIDIPacketListInit(list);Byte bytes[3]={status,a,b};
     if(!MIDIPacketListAdd(list,sizeof(buffer),packet,stamp,3,bytes))return -1;
+    return MIDISend(m->output,m->destination,list);
+}
+
+static void raw_ignore(void* context,uint8_t status,uint8_t a,uint8_t b,uint64_t ns){(void)context;(void)status;(void)a;(void)b;(void)ns;}
+void* vira_midi_open_raw(RawReceiver callback,void* context){ViraMidi* m=vira_midi_open(raw_ignore,context);if(m)m->raw=callback;return m;}
+int vira_midi_send_raw(void* handle,const uint8_t* bytes,size_t length,uint64_t ns){
+    ViraMidi* m=handle;if(!m->destination)return -1;if(length>65535)return -1;
+    mach_timebase_info_data_t time;mach_timebase_info(&time);MIDITimeStamp stamp=(MIDITimeStamp)((long double)ns*time.denom/time.numer);
+    union {MIDIPacketList aligned;Byte bytes[65600];} buffer;MIDIPacketList* list=&buffer.aligned;MIDIPacket* packet=MIDIPacketListInit(list);
+    if(!MIDIPacketListAdd(list,sizeof(buffer),packet,stamp,length,bytes))return -1;
     return MIDISend(m->output,m->destination,list);
 }

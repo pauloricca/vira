@@ -45,9 +45,7 @@ export function Audio({ audio }: { audio: AudioState }) {
   function options(selected: string) {
     return <>{missing(selected) && <option value={selected}>{selected} · disconnected</option>}{inventory?.devices.map(device => <option key={device.id} value={device.id} disabled={!device.supported}>{device.name}{!device.supported && ' · unavailable at 48 kHz'}</option>)}</>;
   }
-  return <section className="settings-page" aria-label="Audio"><div className="settings-inner">
-    <div className="settings-heading"><h2>Audio</h2><p>Choose the outputs for your speakers and cue headphones.</p></div>
-    <div className="settings-grid">
+  return <>
       <section className="settings-card"><h3>Output devices</h3>
         <div className="settings-row"><div><strong>Master out</strong><p>The mix after channel faders and crossfader.{!master && inventory?.default_device && <> System default: {inventory.default_device}.</>}</p></div><select aria-label="Master out device" value={master} disabled={!inventory || busy} onChange={event => setMaster(event.target.value)}><option value="">System default</option>{options(master)}</select></div>
         <div className="settings-row"><div><strong>Cue headphones</strong><p>Before channel faders and crossfader; follows trim, EQ and filter.</p></div><select aria-label="Cue headphones device" value={cue} disabled={!inventory || busy} onChange={event => setCue(event.target.value)}><option value="">Off</option>{options(cue)}</select></div>
@@ -63,6 +61,5 @@ export function Audio({ audio }: { audio: AudioState }) {
         {audio.error && <p className="settings-error" role="alert">{audio.error}</p>}
         {audio.routing?.cue_error && <p className="settings-error" role="alert">{audio.routing.cue_error}</p>}
       </section>
-    </div>
-  </div></section>;
+  </>;
 }

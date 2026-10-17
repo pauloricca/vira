@@ -67,6 +67,7 @@ struct Shared {
     timing_errors: [AtomicU64; 2],
     reposition: [AtomicU64; 2],
     master_bpm: AtomicU64,
+    master_bpm_set: AtomicBool,
     drift_rate: AtomicU64,
     sync_quantum: AtomicU64,
     drift_target: AtomicU64,
@@ -144,6 +145,7 @@ impl Shared {
             timing_errors: std::array::from_fn(|_| 0.into()),
             reposition: std::array::from_fn(|_| 0.into()),
             master_bpm: 120_f64.to_bits().into(),
+            master_bpm_set: false.into(),
             drift_rate: 1_f64.to_bits().into(),
             sync_quantum: 4.into(),
             drift_target: 2.into(),
@@ -246,6 +248,7 @@ impl Shared {
                     f64::from_bits(self.reposition[d].load(Relaxed))
                 }),
                 master_bpm: f64::from_bits(self.master_bpm.load(Relaxed)),
+                master_bpm_set: self.master_bpm_set.load(Relaxed),
                 drift_rate: f64::from_bits(self.drift_rate.load(Relaxed)),
                 sync_quantum: self.sync_quantum.load(Relaxed) as u8,
                 drift_target: match self.drift_target.load(Relaxed) {
@@ -513,6 +516,7 @@ impl EngineHandle {
             audition_request: Mutex::new(0),
             audition_cache: Mutex::new(Vec::new()),
         });
+        crate::patterns::attach_instruments(&handle.patches);
         match wake {
             Ok(wake) => {
                 #[cfg(target_os = "macos")]
@@ -962,6 +966,18 @@ impl EngineHandle {
                 );
                 Command::AutoTempo(value == Some(1.))
             }
+            "auto_move" | "auto_start" | "auto_swap" | "auto_finish" => {
+                let seconds =
+                    value.ok_or_else(|| anyhow::anyhow!("Transition edit needs a position"))?;
+                ensure!(seconds.is_finite(), "Transition position must be finite");
+                let kind = match action {
+                    "auto_move" => 0,
+                    "auto_start" => 1,
+                    "auto_swap" => 2,
+                    _ => 3,
+                };
+                Command::EditAuto(deck, generations, kind, seconds)
+            }
             "auto_now" | "auto_end" => {
                 let end = action == "auto_end";
                 if snapshot.auto_mode[deck] != if end { 2 } else { 1 } {
@@ -1117,7 +1133,7 @@ impl EngineHandle {
                     .speed(target)?;
                 Command::Tempo(deck, generations, target)
             }
-            "master_tempo" => {
+            "master_tempo" | "master_target" => {
                 let target = value.ok_or_else(|| anyhow::anyhow!("Master tempo requires BPM"))?;
                 ensure!(
                     target.is_finite() && (15.0..=600.0).contains(&target),
@@ -1128,7 +1144,11 @@ impl EngineHandle {
                         snapshot.grids[d].unwrap().speed(target)?;
                     }
                 }
-                Command::MasterTempo(target)
+                if action == "master_target" {
+                    Command::MasterTarget(target)
+                } else {
+                    Command::MasterTempo(target)
+                }
             }
             "drift" => {
                 ensure!(
@@ -1298,7 +1318,7 @@ impl EngineHandle {
             "from":from, "style":match snapshot.auto_style { 2 => "smart", 1 => "bass-swap", _ => "crossfade" },
             "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
         }));
-        json!({"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm,"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        json!({"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
@@ -1381,13 +1401,23 @@ fn native_output(
     let worker_finished = finished.clone();
     // Initialize timebase conversion off both real-time threads.
     let _ = unsafe { crate::teia_midi::now_ns() };
-    let teia_midi_clocks: Vec<_> = drivers.iter().map(|d| d.midi.host.clone()).collect();
+    let mut decks = Decks::new();
+    let deck_midi: Vec<_> = decks
+        .note_lanes
+        .iter()
+        .map(|lane| lane.midi.host.clone())
+        .collect();
+    crate::patterns::attach_decks(&deck_midi);
+    let teia_midi_clocks: Vec<_> = drivers
+        .iter()
+        .map(|d| d.midi.host.clone())
+        .chain(deck_midi)
+        .collect();
     let initial_plan = initial_graph.compile()?;
     let worker = thread::spawn(move || -> Result<()> {
         for driver in &drivers {
             driver.telemetry.alive.store(true, Release);
         }
-        let mut decks = Decks::new();
         drop(decks.command(Command::Routing(initial_plan), [0, 0]));
         let mut block = [Frame::default(); PRODUCER_FRAMES];
         let rt = Realtime::new(PRODUCER_FRAMES as u32)?;
@@ -1489,6 +1519,7 @@ fn native_output(
         let cb_wake = wake.clone();
         let callback_output = output.clone();
         let midi_clocks = teia_midi_clocks.clone();
+        let mut active_deck = crate::active_deck::Tracker::default();
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
@@ -1521,6 +1552,11 @@ fn native_output(
                     match state.consumer.pop() {
                         Ok(frame) => {
                             if !anchored {
+                                crate::patterns::anchor(
+                                    frame.global_beat,
+                                    frame.master_bpm,
+                                    playback_ns + index as u64 * 1_000_000_000 / 48000,
+                                );
                                 for midi_clock in &midi_clocks {
                                     midi_clock.anchor(
                                         frame.output_frame,
@@ -1542,6 +1578,12 @@ fn native_output(
                                 master_peaks[channel] =
                                     master_peaks[channel].max(frame.samples[channel].abs());
                             }
+                            active_deck.observe(
+                                std::array::from_fn(|d| {
+                                    frame.playing[d] && !frame.launch_pending[d]
+                                }),
+                                frame.deck_samples,
+                            );
                             state.last = frame;
                         }
                         Err(_) => {
@@ -1557,6 +1599,7 @@ fn native_output(
                     cb.meter_decks[d].fetch_max(deck_peaks[d].to_bits() as u64, Relaxed);
                     cb.meter_master[d].fetch_max(master_peaks[d].to_bits() as u64, Relaxed);
                 }
+                crate::patterns::publish_active_deck(active_deck.selected());
                 let last = state.last;
                 cb.sequence
                     .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1618,6 +1661,7 @@ fn native_output(
                 cb.auto_style.store(last.auto_style as u64, Relaxed);
                 cb.auto_started.store(last.auto_started, Relaxed);
                 cb.master_bpm.store(last.master_bpm.to_bits(), Relaxed);
+                cb.master_bpm_set.store(last.master_bpm_set, Relaxed);
                 cb.drift_rate.store(last.drift_rate.to_bits(), Relaxed);
                 cb.crossfader
                     .store(last.crossfader.to_bits() as u64, Relaxed);

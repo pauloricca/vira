@@ -1,7 +1,8 @@
 import { AuditionControls, PlayIcon, StopIcon, useAudition } from './Audition';
+import { useAutopilot } from './Autopilot';
+import { TagsSidebar, TrackTags, useTags, TRACKS_MIME } from './Tags';
 import { FolderSettings } from './FolderSettings';
 import { CollectionSelector } from './CollectionSelector';
-import { waveformZoomIntervals } from './zoom';
 import { useTempoDrag } from './tempoDrag';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -13,7 +14,8 @@ import { CpuUsage } from './CpuUsage';
 import { Routing } from './Routing';
 import { Patches } from './Patches';
 import { Shortcuts } from './Shortcuts';
-import { camelotKey, compatibility, shiftedKey, type CamelotKey } from './harmonic';
+import { Patterns } from './Patterns';
+import { camelotKey, compatibility, keyHarmony, shiftedKey, type CamelotKey } from './harmonic';
 
 export type Track = {
   id: string; filename: string; title: string; artist: string;
@@ -31,12 +33,12 @@ type Result = {
 export type Analysis = { state: 'not_analysed' | 'queued' | 'analysing' | 'analysed' | 'needs_review' | 'approved' | 'stale' | 'failed'; result: Result | null; error: string | null };
 export type Library = { schema_version: number; revision: number; instance_id: string; music_bin: string; collections?: string[]; tracks: Track[]; scan_pending?: boolean; scan_error?: string | null };
 const labels: Record<Analysis['state'], string> = { not_analysed: 'Not analysed', queued: 'Queued', analysing: 'Analysing', analysed: 'Analysed · draft', needs_review: 'Needs review', approved: 'Approved', stale: 'Stale', failed: 'Failed' };
-type SortColumn = 'number' | 'cover' | 'title' | 'artist' | 'bpm' | 'key' | 'aComp' | 'bComp' | 'length' | 'analysis' | 'actions';
+type SortColumn = 'number' | 'cover' | 'title' | 'artist' | 'bpm' | 'key' | 'aComp' | 'bComp' | 'length' | 'played' | 'next' | 'analysis' | 'actions';
 type SortDirection = 'ascending' | 'descending';
 type Sort = { column: SortColumn; direction: SortDirection };
 const textCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
-function sortValue(track: Track, column: SortColumn, originalIndex: number, deckKeys: (CamelotKey | null)[]): string | number | null {
+function sortValue(track: Track, column: SortColumn, originalIndex: number, deckKeys: (CamelotKey | null)[], played: Set<string> | null, nextTracks: string[]): string | number | null {
   switch (column) {
     case 'number': return originalIndex;
     case 'cover': return Number(!!track.artwork_available);
@@ -47,6 +49,8 @@ function sortValue(track: Track, column: SortColumn, originalIndex: number, deck
     case 'aComp': return compatibility(camelotKey(track.analysis.result?.keys[0]?.key), deckKeys[0]);
     case 'bComp': return compatibility(camelotKey(track.analysis.result?.keys[0]?.key), deckKeys[1]);
     case 'length': return track.duration_seconds;
+    case 'played': return Number(played?.has(track.id));
+    case 'next': { const index = nextTracks.indexOf(track.id); return index < 0 ? null : index + 1; }
     case 'analysis': return track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable';
     case 'actions': return Number(track.status === 'ready');
   }
@@ -77,7 +81,7 @@ function CompatibilityCell({ trackKey, deckKey, deck }: { trackKey: CamelotKey |
 }
 
 function isKeySelector(target: EventTarget | null) {
-  return target instanceof Element && !!target.closest('.deck-key, .key-menu, .collection-dropdown');
+  return target instanceof Element && !!target.closest('.deck-key, .key-menu, .rolling-zoom, .collection-dropdown, .tags-sidebar, .track-tags');
 }
 
 function isTextInput(target: EventTarget | null) {
@@ -96,6 +100,8 @@ export function App() {
     return () => observer.disconnect();
   }, []);
   const decks = useDecks();
+  const tags = useTags();
+  const [tempoEntry, setTempoEntry] = useState<string | null>(null);
   const dragMasterTempo = useTempoDrag(decks.audio.master_bpm ?? 120, 15, 600, false, value => decks.control(0, 'master_tempo', value));
   const [library, setLibrary] = useState<Library | null>(null);
   const [busy, setBusy] = useState(true);
@@ -107,13 +113,48 @@ export function App() {
   const [queueingAll, setQueueingAll] = useState(false);
   const [search, setSearch] = useState('');
   const [libraryExpanded, setLibraryExpanded] = useState(false);
+  const [nextTracks, setNextTracks] = useState<string[]>([]);
+  const [sessionPlayed, setSessionPlayed] = useState<Set<string> | null>(null);
+  const sessionActive = sessionPlayed !== null;
+  const playingTrackIds = decks.audio.decks.map(deck =>
+    decks.audio.running && deck.playing && !deck.launch_pending && !deck.loading ? deck.track?.track_id ?? null : null);
+  const previousPlayingTracks = useRef<(string | null)[]>([]);
+  useEffect(() => {
+    const started = playingTrackIds.filter((id, index): id is string => id !== null && id !== previousPlayingTracks.current[index]);
+    previousPlayingTracks.current = playingTrackIds;
+    if (started.length) {
+      setSessionPlayed(previous => {
+        if (previous === null || started.every(id => previous.has(id))) return previous;
+        return new Set([...previous, ...started]);
+      });
+      setNextTracks(previous => previous.some(id => started.includes(id))
+        ? previous.filter(id => !started.includes(id)) : previous);
+    }
+  }, [decks.audio.decks, decks.audio.running]);
+  function endSession() {
+    autopilot.disable();
+    setSessionPlayed(null);
+    setSort(previous => previous?.column === 'played' ? null : previous);
+  }
   const [collection, setCollection] = useState(() => localStorage.getItem('vira.collection') ?? '');
+  const [tagMode, setTagMode] = useState(false);
+  const tagging = tagMode && libraryExpanded;
   const [sortMode, setSortMode] = useState(false);
   const [trackOrder, setTrackOrder] = useState<Record<string, string[]>>(() => { try { return JSON.parse(localStorage.getItem('vira.track-order') ?? '{}'); } catch { return {}; } });
   const reorderId = useRef<string | null>(null);
   const [reorderPreview, setReorderPreview] = useState<string[] | null>(null);
   const [sort, setSort] = useState<Sort | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
+  const selectionAnchor = useRef<string | null>(null);
+  const selectedTrack = library?.tracks.find(track => track.id === selectedTrackId);
+  const selectedIsNext = selectedTrackId !== null && nextTracks.includes(selectedTrackId);
+  function togglePlayNext() {
+    if (!selectedTrack || selectedTrack.status !== 'ready') return;
+    const id = selectedTrack.id;
+    if (autopilot.enabled && !nextTracks.includes(id)) { autopilot.prioritize(id); return; }
+    setNextTracks(previous => previous.includes(id) ? previous.filter(candidate => candidate !== id) : [...previous, id]);
+  }
   const searchInput = useRef<HTMLInputElement>(null);
   const trackRows = useRef(new Map<string, HTMLTableRowElement>());
   const [beats, setBeats] = useState(32);
@@ -140,13 +181,18 @@ export function App() {
   const [alignLoops, setAlignLoops] = useState(() => localStorage.getItem('vira.align-loops') !== 'false');
   const [snapLoopPoints, setSnapLoopPoints] = useState(() => localStorage.getItem('vira.snap-loop-points') !== 'false');
   useEffect(() => { if (decks.audio.running) void decks.control(0, 'crossfader_enabled', showCrossfader ? 1 : 0); }, [decks.audio.running, showCrossfader]);
-  const loadTrack = (deck: number, trackId: string) => { setActiveDeck(deck); return decks.load(deck, trackId, preserveLock, resetMixer); };
-  const [masterEntry, setMasterEntry] = useState('120');
-  useEffect(() => setMasterEntry(String(decks.audio.master_bpm ?? 120)), [decks.audio.master_bpm]);
+  const loadTrack = (deck: number, trackId: string) => {
+    setActiveDeck(deck);
+    if (!decks.audio.decks[deck].playing) autopilot.prioritize(trackId);
+    return decks.load(deck, trackId, preserveLock, resetMixer);
+  };
+  const [masterEntry, setMasterEntry] = useState('');
+  useEffect(() => setMasterEntry(decks.audio.master_bpm == null ? '' : String(decks.audio.master_bpm)), [decks.audio.master_bpm]);
   useEffect(() => { if (decks.audio.running) void decks.control(0, 'drift_rate', driftRate); }, [decks.audio.running]);
   useEffect(() => { if (decks.audio.running) void decks.control(0, 'sync_quantum', syncQuantum); }, [decks.audio.running]);
   const [routingVisited, setRoutingVisited] = useState(false);
-  const [view, setView] = useState<'decks' | 'settings' | 'shortcuts' | 'audio' | 'routing'>('decks');
+  const [patternsVisited, setPatternsVisited] = useState(false);
+  const [view, setView] = useState<'decks' | 'settings' | 'shortcuts' | 'routing' | 'patterns'>('decks');
   const spaceHeld = useRef(false);
   const lastPlayed = useRef([0, 0]);
   const wasPlaying = useRef([false, false]);
@@ -279,11 +325,20 @@ export function App() {
   }
   const soundingKeys = decks.audio.decks.map(deck => shiftedKey(library?.tracks.find(track => track.id === deck.track?.track_id)?.analysis.result?.keys[0]?.key, deck.pitch_semitones ?? 0));
   const deckKeys = soundingKeys.map(key => camelotKey(key));
-  const visibleTracks = collectionTracks
+  const patternDeckKeys = JSON.stringify(soundingKeys.map(keyHarmony));
+  useEffect(() => { if (patternsVisited) void invoke('patterns_deck_keys', { keys: JSON.parse(patternDeckKeys) }).catch(() => undefined); }, [patternsVisited, patternDeckKeys]);
+  const tableTracks = collectionTracks.filter(track => tagging || !tags.selected.length || tags.tags.some(tag => tags.selected.includes(tag.name) && tag.tracks.includes(track.id)));
+  const autopilot = useAutopilot({
+    audio: decks.audio, loading: decks.loading, tracks: tableTracks, allTracks: library?.tracks ?? [], tags: tags.tags,
+    next: nextTracks, setNext: setNextTracks, played: sessionPlayed,
+    startSession: () => setSessionPlayed(previous => previous ?? new Set(playingTrackIds.filter((id): id is string => id !== null))),
+    load: (deck, id) => decks.load(deck, id, preserveLock, resetMixer), control: decks.control,
+  });
+  const visibleTracks = tableTracks
     .map((track, originalIndex) => ({ track, originalIndex }))
     .filter(({ track }) => `${track.title} ${track.artist} ${track.filename}`.toLowerCase().includes(search.toLowerCase()))
     .sort((left, right) => sort && !(sortMode && libraryExpanded)
-      ? compareSortValues(sortValue(left.track, sort.column, left.originalIndex, deckKeys), sortValue(right.track, sort.column, right.originalIndex, deckKeys), sort.direction) || left.originalIndex - right.originalIndex
+      ? compareSortValues(sortValue(left.track, sort.column, left.originalIndex, deckKeys, sessionPlayed, nextTracks), sortValue(right.track, sort.column, right.originalIndex, deckKeys, sessionPlayed, nextTracks), sort.direction) || left.originalIndex - right.originalIndex
       : left.originalIndex - right.originalIndex)
     .map(({ track }) => track);
   const audition = useAudition(decks.audio, visibleTracks.filter(track => track.status === 'ready'), autoBars);
@@ -324,17 +379,49 @@ export function App() {
       }
     } finally { setQueueingAll(false); }
   }
+  const visibleTrackIds = visibleTracks.map(track => track.id).join('|');
   useEffect(() => {
-    if (!visibleTracks?.length) {
-      setSelectedTrackId(null);
-    } else if (!visibleTracks.some(track => track.id === selectedTrackId)) {
-      setSelectedTrackId(visibleTracks[0].id);
+    const ids = visibleTrackIds ? visibleTrackIds.split('|') : [];
+    setSelectedTrackIds(previous => {
+      const next = new Set(ids.filter(id => previous.has(id)));
+      if (!next.size && ids.length) next.add(ids[0]);
+      return next;
+    });
+    setSelectedTrackId(previous => previous && ids.includes(previous) && selectedTrackIds.has(previous) ? previous : ids.find(id => selectedTrackIds.has(id)) ?? ids[0] ?? null);
+    if (selectionAnchor.current && !ids.includes(selectionAnchor.current)) selectionAnchor.current = null;
+  }, [visibleTrackIds]);
+  function selectTrack(id: string, event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) {
+    const additive = event.metaKey || event.ctrlKey;
+    const anchor = selectionAnchor.current ?? selectedTrackId ?? id;
+    if (event.shiftKey) {
+      selectionAnchor.current = anchor;
+      const start = visibleTracks.findIndex(track => track.id === anchor);
+      const end = visibleTracks.findIndex(track => track.id === id);
+      const range = visibleTracks.slice(Math.max(0, Math.min(start, end)), Math.max(start, end) + 1).map(track => track.id);
+      setSelectedTrackIds(previous => new Set(additive ? [...previous, ...range] : range));
+    } else if (additive) {
+      const next = new Set(selectedTrackIds);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      setSelectedTrackIds(next);
+      selectionAnchor.current = id;
+      setSelectedTrackId(next.has(id) ? id : [...next].at(-1) ?? null);
+      return;
+    } else {
+      setSelectedTrackIds(new Set([id]));
+      selectionAnchor.current = id;
     }
-  }, [visibleTracks, selectedTrackId]);
+    setSelectedTrackId(id);
+  }
   useEffect(() => {
     if (view !== 'decks') return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || isKeySelector(event.target)) return;
+      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'n') {
+        if (isTextInput(event.target)) return;
+        event.preventDefault();
+        if (!event.repeat) togglePlayNext();
+        return;
+      }
       if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey &&
           ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
         if (isTextInput(event.target)) return;
@@ -400,7 +487,7 @@ export function App() {
         const current = tracks.findIndex(track => track.id === selectedTrackId);
         const next = current < 0 ? 0 : Math.max(0, Math.min(tracks.length - 1, current + (event.key === 'ArrowUp' ? -1 : 1)));
         const id = tracks[next].id;
-        setSelectedTrackId(id);
+        selectTrack(id, event);
         trackRows.current.get(id)?.scrollIntoView?.({ block: 'nearest' });
         return;
       }
@@ -422,41 +509,51 @@ export function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearSpaceHeld);
     };
-  }, [view, visibleTracks, selectedTrackId, decks.audio, decks.loading, preserveLock, resetMixer, activeDeck, library, approving]);
+  }, [view, visibleTracks, selectedTrackId, decks.audio, decks.loading, preserveLock, resetMixer, activeDeck, library, approving, selectedTrackIds, autopilot.enabled, nextTracks]);
   return <main className={view === 'decks' && libraryExpanded ? 'library-expanded' : undefined} onFocusCapture={event => { if (!isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }} onClickCapture={event => { if (event.target instanceof HTMLElement && !isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }}>
     <header className="app-header"><h1><img className="app-wordmark" src="/vira-wordmark.svg" alt="VIRA" /></h1>
-      <nav aria-label="Workspace"><button className={view === 'decks' ? 'active' : undefined} aria-current={view === 'decks' ? 'page' : undefined} onClick={() => setView('decks')}>DECKS</button><button className={view === 'routing' ? 'active' : undefined} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setRoutingVisited(true); setView('routing'); }}>ROUTING</button><button disabled title="Coming later">SEQUENCE</button><button className={view === 'settings' ? 'active' : undefined} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setView('settings'); }}>SETTINGS</button><button className={view === 'shortcuts' ? 'active' : undefined} aria-current={view === 'shortcuts' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setView('shortcuts'); }}>SHORTCUTS</button></nav>
-      <div className="master-tempo"><div className="master-drift-buttons"><button aria-label="Drift master tempo to deck A; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[0].grid} onClick={event => driftOrSet(0, event.detail)} onDoubleClick={() => setFromDeck(0)}>A ({decks.audio.decks[0].grid?.bpm.toFixed(1) ?? "—"}) →</button><button aria-label="Drift master tempo to deck B; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[1].grid} onClick={event => driftOrSet(1, event.detail)} onDoubleClick={() => setFromDeck(1)}>B ({decks.audio.decks[1].grid?.bpm.toFixed(1) ?? "—"}) →</button></div><output className="tempo-drag" title="Hold and move right/up to increase BPM, left/down to decrease; farther moves faster" onPointerDown={dragMasterTempo} aria-label="Master BPM">{(decks.audio.master_bpm ?? 120).toFixed(1)}</output><span className="tempo-drag" onPointerDown={dragMasterTempo}>BPM</span><small>{decks.audio.drift_target == null ? 'MASTER' : `DRIFT TO ${decks.audio.drift_target === 0 ? 'A' : 'B'}`}</small></div>
-      <span className="meter-signature">4/4</span>
-      {view === 'decks' && <label className="header-zoom"><span className="sr-only">Shared zoom</span><select aria-label="Shared zoom" value={beats} onChange={event => setBeats(Number(event.target.value))}>{waveformZoomIntervals.map(value => <option key={value} value={value}>{value / 4} {value === 4 ? 'bar' : 'bars'}</option>)}</select></label>}
-      <div className="header-actions">{['REC', 'MIDI'].map(label => <button key={label} disabled title="Coming later">{label === 'REC' && <i className="record-dot" />}{label}</button>)}<button className={view === 'audio' ? 'active' : undefined} aria-current={view === 'audio' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setView('audio'); }}>AUDIO</button></div>
+      <nav aria-label="Workspace"><button className={view === 'decks' ? 'active' : undefined} aria-current={view === 'decks' ? 'page' : undefined} onClick={() => setView('decks')}>DECKS</button><button className={view === 'routing' ? 'active' : undefined} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setRoutingVisited(true); setView('routing'); }}>ROUTING</button><button className={view === 'patterns' ? 'active' : undefined} aria-current={view === 'patterns' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setPatternsVisited(true); setView('patterns'); }}>PATTERNS</button><button className={view === 'settings' ? 'active' : undefined} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setView('settings'); }}>SETTINGS</button><button className={view === 'shortcuts' ? 'active' : undefined} aria-current={view === 'shortcuts' ? 'page' : undefined} onClick={() => { setTimingOpen([false, false]); setView('shortcuts'); }}>SHORTCUTS</button></nav>
+      <div className="master-tempo">
+        <button className="master-drift deck-0" aria-label="Drift master tempo to deck A; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[0].grid || decks.audio.decks[0].grid.bpm.toFixed(1) === (decks.audio.master_bpm ?? 120).toFixed(1)} onClick={event => driftOrSet(0, event.detail)} onDoubleClick={() => setFromDeck(0)}>A {decks.audio.decks[0].grid?.bpm.toFixed(1) ?? '—'} ←</button>
+        <div className="master-tempo-value">{tempoEntry === null ? <output className="master-bpm-edit" title="Click to enter target BPM" onClick={() => setTempoEntry(String(decks.audio.master_bpm ?? 120))} aria-label="Master BPM">{decks.audio.master_bpm?.toFixed(1) ?? '—'}</output> : <input className="master-bpm-input" aria-label="Target master BPM" type="text" inputMode="decimal" value={tempoEntry} ref={element => { if (element && document.activeElement !== element) { element.focus(); element.select(); } }} onChange={event => setTempoEntry(event.target.value)} onBlur={() => setTempoEntry(null)} onKeyDown={event => {
+          event.stopPropagation();
+          if (event.key === 'Escape') { event.preventDefault(); setTempoEntry(null); }
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            const target = Number(tempoEntry);
+            if (tempoEntry.trim() && Number.isFinite(target) && target >= 15 && target <= 600) { setTempoEntry(null); void decks.control(0, 'master_target', target); }
+          }
+        }} />}<span className="tempo-drag" onPointerDown={dragMasterTempo}>bpm</span>{decks.audio.drift_target != null && <small>DRIFT TO {decks.audio.drift_target === 0 ? 'A' : 'B'}</small>}</div>
+        <button className="master-drift deck-1" aria-label="Drift master tempo to deck B; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[1].grid || decks.audio.decks[1].grid.bpm.toFixed(1) === (decks.audio.master_bpm ?? 120).toFixed(1)} onClick={event => driftOrSet(1, event.detail)} onDoubleClick={() => setFromDeck(1)}>→ {decks.audio.decks[1].grid?.bpm.toFixed(1) ?? '—'} B</button>
+      </div>
     </header>
+    {patternsVisited && <Patterns active={view === 'patterns'} />}
     {routingVisited && <Routing active={view === 'routing'} />}
     {view === 'decks' ? <>
     <RollingWaveforms audio={decks.audio} beats={beats} onZoomChange={setBeats} control={decks.control} timingOpen={timingOpen} onInteract={setActiveDeck} activeDeck={activeDeck} />
     <Mixer audio={decks.audio} control={decks.control} showCrossfader={showCrossfader}
-      deckA={<Deck transition={decks.audio.auto_transition} autoAvailable={autoAvailable(0)} autoMode={decks.audio.auto_mode?.[0]} otherKey={soundingKeys[1]} state={decks.audio.decks[0]} running={decks.audio.running} loading={decks.loading[0]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[0])?.title} error={decks.errors[0]} load={loadTrack} control={decks.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onTimingOpenChange={timingOpenChange} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 0} trackKey={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.result?.keys[0]?.key} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[0].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[0].track?.track_id; if (id) void approve(id); }} approving={approving.has(decks.audio.decks[0].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[0].track?.track_id ?? '']} />}
-      deckB={<Deck transition={decks.audio.auto_transition} autoAvailable={autoAvailable(1)} autoMode={decks.audio.auto_mode?.[1]} otherKey={soundingKeys[0]} state={decks.audio.decks[1]} running={decks.audio.running} loading={decks.loading[1]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[1])?.title} error={decks.errors[1]} load={loadTrack} control={decks.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onTimingOpenChange={timingOpenChange} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 1} trackKey={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.result?.keys[0]?.key} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[1].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[1].track?.track_id; if (id) void approve(id); }} approving={approving.has(decks.audio.decks[1].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[1].track?.track_id ?? '']} />} />
+      deckA={<Deck transition={decks.audio.auto_transition} autoAvailable={autoAvailable(0)} autoMode={decks.audio.auto_mode?.[0]} otherKey={soundingKeys[1]} state={decks.audio.decks[0]} running={decks.audio.running} loading={decks.loading[0]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[0])?.title} error={decks.errors[0]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onTimingOpenChange={timingOpenChange} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 0} trackKey={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.result?.keys[0]?.key} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[0].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[0].track?.track_id; if (id) void approve(id); }} approving={approving.has(decks.audio.decks[0].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[0].track?.track_id ?? '']} />}
+      deckB={<Deck transition={decks.audio.auto_transition} autoAvailable={autoAvailable(1)} autoMode={decks.audio.auto_mode?.[1]} otherKey={soundingKeys[0]} state={decks.audio.decks[1]} running={decks.audio.running} loading={decks.loading[1]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[1])?.title} error={decks.errors[1]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onTimingOpenChange={timingOpenChange} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 1} trackKey={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.result?.keys[0]?.key} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[1].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[1].track?.track_id; if (id) void approve(id); }} approving={approving.has(decks.audio.decks[1].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[1].track?.track_id ?? '']} />} />
     {(decks.audio.error || decks.pollError) && <p className="error" role="alert">{decks.audio.error || decks.pollError}</p>}
     <div className="lower-panels"><section className="library" aria-label="Music library" aria-busy={busy}>
       <div className="toolbar"><div className="library-heading"><h2>Music library</h2><AuditionControls audition={audition} />{library?.scan_pending && <span role="status">Verifying files…</span>}
-      </div><div className="library-toolbar-actions">{libraryExpanded && <button className="library-sort" aria-pressed={sortMode} onClick={() => { setSortMode(value => !value); setSort({ column: 'number', direction: 'ascending' }); }}>Sort</button>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <><button className="library-sort" aria-pressed={audition.playAll} onClick={audition.togglePlayAll}>Play All</button></>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <CollectionSelector collections={['cue', 'master']} value={audition.output} select={value => audition.changeOutput(value as 'cue' | 'master')} label="Audition output" menuLabel="Audition outputs" optionLabel={value => value === 'master' ? 'Play on Master' : 'Play on Cue'} />}<button onClick={() => void analyseAll()} disabled={busy || !!error || !!pollError || queueingAll || unanalysedTracks.length === 0}>{queueingAll ? 'Queueing…' : 'Analyse all'}</button><button onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</button><button className="library-expand" aria-label={libraryExpanded ? 'Restore library size' : 'Expand music library'} title={libraryExpanded ? 'Restore library size' : 'Expand music library'} aria-pressed={libraryExpanded} onClick={() => setLibraryExpanded(expanded => !expanded)}>
+      </div><div className="library-toolbar-actions"><button className="library-next" aria-pressed={selectedIsNext} disabled={selectedTrack?.status !== 'ready'} title={selectedIsNext ? 'Remove selected track from planned order (⌘N)' : 'Add selected track to planned order (⌘N)'} onClick={togglePlayNext}>{selectedIsNext ? 'Cancel Play Next' : 'Play Next'}</button><button className={`library-autopilot${autopilot.enabled ? ' auto-engaged' : ''}`} aria-pressed={autopilot.enabled} onClick={autopilot.toggle} title="Choose unplayed tracks and prepare automatic transitions">Autopilot</button>{sessionActive ? <button onClick={endSession}>End Session</button> : <button onClick={() => setSessionPlayed(new Set(playingTrackIds.filter((id): id is string => id !== null)))} title="Track songs played on either deck">Start Session</button>}{libraryExpanded && <button className="library-sort" aria-pressed={tagging} onClick={() => setTagMode(value => !value)}>Tag tracks</button>}{libraryExpanded && <button className="library-sort" aria-pressed={sortMode} onClick={() => { setSortMode(value => !value); setSort({ column: 'number', direction: 'ascending' }); }}>Sort</button>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <><button className="library-sort" aria-pressed={audition.playAll} onClick={audition.togglePlayAll}>Play All</button></>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <CollectionSelector collections={['cue', 'master']} value={audition.output} select={value => audition.changeOutput(value as 'cue' | 'master')} label="Audition output" menuLabel="Audition outputs" optionLabel={value => value === 'master' ? 'Play on Master' : 'Play on Cue'} />}<button onClick={() => void analyseAll()} disabled={busy || !!error || !!pollError || queueingAll || unanalysedTracks.length === 0}>{queueingAll ? 'Queueing…' : 'Analyse all'}</button><button onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</button><button className="library-expand" aria-label={libraryExpanded ? 'Restore library size' : 'Expand music library'} title={libraryExpanded ? 'Restore library size' : 'Expand music library'} aria-pressed={libraryExpanded} onClick={() => setLibraryExpanded(expanded => !expanded)}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={libraryExpanded ? 'M3 9h6V3m6 0v6h6M3 15h6v6m6 0v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></svg>
       </button></div></div>
       {audition.error && <p className="error" role="alert">{audition.error}</p>}
       <div className="library-filters"><CollectionSelector collections={collections} value={activeCollection} select={path => { setCollection(path); setSelectedTrackId(null); }} /><label className="library-search"><span aria-hidden="true">⌕</span><input ref={searchInput} type="search" aria-label="Search music library" placeholder="Search tracks, artists…" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
       {(error || pollError) && <div className="error" role="alert"><strong>Library unavailable</strong><p>{error || pollError}</p>
         {library && <p>The table shows the last successful scan; it may be out of date.</p>}</div>}
-      <div className="table-wrap"><table className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" /><col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
-        {([['number', '#'], ['cover', 'Cover'], ['title', 'Title'], ['artist', 'Artist'], ['bpm', 'BPM*'], ['key', 'Key*'], ['aComp', 'A comp'], ['bComp', 'B comp'], ['length', 'Length'], ['analysis', 'Analysis'], ['actions', 'Actions']] as const).map(([column, label]) =>
-          <Fragment key={column}><th scope="col" aria-sort={sort?.column === column ? sort.direction : 'none'}><button className="sort-header" disabled={sortMode && libraryExpanded} onClick={() => changeSort(column)} aria-label={`Sort by ${label.replace('*', '')}`} title={`Sort by ${label.replace('*', '')}`}>{column === 'cover' ? '▣' : column === 'actions' ? '•••' : label}<span className="sort-indicator" aria-hidden="true">{sort?.column === column ? sort.direction === 'ascending' ? '▲' : '▼' : '↕'}</span></button></th>{column === 'number' && <th scope="col" aria-label="Audition through cue headphones"><span aria-hidden="true">▶</span></th>}</Fragment>)}
+      <div className="library-content"><TagsSidebar state={tags} tracks={collectionTracks} tagging={tagging} selectedIds={visibleTracks.filter(track => selectedTrackIds.has(track.id)).map(track => track.id)} /><div className="library-track-list"><div className="table-wrap"><table className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" />{nextTracks.length > 0 && <col className="next-col" />}{sessionActive && <col className="played-col" />}<col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
+        {([['number', '#'], ['cover', 'Cover'], ['title', 'Title'], ['artist', 'Artist'], ['bpm', 'BPM*'], ['key', 'Key*'], ['aComp', 'A comp'], ['bComp', 'B comp'], ['length', 'Length'], ['next', 'Next'], ['played', 'Played'], ['analysis', 'Analysis'], ['actions', 'Actions']] as const).map(([column, label]) => ((!sessionActive && column === 'played') || (nextTracks.length === 0 && column === 'next') ? null :
+          <Fragment key={column}><th scope="col" aria-sort={sort?.column === column ? sort.direction : 'none'}><button className="sort-header" disabled={sortMode && libraryExpanded} onClick={() => changeSort(column)} aria-label={`Sort by ${label.replace('*', '')}`} title={`Sort by ${label.replace('*', '')}`}>{column === 'cover' ? '▣' : column === 'actions' ? '•••' : label}<span className="sort-indicator" aria-hidden="true">{sort?.column === column ? sort.direction === 'ascending' ? '▲' : '▼' : '↕'}</span></button></th>{column === 'number' && <th scope="col" aria-label="Audition through cue headphones"><span aria-hidden="true">▶</span></th>}</Fragment>))}
       </tr></thead><tbody>{visibleTracks?.map(track => {
         const auditionActive = audition.selection?.track.id === track.id && (audition.selection.generation === null || !audition.state || audition.state.playing);
         const originalNumber = originalTrackNumbers.get(track.id) ?? 1;
         const onDeckA = decks.audio.decks[0].track?.track_id === track.id;
         const onDeckB = decks.audio.decks[1].track?.track_id === track.id;
         const trackKey = camelotKey(track.analysis.result?.keys[0]?.key);
-        return <tr key={track.id} ref={element => { if (element) trackRows.current.set(track.id, element); else trackRows.current.delete(track.id); }} className={[selectedTrackId === track.id ? 'selected-track' : '', reorderPreview && reorderId.current === track.id ? 'track-dragging' : ''].filter(Boolean).join(' ') || undefined} aria-selected={selectedTrackId === track.id} draggable={sortMode && libraryExpanded || track.status === 'ready'} onDragOver={event => {
+        return <tr key={track.id} ref={element => { if (element) trackRows.current.set(track.id, element); else trackRows.current.delete(track.id); }} className={[nextTracks.includes(track.id) ? 'next-track' : '', sessionPlayed?.has(track.id) ? 'played-track' : '', selectedTrackIds.has(track.id) ? 'selected-track' : '', reorderPreview && reorderId.current === track.id ? 'track-dragging' : ''].filter(Boolean).join(' ') || undefined} aria-selected={selectedTrackIds.has(track.id)} draggable={sortMode && libraryExpanded || track.status === 'ready'} onDragOver={event => {
           if (!sortMode || !libraryExpanded || !reorderId.current) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = 'move';
@@ -465,12 +562,14 @@ export function App() {
           const rect = event.currentTarget.getBoundingClientRect();
           const after = event.clientY > rect.top + rect.height / 2;
           if (from < to && after || from > to && !after) moveTrack(reorderId.current, track.id, after, true);
-        }} onDrop={event => { if (sortMode && libraryExpanded) { event.preventDefault(); if (reorderPreview) { const next = { ...trackOrder, [activeCollection]: reorderPreview }; setTrackOrder(next); localStorage.setItem('vira.track-order', JSON.stringify(next)); } else if (reorderId.current) moveTrack(reorderId.current, track.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2); reorderId.current = null; setReorderPreview(null); } }} onDragEnd={() => { reorderId.current = null; setReorderPreview(null); }} onClick={() => setSelectedTrackId(track.id)} onDoubleClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) loadOnAvailableDeck(track); }} onDragStart={event => { if (sortMode && libraryExpanded) { reorderId.current = track.id; setReorderPreview(collectionTracks.map(candidate => candidate.id)); event.dataTransfer.setData('text/plain', track.id); event.dataTransfer.effectAllowed = 'move'; return; } event.dataTransfer.setData(TRACK_MIME, track.id); event.dataTransfer.effectAllowed = 'copy'; }}>
-        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><button className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones on the Audio page'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? audition.control('stop') : void audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</button></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
-        <td><span className="collection-cell-text title" title={track.filename}>{track.title}</span></td>
+        }} onDrop={event => { if (sortMode && libraryExpanded) { event.preventDefault(); if (reorderPreview) { const next = { ...trackOrder, [activeCollection]: reorderPreview }; setTrackOrder(next); localStorage.setItem('vira.track-order', JSON.stringify(next)); } else if (reorderId.current) moveTrack(reorderId.current, track.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2); reorderId.current = null; setReorderPreview(null); } }} onDragEnd={() => { reorderId.current = null; setReorderPreview(null); }} onClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) selectTrack(track.id, event); }} onDoubleClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) loadOnAvailableDeck(track); }} onDragStart={event => { const ids = selectedTrackIds.has(track.id) ? visibleTracks.filter(candidate => selectedTrackIds.has(candidate.id)).map(candidate => candidate.id) : [track.id]; if (!selectedTrackIds.has(track.id)) selectTrack(track.id, { metaKey: false, ctrlKey: false, shiftKey: false }); event.dataTransfer.setData(TRACKS_MIME, JSON.stringify(ids)); event.dataTransfer.setData(TRACK_MIME, track.id); if (sortMode && libraryExpanded) { reorderId.current = track.id; setReorderPreview(collectionTracks.map(candidate => candidate.id)); event.dataTransfer.setData('text/plain', track.id); event.dataTransfer.effectAllowed = 'copyMove'; return; } event.dataTransfer.effectAllowed = 'copy'; }}>
+        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><button className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones in Settings'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? audition.control('stop') : void audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</button></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
+        <td><span className="collection-cell-text title" title={track.filename}>{track.title}</span>{tags.tags.some(tag => tag.tracks.includes(track.id)) && <span className="track-tag-summary" title={tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(', ')}>{tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(' · ')}</span>}</td>
         <td><span className="collection-cell-text" title={track.artist}>{track.artist}</span></td>
         <td className="numeric">{track.analysis.result?.grid?.bpm == null ? '—' : Math.round(track.analysis.result.grid.bpm)}</td><td><span className="collection-cell-text" title={track.analysis.result?.keys[0]?.key ?? ''}>{trackKey ? `${trackKey.number}${trackKey.letter} / ${trackKey.label}` : track.analysis.result?.keys[0]?.key ?? '—'}</span></td>
         <CompatibilityCell trackKey={trackKey} deckKey={deckKeys[0]} deck="A" /><CompatibilityCell trackKey={trackKey} deckKey={deckKeys[1]} deck="B" /><td className="numeric">{duration(track.duration_seconds)}</td>
+        {nextTracks.length > 0 && <td className="next-cell numeric">{nextTracks.includes(track.id) ? nextTracks.indexOf(track.id) + 1 : '—'}</td>}
+        {sessionActive && <td className="played-cell">{sessionPlayed.has(track.id) ? 'Yes' : 'No'}</td>}
         <td><span className={`status ${track.status} ${track.analysis.state}`}>{track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable'}</span>
           {(track.error || track.analysis.error) && <small className="row-error">{track.error || track.analysis.error}</small>}
           {rowErrors[track.id] && <small className="row-error" role="alert">{rowErrors[track.id]}</small>}</td>
@@ -478,16 +577,18 @@ export function App() {
           aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
           {track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : ['queued', 'analysing'].includes(track.analysis.state) ? labels[track.analysis.state] : 'Reanalyse'}
         </button><div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</button>
-          <button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div></div></details></td>
+          <button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></details></td>
       </tr>})}</tbody></table></div>
       {!busy && !error && !pollError && library && collectionTracks.length === 0 && <p className="empty">{collections.length ? 'No files in this collection. Add MP3 or PCM WAV files, then Refresh.' : 'Add a music folder in Settings to load a collection.'}</p>}
-      {library && collectionTracks.length > 0 && visibleTracks?.length === 0 && <p className="empty">No tracks match your search.</p>}
+      {library && collectionTracks.length > 0 && visibleTracks?.length === 0 && <p className="empty">No tracks match your search or selected tags.</p>}
+      </div></div>
       <footer role="status">{busy ? 'Reading file metadata…' : library ? `${collectionTracks.length} files · ${collectionTracks.filter(t => t.status === 'ready').length} readable` : 'No scan available'}
         <span>*Automatic draft estimates; analysis status shows review needs.</span></footer>
     </section><Patches /></div>
-    </> : view === 'routing' ? null : view === 'audio' ? <Audio audio={decks.audio} /> : view === 'shortcuts' ? <Shortcuts /> : <section className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><h2>Settings</h2><p>Workspace controls and system status</p></div><div className="settings-grid">
-      <section className="settings-card"><h3>Display</h3><div className="settings-row"><div><strong>Shared waveform zoom</strong><p>Visible range around the playhead on both decks.</p></div><select aria-label="Shared waveform zoom" value={beats} onChange={event => setBeats(Number(event.target.value))}>{waveformZoomIntervals.map(value => <option key={value} value={value}>{value / 4} {value === 4 ? 'bar' : 'bars'}</option>)}</select></div></section>
-      <section className="settings-card"><h3>Automatic transitions</h3><div className="settings-row"><div><strong>Transition mode</strong><p>Crossfade brings the incoming track up over 0–80% of the transition and fades the outgoing track down over 20–100%. Bass swap holds the outgoing level while bringing in the incoming track with bass cut, swaps bass just before the halfway beat, then fades out the outgoing track. Smart uses a clear bass return on an incoming bar boundary instead of the midpoint, otherwise it follows Bass swap exactly.</p></div><select aria-label="Automatic transition mode" value={autoStyle} onChange={event => { setAutoStyle(event.target.value); localStorage.setItem('vira.auto-style', event.target.value); }}><option value="crossfade">Crossfade</option><option value="bass-swap">Bass swap</option><option value="smart">Smart</option></select></div><div className="settings-row"><div><strong>Overlap</strong><p>AUTO NOW waits for the next phrase of this length, counted from the track start. AUTO END and library Play All overlap the final bars. Deck transitions start the incoming track at its cue and use a shorter overlap if needed. No overlap hands off at the end.</p></div><select aria-label="Automatic transition overlap" value={autoBars} onChange={event => { setAutoBars(Number(event.target.value)); localStorage.setItem('vira.auto-bars', event.target.value); }}>{[0, 1, 2, 4, 8, 16, 32].map(value => <option key={value} value={value}>{value === 0 ? 'No overlap' : `${value} ${value === 1 ? 'bar' : 'bars'}`}</option>)}</select></div><div className="settings-row"><div><strong>Master BPM during transition</strong><p>Both decks lock to master BPM when engaged. Tempo changes span the crossfade. Changes here apply to the next transition.</p></div><select aria-label="Automatic transition tempo" value={autoTempo ? 'change' : 'keep'} onChange={event => { const enabled = event.target.value === 'change'; setAutoTempo(enabled); localStorage.setItem('vira.auto-tempo', String(enabled)); }}><option value="change">Move to incoming track BPM</option><option value="keep">Keep current master BPM</option></select></div></section>
+    </> : view === 'routing' || view === 'patterns' ? null : view === 'shortcuts' ? <Shortcuts /> : <section className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><h2>Settings</h2><p>Workspace controls and system status</p></div><div className="settings-grid">
+      <Audio audio={decks.audio} />
+      <section className="settings-card"><h3>Automatic transitions</h3><div className="settings-row"><div><strong>Transition mode</strong><p>Crossfade brings the incoming track up over 0–80% of the transition and fades the outgoing track down over 20–100%. Bass swap holds the outgoing level while bringing in the incoming track with bass cut, swaps bass just before the halfway beat, then fades out the outgoing track. Smart uses a clear bass return on an incoming bar boundary instead of the midpoint, otherwise it follows Bass swap exactly.</p></div><select aria-label="Automatic transition mode" value={autoStyle} onChange={event => { setAutoStyle(event.target.value); localStorage.setItem('vira.auto-style', event.target.value); }}><option value="crossfade">Crossfade</option><option value="bass-swap">Bass swap</option><option value="smart">Smart</option></select></div><div className="settings-row"><div><strong>Overlap</strong><p>AUTO NOW uses the next matching phrase position on the beat grids. AUTO END uses the last matching phrase with room for this overlap, ignoring partial bars or tails at the file end. The incoming cue is preserved and a shorter overlap is used if needed. Library Play All overlaps the final bars. No overlap hands off at the end.</p></div><select aria-label="Automatic transition overlap" value={autoBars} onChange={event => { setAutoBars(Number(event.target.value)); localStorage.setItem('vira.auto-bars', event.target.value); }}>{[0, 1, 2, 4, 8, 16, 32].map(value => <option key={value} value={value}>{value === 0 ? 'No overlap' : `${value} ${value === 1 ? 'bar' : 'bars'}`}</option>)}</select></div><div className="settings-row"><div><strong>Master BPM during transition</strong><p>Both decks lock to master BPM when engaged. Tempo changes span the crossfade. Changes here apply to the next transition.</p></div><select aria-label="Automatic transition tempo" value={autoTempo ? 'change' : 'keep'} onChange={event => { const enabled = event.target.value === 'change'; setAutoTempo(enabled); localStorage.setItem('vira.auto-tempo', String(enabled)); }}><option value="change">Move to incoming track BPM</option><option value="keep">Keep current master BPM</option></select></div></section>
+      <section className="settings-card"><h3>Autopilot</h3><p className="settings-hint">Chooses unplayed tracks from the current collection and selected tags, ignoring search. Equal scores are chosen at random. Start playback to begin automatic transitions; both decks need timing grids.</p>{([['bpm', 'BPM proximity', 'Prefer tempos within 10% of the playing track’s original BPM.'], ['tags', 'Shared tags', 'Prefer tracks sharing more of the playing track’s tags.'], ['harmonic', 'Harmonic compatibility', 'Prefer the same key, neighbours on the circle of fifths, or the relative major/minor.'], ['direction', 'BPM direction', 'Prefer continuing the last transition’s rise or fall in original BPM. No preference before the first transition or after equal BPM.'], ['randomness', 'Randomness', 'Add a fresh random score to each candidate when choosing the next track. Zero disables this factor.']] as const).map(([key, label, description]) => <div className="settings-row" key={key}><div><strong>{label}</strong><p>{description}</p></div><label className="autopilot-weight"><input type="range" min="0" max="100" step="1" aria-label={`Autopilot ${label.toLowerCase()} weight`} value={autopilot.weights[key]} onChange={event => autopilot.changeWeight(key, Number(event.target.value))} /><output>{autopilot.weights[key]}</output></label></div>)}</section>
       <section className="settings-card"><h3>Loops</h3><div className="settings-row"><div><strong>Align length loops to the beat grid</strong><p>Loop the musical segment containing the playhead. Lengths are in bars: 1/4 is one beat, 1 is one bar. Turn off to start at the playhead.</p></div><input type="checkbox" aria-label="Align length loops to the beat grid" checked={alignLoops} onChange={event => { setAlignLoops(event.target.checked); localStorage.setItem('vira.align-loops', String(event.target.checked)); }} /></div><div className="settings-row"><div><strong>Snap IN and OUT to nearest beat</strong><p>Place manual loop markers on the nearest beat when the track has a timing grid.</p></div><input type="checkbox" aria-label="Snap IN and OUT to nearest beat" checked={snapLoopPoints} onChange={event => { setSnapLoopPoints(event.target.checked); localStorage.setItem('vira.snap-loop-points', String(event.target.checked)); }} /></div></section>
       <section className="settings-card"><h3>Mixer</h3><div className="settings-row"><div><strong>Show crossfader</strong><p>Equal-power blending between decks A and B. Hiding it bypasses the crossfader.</p></div><input type="checkbox" aria-label="Show crossfader" checked={showCrossfader} onChange={event => { setShowCrossfader(event.target.checked); localStorage.setItem('vira.show-crossfader', String(event.target.checked)); }} /></div></section>
       <section className="settings-card"><h3>Loading tracks</h3><div className="settings-row"><div><strong>Keep deck locked</strong><p>Keep a deck locked to master BPM when its next track has a usable timing grid.</p></div><input type="checkbox" aria-label="Keep deck locked when loading a track" checked={preserveLock} onChange={event => { setPreserveLock(event.target.checked); localStorage.setItem('vira.preserve-lock-on-load', String(event.target.checked)); }} /></div><div className="settings-row"><div><strong>Reset gain, EQ and filter</strong><p>Start each new track with default volume and neutral mixer controls.</p></div><input type="checkbox" aria-label="Reset gain, EQ and filter when loading a track" checked={resetMixer} onChange={event => { setResetMixer(event.target.checked); localStorage.setItem('vira.reset-mixer-on-load', String(event.target.checked)); }} /></div></section>
@@ -497,7 +598,7 @@ export function App() {
       }} />
       <section className="settings-card"><h3>Music library</h3><div className="settings-row"><div><strong>Active music folder</strong><p className="settings-path">{activeCollection || 'No collection selected'}</p></div><button onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</button></div><div className="settings-row"><span>Collection</span><output>{library ? `${collectionTracks.length} tracks · ${collectionTracks.filter(track => track.status === 'ready').length} readable` : 'Unavailable'}</output></div>{(error || pollError) && <p className="settings-error" role="alert">{error || pollError}</p>}</section>
       <section className="settings-card"><h3>Audio engine</h3><div className="settings-row"><span>Native output</span><output className={decks.audio.running ? 'settings-live' : undefined}>{decks.audio.running ? 'Running · stereo 48 kHz' : 'Starting / unavailable'}</output></div><div className="settings-row"><span>Starved frames</span><output>{decks.audio.telemetry.callback?.starved_frames ?? 0}</output></div><div className="settings-row"><span>Device errors</span><output>{decks.audio.telemetry.callback?.device_errors ?? 0}</output></div>{(decks.audio.error || decks.pollError) && <p className="settings-error" role="alert">{decks.audio.error || decks.pollError}</p>}</section>
-      <section className="settings-card"><h3>Tempo</h3><div className="settings-row"><strong>Master BPM</strong><label><input type="number" aria-label="Set master BPM" min="15" max="600" step="0.01" value={masterEntry} onChange={event => setMasterEntry(event.target.value)} /> BPM</label><button disabled={!Number.isFinite(Number(masterEntry)) || Number(masterEntry) < 15 || Number(masterEntry) > 600} onClick={() => void decks.control(0, 'master_tempo', Number(masterEntry))}>Set</button></div><div className="settings-row"><div><strong>Master tempo drift</strong><p>How fast master BPM moves toward a track’s original BPM.</p></div><label><input type="number" aria-label="Master tempo drift rate" min="0.01" max="100" step="0.01" value={driftRate} onChange={event => { const rate = Number(event.target.value); if (rate >= .01 && rate <= 100) { setDriftRate(rate); localStorage.setItem('vira.master-drift-rate', String(rate)); void decks.control(0, 'drift_rate', rate); } }} /> BPM/sec</label></div><div className="settings-row"><div><strong>Locked deck start</strong><p>Bar joins immediately during beat 1; later presses wait for the next bar. Beat waits for the next beat.</p></div><select aria-label="Locked deck start" value={syncQuantum} onChange={event => { const quantum = Number(event.target.value) as 1 | 4; setSyncQuantum(quantum); localStorage.setItem('vira.sync-quantum', String(quantum)); void decks.control(0, 'sync_quantum', quantum); }}><option value={1}>Beat</option><option value={4}>Bar</option></select></div><div className="settings-row"><span>Time signature</span><output>4/4</output></div>{decks.errors[0] && <p className="settings-error" role="alert">{decks.errors[0]}</p>}</section>
+      <section className="settings-card"><h3>Tempo</h3><div className="settings-row"><strong>Master BPM</strong><label><input type="number" aria-label="Set master BPM" min="15" max="600" step="0.01" value={masterEntry} onChange={event => setMasterEntry(event.target.value)} /> BPM</label><button disabled={!Number.isFinite(Number(masterEntry)) || Number(masterEntry) < 15 || Number(masterEntry) > 600} onClick={() => void decks.control(0, 'master_tempo', Number(masterEntry))}>Set</button></div><div className="settings-row"><div><strong>Master tempo drift</strong><p>How fast master BPM moves toward an entered target or a track’s original BPM.</p></div><label><input type="number" aria-label="Master tempo drift rate" min="0.01" max="100" step="0.01" value={driftRate} onChange={event => { const rate = Number(event.target.value); if (rate >= .01 && rate <= 100) { setDriftRate(rate); localStorage.setItem('vira.master-drift-rate', String(rate)); void decks.control(0, 'drift_rate', rate); } }} /> BPM/sec</label></div><div className="settings-row"><div><strong>Locked deck start</strong><p>Bar joins immediately during beat 1; later presses wait for the next bar. Beat waits for the next beat. Setting Cue on a locked deck snaps to the nearest selected boundary.</p></div><select aria-label="Locked deck start" value={syncQuantum} onChange={event => { const quantum = Number(event.target.value) as 1 | 4; setSyncQuantum(quantum); localStorage.setItem('vira.sync-quantum', String(quantum)); void decks.control(0, 'sync_quantum', quantum); }}><option value={1}>Beat</option><option value={4}>Bar</option></select></div><div className="settings-row"><span>Time signature</span><output>4/4</output></div>{decks.errors[0] && <p className="settings-error" role="alert">{decks.errors[0]}</p>}</section>
     </div></div></section>}
     <div className="audio-status" role="status"><span className={decks.audio.running ? 'connection-live' : ''}>●</span> Native output: {decks.audio.running ? 'Running · R3 · stereo 48 kHz' : 'Starting / unavailable'} · starvation: {decks.audio.telemetry.callback?.starved_frames ?? 0} frames · device errors: {decks.audio.telemetry.callback?.device_errors ?? 0}<CpuUsage cpuSeconds={decks.audio.running ? decks.audio.telemetry.resources?.process_cpu_seconds : undefined} /><RenderProbe active={decks.audio.running && decks.audio.decks.some(state => state.playing)} stage="canvas" /></div>
   </main>;

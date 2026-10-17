@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useScrub } from './scrub';
+import { useTransitionDrag } from './transitionDrag';
 import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
 import { WaveTiles, gridGeometry } from './waveform';
@@ -18,6 +19,8 @@ export function RollingRow({ state, running, window, control, transition, master
     (element, x, anchor, originX) => { const bounds=element.getBoundingClientRect(); return anchor - (x-originX)/Math.max(1,bounds.width)*window*(state.speed ?? 1); },
     () => clock.current.at(performance.now()), () => paint.current(performance.now()), true,
     (element, x, anchor) => { const bounds=element.getBoundingClientRect(); return anchor + ((x-bounds.left)/Math.max(1,bounds.width)-.5)*window*(state.speed ?? 1); });
+  const waveformHandlers = useTransitionDrag(state, running, transition, control,
+    (element, x) => { const bounds = element.getBoundingClientRect(); return clock.current.at(performance.now()) + ((x - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1); }, window * (state.speed ?? 1), handlers);
   paint.current = now => {
     const element=canvas.current; if (!element || !visible) return;
     const {state,window,timingOpen,transition,masterBpm}=latest.current, {width,height,dpr}=size.current;
@@ -92,7 +95,7 @@ export function RollingRow({ state, running, window, control, transition, master
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
   return <div className={`rolling-row deck-${state.deck}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}><span className={`deck-badge${active ? ' active' : ''}`} title={`Deck ${state.deck===0 ? 'A' : 'B'}${active ? ' · active' : ''}`}>{state.deck===0 ? 'A' : 'B'}</span>
-    <canvas {...handlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
+    <canvas {...waveformHandlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
       onPointerDownCapture={event => { if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
       onDoubleClick={event => {
         if (!timingOpen || !running || state.playing || !state.track || !state.grid || !control) return;

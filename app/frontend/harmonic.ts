@@ -51,3 +51,8 @@ export function keyChoices(original: string | null | undefined, other: string | 
     recommended: reference !== null && note === wheel[reference.number - 1],
   }));
 }
+
+export function keyHarmony(key: string | null | undefined): { key: number; scale: number } | null {
+  const parsed = camelotKey(key); if (!parsed) return null;
+  return { key: (parsed.letter === 'A' ? minorWheel : majorWheel)[parsed.number - 1], scale: parsed.letter === 'A' ? 1 : 0 };
+}

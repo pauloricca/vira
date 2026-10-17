@@ -12,6 +12,8 @@ pub struct Input {
     pub generation: u64,
     pub frame: u64,
     pub kind: EventKind,
+    route: u16,
+    route_epoch: u64,
 }
 #[derive(Clone, Copy)]
 pub struct Output {
@@ -23,6 +25,8 @@ pub struct Output {
 pub struct Host {
     input: Mutex<Producer<Input>>,
     output: Mutex<Consumer<Output>>,
+    tap: Mutex<Consumer<Output>>,
+    tap_overflow: AtomicBool,
     pub generation: AtomicU64,
     pub epoch: AtomicU64,
     pub ready: AtomicBool,
@@ -32,6 +36,7 @@ pub struct Host {
     pub late_inputs: AtomicU64,
     pub reset: AtomicBool,
     pub panic: AtomicBool,
+    route_epochs: [AtomicU64; 256],
     anchor_sequence: AtomicU64,
     anchor_frame: AtomicU64,
     anchor_ns: AtomicU64,
@@ -65,16 +70,25 @@ pub struct Render {
     pub host: Arc<Host>,
     input: Consumer<Input>,
     output: Producer<Output>,
+    tap: Producer<Output>,
     pending: std::collections::BinaryHeap<Scheduled>,
     serial: u64,
     epoch: u64,
+    owned: Box<[u16]>,
+    counts: [u32; 2048],
+    route_epochs: [u64; 256],
+    releases: [bool; 2048],
+    release_scan: usize,
 }
 pub fn channel() -> Render {
     let (tx, rx) = rtrb::RingBuffer::new(1024);
     let (out_tx, out_rx) = rtrb::RingBuffer::new(4096);
+    let (tap_tx, tap_rx) = rtrb::RingBuffer::new(4096);
     let host = Arc::new(Host {
         input: Mutex::new(tx),
         output: Mutex::new(out_rx),
+        tap: Mutex::new(tap_rx),
+        tap_overflow: false.into(),
         generation: 0.into(),
         epoch: 0.into(),
         ready: true.into(),
@@ -84,6 +98,7 @@ pub fn channel() -> Render {
         late_inputs: 0.into(),
         reset: false.into(),
         panic: false.into(),
+        route_epochs: std::array::from_fn(|_| 0.into()),
         anchor_sequence: 0.into(),
         anchor_frame: 0.into(),
         anchor_ns: 0.into(),
@@ -96,9 +111,15 @@ pub fn channel() -> Render {
         host,
         input: rx,
         output: out_tx,
+        tap: tap_tx,
         pending: std::collections::BinaryHeap::with_capacity(1024),
         serial: 0,
         epoch: 0,
+        owned: vec![0; 256 * 2048].into_boxed_slice(),
+        counts: [0; 2048],
+        route_epochs: [0; 256],
+        releases: [false; 2048],
+        release_scan: 0,
     }
 }
 impl Render {
@@ -106,6 +127,30 @@ impl Render {
         if self.epoch != epoch {
             self.pending.clear();
             self.epoch = epoch;
+            self.owned.fill(0);
+            self.counts.fill(0);
+            self.releases.fill(false);
+        }
+        // Cancellation is observed at the render boundary, before new note-ons.
+        // Pending events are invalidated by epoch; only notes actually delivered
+        // to the DSP count as held. Other routes sharing a pitch stay sounding.
+        self.release_scan = 0;
+        for route in 0..256 {
+            let current = self.host.route_epochs[route].load(SeqCst);
+            if current == self.route_epochs[route] {
+                continue;
+            }
+            self.route_epochs[route] = current;
+            for pitch in 0..2048 {
+                let count = std::mem::take(&mut self.owned[route * 2048 + pitch]);
+                if count == 0 {
+                    continue;
+                }
+                self.counts[pitch] = self.counts[pitch].saturating_sub(count as u32);
+                if self.counts[pitch] == 0 {
+                    self.releases[pitch] = true;
+                }
+            }
         }
         for _ in 0..1024 {
             let Ok(input) = self.input.pop() else {
@@ -127,13 +172,66 @@ impl Render {
         }
     }
     pub fn input_before(&mut self, end: u64) -> Option<Input> {
-        if self.pending.peek().is_some_and(|s| s.input.frame < end) {
-            self.pending.pop().map(|s| s.input)
-        } else {
-            None
+        while self.release_scan < 2048 {
+            let pitch = self.release_scan;
+            self.release_scan += 1;
+            if std::mem::take(&mut self.releases[pitch]) {
+                return Some(Input {
+                    epoch: self.epoch,
+                    generation: self.host.generation.load(SeqCst),
+                    frame: end.saturating_sub(crate::decks::PRODUCER_FRAMES as u64),
+                    kind: EventKind::NoteOff {
+                        channel: (pitch / 128 + 1) as u8,
+                        note: (pitch % 128) as u8,
+                    },
+                    route: u16::MAX,
+                    route_epoch: 0,
+                });
+            }
         }
+        while self.pending.peek().is_some_and(|s| s.input.frame < end) {
+            let input = self.pending.pop().unwrap().input;
+            if input.route == u16::MAX {
+                return Some(input);
+            }
+            let route = input.route as usize;
+            if self.host.route_epochs[route].load(SeqCst) != input.route_epoch
+                || input.generation != self.host.generation.load(SeqCst)
+            {
+                continue;
+            }
+            match input.kind {
+                EventKind::NoteOn { channel, note, .. } => {
+                    let pitch = (channel as usize - 1) * 128 + note as usize;
+                    self.owned[route * 2048 + pitch] =
+                        self.owned[route * 2048 + pitch].saturating_add(1);
+                    self.counts[pitch] += 1;
+                    if self.counts[pitch] > 1 {
+                        continue;
+                    }
+                }
+                EventKind::NoteOff { channel, note } => {
+                    let pitch = (channel as usize - 1) * 128 + note as usize;
+                    let count = &mut self.owned[route * 2048 + pitch];
+                    if *count == 0 {
+                        continue;
+                    }
+                    *count -= 1;
+                    self.counts[pitch] = self.counts[pitch].saturating_sub(1);
+                    if self.counts[pitch] > 0 {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            return Some(input);
+        }
+        None
     }
     pub fn output(&mut self, value: Output) {
+        if self.tap.push(value).is_err() {
+            self.host.tap_overflow.store(true, SeqCst);
+        }
         if self.output.push(value).is_err() {
             self.host.output_drops.fetch_add(1, SeqCst);
             self.host.mute();
@@ -141,6 +239,16 @@ impl Render {
     }
 }
 impl Host {
+    pub(crate) fn take_output(&self) -> Result<Vec<Output>, ()> {
+        let mut tap = self.tap.lock().unwrap();
+        let events = (0..4096).map_while(|_| tap.pop().ok()).collect();
+        if self.tap_overflow.swap(false, SeqCst) {
+            Err(())
+        } else {
+            Ok(events)
+        }
+    }
+
     pub fn snapshot(&self) -> Value {
         let mut value = self.state.lock().unwrap().clone();
         value["input"] = json!(self.input_id.load(SeqCst));
@@ -180,6 +288,8 @@ impl Host {
             epoch: self.epoch.load(SeqCst),
             generation,
             frame,
+            route: u16::MAX,
+            route_epoch: 0,
             kind: EventKind::Control {
                 value_index: index,
                 value,
@@ -201,6 +311,40 @@ impl Host {
             generation: self.generation.load(SeqCst),
             frame,
             kind,
+            route: u16::MAX,
+            route_epoch: 0,
+        };
+        if input.generation == 0 {
+            return false;
+        }
+        if let Ok(mut queue) = self.input.try_lock() {
+            if queue.push(input).is_ok() {
+                return true;
+            }
+        }
+        self.input_drops.fetch_add(1, SeqCst);
+        self.mute();
+        false
+    }
+    pub fn cancel_route(&self, route: u16) {
+        if let Some(epoch) = self.route_epochs.get(route as usize) {
+            epoch.fetch_add(1, SeqCst);
+        }
+    }
+    pub fn enqueue_routed_time(&self, ns: u64, kind: EventKind, route: u16) -> bool {
+        if route == u16::MAX {
+            return self.enqueue(self.frame_at(ns), kind);
+        }
+        let Some(epoch) = self.route_epochs.get(route as usize) else {
+            return false;
+        };
+        let input = Input {
+            epoch: self.epoch.load(SeqCst),
+            generation: self.generation.load(SeqCst),
+            frame: self.frame_at(ns),
+            kind,
+            route,
+            route_epoch: epoch.load(SeqCst),
         };
         if input.generation == 0 {
             return false;
@@ -244,7 +388,7 @@ impl Host {
             frame.saturating_sub(((time - ns) as u128 * 48000 / 1_000_000_000) as u64)
         }
     }
-    fn time_at(&self, frame: u64) -> u64 {
+    pub(crate) fn time_at(&self, frame: u64) -> u64 {
         let (base, ns) = self.clock();
         if frame >= base {
             ns.saturating_add(((frame - base) as u128 * 1_000_000_000 / 48000) as u64)
@@ -253,7 +397,7 @@ impl Host {
         }
     }
 }
-fn decode(status: u8, a: u8, b: u8) -> Option<EventKind> {
+pub(crate) fn decode(status: u8, a: u8, b: u8) -> Option<EventKind> {
     if a >= 128 || b >= 128 {
         return None;
     }
@@ -519,5 +663,82 @@ mod tests {
         render.prepare_input(host.epoch.load(SeqCst));
         assert!(render.input_before(2048).is_none()); // overflow invalidates old-epoch events
         assert_eq!(host.input_drops.load(SeqCst), 1);
+    }
+    #[test]
+    fn disconnect_cancels_future_notes_and_releases_only_its_owned_notes() {
+        let mut render = channel();
+        let host = render.host.clone();
+        host.generation.store(7, SeqCst);
+        host.anchor(48000, 1_000_000_000);
+        let on = EventKind::NoteOn {
+            channel: 1,
+            note: 60,
+            velocity: 1.,
+        };
+        assert!(host.enqueue_routed_time(1_001_000_000, on, 3));
+        assert!(host.enqueue_routed_time(1_001_000_000, on, 4));
+        render.prepare_input(0);
+        assert!(matches!(
+            render.input_before(48049).unwrap().kind,
+            EventKind::NoteOn { note: 60, .. }
+        ));
+        assert!(render.input_before(48049).is_none()); // same pitch, two owners
+        host.cancel_route(3);
+        render.prepare_input(0);
+        assert!(render.input_before(48049).is_none());
+        host.cancel_route(4);
+        render.prepare_input(0);
+        assert!(matches!(
+            render.input_before(48049).unwrap().kind,
+            EventKind::NoteOff { note: 60, .. }
+        ));
+        assert!(render.input_before(48049).is_none());
+        assert!(host.enqueue_routed_time(1_010_000_000, on, 8));
+        render.prepare_input(0);
+        host.cancel_route(8);
+        render.prepare_input(0);
+        assert!(render.input_before(49000).is_none()); // never reached DSP
+    }
+    #[test]
+    fn reconnect_reuses_an_owner_without_resurrecting_its_old_pending_events() {
+        let mut render = channel();
+        let host = render.host.clone();
+        host.generation.store(1, SeqCst);
+        host.anchor(0, 1_000_000_000);
+        assert!(host.enqueue_routed_time(
+            1_010_000_000,
+            EventKind::NoteOn {
+                channel: 2,
+                note: 64,
+                velocity: 1.
+            },
+            2
+        ));
+        render.prepare_input(0);
+        host.cancel_route(2);
+        assert!(host.enqueue_routed_time(
+            1_020_000_000,
+            EventKind::NoteOn {
+                channel: 2,
+                note: 67,
+                velocity: 1.
+            },
+            2
+        ));
+        render.prepare_input(0);
+        assert!(matches!(
+            render.input_before(2000).unwrap().kind,
+            EventKind::NoteOn { note: 67, .. }
+        ));
+        assert!(render.input_before(2000).is_none());
+        host.cancel_route(2);
+        render.prepare_input(0);
+        assert!(matches!(
+            render.input_before(2000).unwrap().kind,
+            EventKind::NoteOff {
+                channel: 2,
+                note: 67
+            }
+        ));
     }
 }

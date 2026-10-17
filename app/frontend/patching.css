@@ -1,0 +1,66 @@
+/* Shared by audio Routing and the Patterns canvas. Keep workspace-specific
+   rules limited to content, never the common chrome or node presentation. */
+.routing-page { display:flex; flex-direction:column; min-height:420px; height:calc(100vh - 92px); flex:1; padding:22px; gap:14px; background:#101418; }
+.routing-heading,.routing-zoom,.routing-actions { display:flex; align-items:center; gap:12px; }
+.routing-heading { justify-content:space-between; flex-wrap:wrap; }
+.routing-actions { flex-wrap:wrap; }
+.routing-actions label { display:flex; align-items:center; gap:8px; font-size:12px; }
+.routing-heading h2 { margin:0 0 6px; font-size:23px; }
+.routing-heading p { margin:0; color:#84929f; font-size:12px; }
+.routing-page button,.routing-page select,.routing-page input[type=number] { background:#202930; color:#dce6eb; border:1px solid #3a4954; border-radius:0; padding:7px 10px; }
+.routing-page button:disabled { opacity:.4; }
+.routing-page .routing-apply { color:#09211c; background:#76d2b7; border-color:#76d2b7; }
+.routing-zoom { font-size:12px; }
+.routing-zoom label { display:flex; align-items:center; gap:8px; }
+.routing-error { color:#ffb496; margin:0; font-size:12px; }
+.routing-body { display:flex; flex:1; min-height:0; border:1px solid #2a353d; border-radius:0; overflow:hidden; }
+.routing-scroll { flex:1; overflow:auto; }
+.routing-canvas { position:relative; background-color:#121a20; background-image:radial-gradient(#35424c .7px,transparent .7px); background-size:20px 20px; touch-action:none; }
+.routing-group { position:absolute; left:20px; width:890px; height:215px; background:#16232b88; border:1px solid #344c5b; border-radius:0; pointer-events:none; }
+.routing-group.deck-1 { background:#2b211688; border-color:#594432; }
+.routing-group button { pointer-events:auto; margin:5px; padding:4px 8px; }
+.routing-group span { color:#899ba7; font-size:11px; margin-left:8px; }
+.routing-wires { position:absolute; left:0; top:0; pointer-events:none; }
+.routing-wire { stroke:#67b9cf; stroke-width:2; fill:none; }
+.routing-wire-hit { stroke:transparent; stroke-width:16; fill:none; pointer-events:stroke; cursor:pointer; }
+.routing-wires .selected .routing-wire { stroke:#eddb8a; stroke-width:3; }
+.routing-wire.preview { stroke:#eddb8a; stroke-dasharray:5 4; }
+.routing-node { position:absolute; width:var(--patch-node-width); min-height:115px; background:#222c34; border:1px solid #596d7b; border-radius:0; box-shadow:none; font-size:11px; }
+.routing-node.deck-0 { border-color:#417798; } .routing-node.deck-1 { border-color:#b37c44; }
+.routing-node-title { height:40px; padding:6px 10px; cursor:grab; border-bottom:1px solid #3a4954; box-sizing:border-box; font-weight:600; }
+.routing-node-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.routing-node-title small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; color:#9aabb8; font-size:9px; font-weight:400; margin-top:2px; }
+.routing-ports { height:72px; }
+.routing-page .routing-port { position:absolute; padding:0; height:24px; border:0; background:transparent; display:flex; align-items:center; gap:6px; font-size:10px; }
+.routing-port.input { left:-5px; } .routing-port.output { right:-5px; }
+.routing-port i { width:9px; height:9px; border:2px solid #93cbd5; background:#17222c; border-radius:50%; }
+.routing-port:hover i { background:#eddb8a; }
+.routing-parameter { padding:8px; border-top:1px solid #3a4954; }.routing-parameter label { display:flex; align-items:center; justify-content:space-between; }.routing-page .routing-parameter input { width:62px; padding:4px; }.routing-page .routing-parameter button { padding:3px 5px; font-size:10px; margin-top:6px; }
+.routing-canvas-space { position:relative; flex:none; }
+.routing-group strong { display:inline-block; margin:8px; color:#84cbea; font-size:12px; }
+.routing-group.deck-1 strong { color:#eab174; }
+.routing-node.selected { border-color:#eddb8a; box-shadow:0 0 0 2px #eddb8a88; }
+
+.routing-port > span { max-width: 95px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routing-page .routing-wire-endpoint { position:absolute; z-index:1; width:14px; height:14px; min-width:0; padding:0; border:2px solid #fff; border-radius:50%; background:#fff; box-shadow:0 0 0 2px #121a20,0 2px 6px #0008; transform:translate(-50%,-50%); cursor:grab; touch-action:none; }
+.routing-page .routing-wire-endpoint:hover { background:#fff; box-shadow:0 0 0 3px #eddb8a; }
+.routing-page .routing-wire-endpoint:active { cursor:grabbing; }
+
+.routing-node-details { padding:8px 10px; color:var(--muted); font-size:11px; }
+.routing-node-actions { display:flex; gap:5px; justify-content:space-between; margin-top:7px; }
+.routing-page .routing-node-actions button { padding:3px 6px; font-size:10px; }
+
+.patching-palette { width:205px; flex-shrink:0; overflow:auto; padding:12px; border-right:1px solid #2a353d; background:#192128; }
+.patching-palette-actions { display:grid; gap:6px; }
+.patching-palette h3 { margin:20px 0 8px; font-size:11px; color:#91a2ae; text-transform:uppercase; letter-spacing:1px; }
+.routing-page .patching-palette section button { display:block; width:100%; text-align:left; margin:3px 0; padding:6px 8px; font-size:12px; cursor:grab; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.patching-palette small {color:#84929f; font-size:11px;}
+.patching-selection {display:flex; align-items:center; gap:10px; min-height:32px; font-size:11px;}
+.patching-selection label {display:flex; align-items:center; gap:8px;}
+.patching-selection select {max-width:200px;}
+.routing-scroll {min-width:0;}
+
+.routing-page .patching-palette-actions button {font-size:12px; cursor:pointer;}
+
+.patching-palette section button {touch-action:none; user-select:none; -webkit-user-select:none;}
+.patching-drag-preview {position:fixed; z-index:50; padding:8px 12px; border:1px solid #67b9cf; background:#222c34; color:#dce6eb; font-size:12px; pointer-events:none;}

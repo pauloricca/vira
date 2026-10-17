@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App, Library, duration } from './App';
 const { invoke, audioInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
 beforeEach(() => { audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); });
 const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', music_bin: '/fixed/music', tracks: [{
@@ -229,6 +229,14 @@ test('successful state polling cannot hide a failed metadata Refresh', async () 
   expect(screen.getByText(/last successful scan/)).toBeTruthy();
 });
 
+test('master BPM is unset at startup until playback establishes it', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: null, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  expect(screen.getByLabelText('Master BPM').textContent).toBe('—');
+});
+
 test('master BPM is independent of deck tempos and search filters title, artist and filename', async () => {
   invoke.mockResolvedValue(library);
   audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 128.25, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0, target_bpm: deck === 0 ? 110 : 90 })) });
@@ -239,7 +247,7 @@ test('master BPM is independent of deck tempos and search filters title, artist 
   expect(screen.getByText('Beat grid · 1.87 seconds output window')).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'missing' } });
   expect(screen.queryByText('Unknown artist')).toBeNull();
-  expect(screen.getByText('No tracks match your search.')).toBeTruthy();
+  expect(screen.getByText('No tracks match your search or selected tags.')).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'FILENAME.WAV' } });
   expect(screen.getByText('Unknown artist')).toBeTruthy();
 });
@@ -479,15 +487,15 @@ test('deck membership marks only the row index while selection highlights the ro
 });
 test('header buttons use original BPM even with adjusted tempo and locked decks', async () => {
   invoke.mockResolvedValue(library);
-  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, synced: true, target_bpm: deck === 0 ? 110 : 130, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } })) });
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 123.3, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, synced: true, target_bpm: deck === 0 ? 110 : 130, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } })) });
   render(<App />);
   await screen.findByText('Unknown artist');
   const bpm = screen.getByLabelText('Master BPM');
   const a = screen.getByRole('button', { name: /Drift master tempo to deck A/ });
   expect(a.compareDocumentPosition(bpm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(a.textContent).toBe('A (120.0) →');
+  expect(a.textContent).toBe('A 120.0 ←');
   expect((a as HTMLButtonElement).disabled).toBe(false);
-  expect(screen.getByRole('button', { name: /Drift master tempo to deck B/ }).textContent).toBe('B (120.0) →');
+  expect(screen.getByRole('button', { name: /Drift master tempo to deck B/ }).textContent).toBe('→ 120.0 B');
   fireEvent.click(a, { detail: 1 });
   fireEvent.click(a, { detail: 2 });
   fireEvent.dblClick(a);
@@ -496,8 +504,20 @@ test('header buttons use original BPM even with adjusted tempo and locked decks'
   expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'drift')).toBe(false);
   const b = screen.getByRole('button', { name: /Drift master tempo to deck B/ });
   expect((b as HTMLButtonElement).disabled).toBe(false);
+  expect(bpm.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(b);
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'drift', value: null, generation: 1 }));
+});
+test('header disables matching tempo targets and keeps zoom inside rolling waveforms', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1, grid: deck === 0 ? { bpm: 120.001, downbeat_seconds: 0, reviewed: false } : null })) });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  for (const name of ['A', 'B']) expect((screen.getByRole('button', { name: new RegExp(`Drift master tempo to deck ${name}`) }) as HTMLButtonElement).disabled).toBe(true);
+  const zoom = screen.getByRole('combobox', { name: 'Shared zoom' });
+  expect(screen.getByRole('region', { name: 'Rolling waveforms' }).contains(zoom)).toBe(true);
+  expect(document.querySelector('.app-header')?.contains(zoom)).toBe(false);
+  expect(document.querySelector('.master-tempo')?.textContent).not.toContain('MASTER');
 });
 test('Alt arrows select the active deck; Cmd L locks and Cmd Shift L unlocks it', async () => {
   invoke.mockResolvedValue(library);
@@ -551,14 +571,15 @@ test('Shortcuts sits to the right of Settings and lists workspace and local keyb
   fireEvent.click(tab);
   expect(screen.getByRole('heading', { name: 'Shortcuts' })).toBeTruthy();
   expect(tab.getAttribute('aria-current')).toBe('page');
-  expect(screen.getByRole('table', { name: 'App keyboard shortcuts' })).toBeTruthy();
+  fireEvent.click(screen.getByText('Deck playback & tempo'));
+  expect(screen.getByRole('table', { name: 'Deck playback & tempo shortcuts' })).toBeTruthy();
   for (const key of ['Alt + ←', 'Alt + →', 'Cmd + L', 'Cmd + Shift + L', 'Hold Space + ←', 'Hold Space + →', 'Cmd + B', 'Cmd + Shift + A', 'Shift + ← / →']) expect(screen.getByText(key)).toBeTruthy();
   fireEvent.keyDown(window, { key: 'l', metaKey: true });
   expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'sync')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
   expect(screen.getByRole('searchbox')).toBeTruthy();
 });
-test('Settings opens from the workspace tabs and shares waveform zoom with Decks', async () => {
+test('Settings opens from the workspace tabs without a duplicate waveform zoom control', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
   await screen.findByText('Unknown artist');
@@ -567,9 +588,10 @@ test('Settings opens from the workspace tabs and shares waveform zoom with Decks
   expect(screen.getByText('/fixed/music')).toBeTruthy();
   expect(screen.queryByRole('table')).toBeNull();
   expect(screen.getByRole('button', { name: 'SETTINGS' }).getAttribute('aria-current')).toBe('page');
-  fireEvent.change(screen.getByRole('combobox', { name: 'Shared waveform zoom' }), { target: { value: '4' } });
+  expect(screen.queryByRole('heading', { name: 'Display' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: 'Shared waveform zoom' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
-  expect((screen.getByRole('combobox', { name: 'Shared zoom' }) as HTMLSelectElement).value).toBe('4');
+  expect(screen.getByRole('combobox', { name: 'Shared zoom' })).toBeTruthy();
   expect(screen.getByRole('table')).toBeTruthy();
 });
 test('beat-grid loop alignment defaults on and can be saved in Settings', () => {
@@ -631,7 +653,7 @@ test('workspace controls stay out of keyboard tab navigation', async () => {
   expect((screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement).tabIndex).toBe(-1);
   expect(screen.getByRole('slider', { name: 'Waveform seek deck A' }).getAttribute('tabindex')).toBe('-1');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
-  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Shared waveform zoom' }) as HTMLSelectElement).tabIndex).toBe(-1));
+  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Automatic transition mode' }) as HTMLSelectElement).tabIndex).toBe(-1));
 });
 
 test('crossfader visibility persists and hiding bypasses the native fader', async () => {
@@ -662,8 +684,7 @@ test('Routing keeps an unapplied patch and undo history across workspace pages',
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
   await screen.findByRole('button', { name: 'a-player output audio' });
-  fireEvent.doubleClick(document.querySelector('.routing-canvas')!, { clientX: 400, clientY: 400 });
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Compressor' }));
+  fireEvent.doubleClick(screen.getByRole('button', {name:'Compressor'}));
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   fireEvent.keyDown(window, { key: 'Backspace' });
   fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
@@ -916,4 +937,241 @@ test('automatic transition settings persist overlap, mode and tempo choice and s
   localStorage.removeItem('vira.auto-style');
   localStorage.removeItem('vira.auto-bars');
   localStorage.removeItem('vira.auto-tempo');
+});
+
+
+test('sessions track playback on both decks, retain history, sort and end', async () => {
+  const tracks = [library.tracks[0], { ...library.tracks[0], id: 'two', title: 'Second track', artist: 'Second artist' }];
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform'
+    ? { artifact_id: 'artifact', fine_peaks: [], fine_peak_frames: 0 } : { ...library, tracks }));
+  let playing = [false, false];
+  let pendingLaunch = false;
+  let loaded = true;
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: loaded ? { track_id: tracks[deck].id, artifact_id: `artifact-${deck}`, title: tracks[deck].title,
+        artist: '', filename: '', duration_seconds: 125, frames: 1, peak_frames: 0, peaks: [] } : null,
+      position_seconds: 0, playing: playing[deck], launch_pending: deck === 1 && pendingLaunch,
+      gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Second artist');
+  await waitFor(() => expect(document.querySelector('.deck-title')?.textContent).toBe(tracks[0].title));
+  const row = (id: number) => screen.getByText(tracks[id].artist).closest('tr')!;
+  const status = (id: number) => row(id).querySelector('.played-cell')?.textContent;
+  expect(screen.queryByRole('button', { name: 'Sort by Played' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+  expect([status(0), status(1)]).toEqual(['No', 'No']);
+  playing = [true, true];
+  pendingLaunch = true;
+  await waitFor(() => expect(status(0)).toBe('Yes'));
+  expect(status(1)).toBe('No');
+  expect(row(0).classList.contains('played-track')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by Played' }));
+  expect(document.querySelector('.collection-table tbody .title')?.textContent).toBe('Second track');
+  pendingLaunch = false;
+  await waitFor(() => expect(status(1)).toBe('Yes'));
+  playing = [false, false];
+  loaded = false;
+  await waitFor(() => expect(document.querySelector('.deck-title')?.textContent).toBe('No track loaded'));
+  expect([status(0), status(1)]).toEqual(['Yes', 'Yes']);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(status(0)).toBe('Yes');
+  loaded = true;
+  playing = [true, false];
+  await screen.findByRole('button', { name: 'Pause deck A' });
+  fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
+  expect(screen.queryByRole('button', { name: 'Sort by Played' })).toBeNull();
+  expect(row(0).classList.contains('played-track')).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+  expect([status(0), status(1)]).toEqual(['Yes', 'No']);
+});
+
+test('Play Next toggles plans by button and Cmd+N, renumbers and preserves order through filtering', async () => {
+  const tracks = ['First', 'Second', 'Third'].map((title, index) => ({ ...library.tracks[0], id: `plan-${index}`, title, artist: `${title} artist` }));
+  invoke.mockResolvedValue({ ...library, tracks });
+  render(<App />);
+  await screen.findByText('Third artist');
+  expect(screen.queryByRole('button', { name: 'Sort by Next' })).toBeNull();
+  const row = (index: number) => screen.getByText(tracks[index].artist).closest('tr')!;
+  const number = (index: number) => row(index).querySelector('.next-cell')?.textContent;
+  fireEvent.click(row(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Play Next' }));
+  expect(number(1)).toBe('1');
+  expect(row(1).classList.contains('next-track')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Cancel Play Next' }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(row(0));
+  fireEvent.keyDown(window, { key: 'n', metaKey: true });
+  fireEvent.keyDown(window, { key: 'n', metaKey: true, repeat: true });
+  fireEvent.click(row(2));
+  fireEvent.keyDown(window, { key: 'N', metaKey: true });
+  expect([number(0), number(1), number(2)]).toEqual(['2', '1', '3']);
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by Next' }));
+  const titles = () => Array.from(document.querySelectorAll('.collection-table tbody .title'), element => element.textContent);
+  expect(titles()).toEqual(['Second', 'First', 'Third']);
+  fireEvent.click(row(0));
+  fireEvent.keyDown(window, { key: 'n', metaKey: true });
+  expect([number(0), number(1), number(2)]).toEqual(['—', '1', '2']);
+  expect(row(0).classList.contains('next-track')).toBe(false);
+  fireEvent.click(row(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel Play Next' }));
+  expect(number(2)).toBe('1');
+  const search = screen.getByRole('searchbox', { name: 'Search music library' });
+  fireEvent.change(search, { target: { value: 'Third' } });
+  expect(number(2)).toBe('1');
+  fireEvent.change(search, { target: { value: '' } });
+  fireEvent.click(row(1));
+  fireEvent.keyDown(window, { key: 'n', metaKey: true });
+  expect(number(1)).toBe('2');
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by Next' }));
+  expect(titles()).toEqual(['Second', 'Third', 'First']);
+});
+
+test('Cmd+N respects text fields, modifiers, dropdowns and the current page', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const number = () => document.querySelector('.next-cell')?.textContent;
+  const search = screen.getByRole('searchbox', { name: 'Search music library' });
+  fireEvent.keyDown(search, { key: 'n', metaKey: true });
+  fireEvent.keyDown(window, { key: 'n', ctrlKey: true });
+  fireEvent.keyDown(window, { key: 'N', metaKey: true, shiftKey: true });
+  expect(number()).toBeUndefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  fireEvent.keyDown(await screen.findByRole('menu', {name:'Music collections'}), { key: 'n', metaKey: true });
+  expect(number()).toBeUndefined();
+  fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+  fireEvent.click(screen.getByRole('button', { name: 'SHORTCUTS' }));
+  expect(screen.getByText('Cmd + N')).toBeTruthy();
+  fireEvent.keyDown(window, { key: 'n', metaKey: true });
+  fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
+  expect(number()).toBeUndefined();
+  fireEvent.keyDown(window, { key: 'n', metaKey: true });
+  expect(number()).toBe('1');
+});
+
+test.each([0, 1])('playing a planned track on deck %i clears its marker and renumbers the remaining plans', async deckIndex => {
+  const tracks = ['First', 'Second', 'Third'].map((title, index) => ({ ...library.tracks[0], id: `planned-${index}`, title, artist: `${title} artist` }));
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform'
+    ? { artifact_id: 'artifact', fine_peaks: [], fine_peak_frames: 0 } : { ...library, tracks }));
+  let playing = false;
+  let launchPending = false;
+  let trackIndex = 1;
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: deck === deckIndex ? { track_id: tracks[trackIndex].id, artifact_id: `artifact-${trackIndex}`, title: tracks[trackIndex].title,
+        artist: '', filename: '', duration_seconds: 125, frames: 1, peak_frames: 0, peaks: [] } : null,
+      position_seconds: 0, playing: deck === deckIndex && playing, launch_pending: launchPending,
+      gain: .8, generation: trackIndex + 1, requested_generation: trackIndex + 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Third artist');
+  const row = (index: number) => screen.getByText(tracks[index].artist).closest('tr')!;
+  const numbers = () => tracks.map((_, index) => row(index).querySelector('.next-cell')?.textContent);
+  for (let index = 0; index < tracks.length; index++) {
+    fireEvent.click(row(index));
+    fireEvent.click(screen.getByRole('button', { name: 'Play Next' }));
+  }
+  await waitFor(() => expect(document.querySelectorAll('.deck-title')[deckIndex]?.textContent).toBe('Second'));
+  expect(numbers()).toEqual(['1', '2', '3']);
+  // Cover the same behavior with and without an active played-history session.
+  if (deckIndex === 1) fireEvent.click(screen.getByRole('button', { name: 'Start Session' }));
+  fireEvent.click(row(1));
+  playing = true;
+  launchPending = true;
+  // Wait for an audio poll to observe the pending launch before allowing it to start.
+  const calls = audioInvoke.mock.calls.filter(([command]) => command === 'get_audio_state').length;
+  await waitFor(() => expect(audioInvoke.mock.calls.filter(([command]) => command === 'get_audio_state').length).toBeGreaterThan(calls));
+  expect(numbers()).toEqual(['1', '2', '3']);
+  launchPending = false;
+  await waitFor(() => expect(numbers()).toEqual(['1', '—', '2']));
+  expect(row(1).classList.contains('next-track')).toBe(false);
+  expect(screen.getByRole('button', { name: 'Play Next' }).getAttribute('aria-pressed')).toBe('false');
+  if (deckIndex === 1) expect(row(1).querySelector('.played-cell')?.textContent).toBe('Yes');
+  // A different track playing on the same deck also consumes its plan.
+  trackIndex = 0;
+  await waitFor(() => expect(numbers()).toEqual(['—', '—', '1']));
+  trackIndex = 2;
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Sort by Next' })).toBeNull());
+  expect(document.querySelector('.next-col')).toBeNull();
+  expect(document.querySelector('.next-cell')).toBeNull();
+});
+
+test('Autopilot follows the collection while ignoring search and marks its choice next', async () => {
+  const current = library.tracks[0];
+  const hidden = { ...current, id: 'hidden', title: 'Hidden candidate', filename: 'hidden.wav', artist: 'Candidate artist' };
+  const other = { ...current, id: 'other-folder', collection: '/elsewhere', title: 'Other folder candidate' };
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform'
+    ? { artifact_id: 'current', fine_peaks: [], fine_peak_frames: 0 } : { ...library, collections: ['/fixed/music', '/elsewhere'], tracks: [current, hidden, other] }));
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, auto_mode: [0, 0], decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: deck === 0 ? { track_id: current.id, artifact_id: 'current', title: current.title,
+        artist: '', filename: '', duration_seconds: 125, frames: 1, peak_frames: 0, peaks: [] } : null,
+      position_seconds: 0, playing: deck === 0, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Candidate artist');
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: current.title } });
+  expect(screen.queryByText('Candidate artist')).toBeNull();
+  const button = screen.getByRole('button', { name: 'Autopilot' });
+  expect(screen.getByRole('button', { name: 'Play Next' }).nextElementSibling).toBe(button);
+  fireEvent.click(button);
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 1, trackId: 'hidden', preserveLock: true, resetMixer: true }));
+  expect(button.getAttribute('aria-pressed')).toBe('true');
+  expect(button.classList.contains('auto-engaged')).toBe(true);
+  expect(screen.getByRole('button', { name: 'End Session' })).toBeTruthy();
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: '' } });
+  expect(screen.getByText('Candidate artist').closest('tr')!.querySelector('.next-cell')?.textContent).toBe('1');
+  fireEvent.click(screen.getByRole('button', { name: 'End Session' }));
+  expect(button.getAttribute('aria-pressed')).toBe('false');
+});
+
+test('Autopilot weight sliders persist independently in Settings', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const names = ['bpm proximity', 'shared tags', 'harmonic compatibility', 'bpm direction', 'randomness'];
+  names.forEach((name, index) => fireEvent.change(screen.getByRole('slider', { name: `Autopilot ${name} weight` }), { target: { value: String((index + 1) * 20) } }));
+  expect(JSON.parse(localStorage.getItem('vira.autopilot-weights')!)).toEqual({ bpm: 20, tags: 40, harmonic: 60, direction: 80, randomness: 100 });
+  cleanup();
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  names.forEach((name, index) => expect((screen.getByRole('slider', { name: `Autopilot ${name} weight` }) as HTMLInputElement).value).toBe(String((index + 1) * 20)));
+  localStorage.removeItem('vira.autopilot-weights');
+});
+
+test('master BPM selects its text, applies a target on Enter and cancels on Escape or blur', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, master_bpm: 123.3, decks: [0, 1].map(deck => ({ deck, loading: false, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1 })) });
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const edit = () => { fireEvent.click(screen.getByLabelText('Master BPM')); return screen.getByRole('textbox', { name: 'Target master BPM' }) as HTMLInputElement; };
+  let input = edit();
+  expect(document.activeElement).toBe(input);
+  expect(input.value.slice(input.selectionStart!, input.selectionEnd!)).toBe('123.3');
+  fireEvent.change(input, { target: { value: '130.25' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'master_target', value: 130.25, generation: 1 }));
+  const targets = () => audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'master_target');
+  input = edit();
+  fireEvent.change(input, { target: { value: '140' } });
+  fireEvent.keyDown(input, { key: 'Escape' });
+  expect(screen.queryByRole('textbox', { name: 'Target master BPM' })).toBeNull();
+  input = edit();
+  fireEvent.change(input, { target: { value: '150' } });
+  fireEvent.blur(input);
+  expect(screen.queryByRole('textbox', { name: 'Target master BPM' })).toBeNull();
+  input = edit();
+  fireEvent.change(input, { target: { value: '601' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  expect(screen.getByRole('textbox', { name: 'Target master BPM' })).toBe(input);
+  expect(targets()).toHaveLength(1);
 });

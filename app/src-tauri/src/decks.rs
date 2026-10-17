@@ -732,10 +732,12 @@ pub enum Command {
     Click(usize, u64, f32),
     ClickPanel(usize, u64, bool),
     AutoTransition(usize, [u64; 2], bool),
+    EditAuto(usize, [u64; 2], u8, f64),
     AutoBars(u8),
     AutoTempo(bool),
     AutoStyle(u8),
     MasterTempo(f64),
+    MasterTarget(f64),
     Drift(usize, [u64; 2]),
     DriftRate(f64),
     SyncQuantum(u8),
@@ -789,6 +791,7 @@ pub struct Frame {
     pub timing_errors: [u8; 2],
     pub reposition: [f64; 2],
     pub master_bpm: f64,
+    pub master_bpm_set: bool,
     pub drift_rate: f64,
     pub sync_quantum: u8,
     pub drift_target: Option<usize>,
@@ -803,6 +806,7 @@ struct AutoTransition {
     end: bool,
     start_seconds: f64,
     incoming_start: usize,
+    guide_start: [f64; 2],
     beats: f64,
     mixed_beats: f64,
     started: bool,
@@ -812,11 +816,13 @@ struct AutoTransition {
     starting_gains: [f32; 2],
     starting_bass: [f32; 2],
     bass_swap: bool,
+    bass_swapped: bool,
     swap_beat: f64,
     style: u8,
 }
 
 pub struct Decks {
+    pub note_lanes: [crate::deck_notes::Lane; 2],
     auto: Option<AutoTransition>,
     auto_bars: u8,
     auto_tempo: bool,
@@ -836,15 +842,18 @@ pub struct Decks {
     crossfader_ramp: u32,
     pub voices: [Option<Box<Voice>>; 2],
     pub master_bpm: f64,
+    pub master_bpm_set: bool,
     pub drift_rate: f64,
     pub sync_quantum: u8,
     drift_target: Option<usize>,
+    tempo_target: Option<f64>,
     global_beat: f64,
     output_frame: u64,
 }
 impl Decks {
     pub fn new() -> Self {
         Self {
+            note_lanes: std::array::from_fn(|_| crate::deck_notes::Lane::new()),
             auto: None,
             auto_bars: 8,
             auto_tempo: true,
@@ -864,9 +873,11 @@ impl Decks {
             crossfader_ramp: 0,
             voices: [None, None],
             master_bpm: 120.,
+            master_bpm_set: false,
             drift_rate: 1.,
             sync_quantum: 4,
             drift_target: None,
+            tempo_target: None,
             global_beat: 0.,
             output_frame: 0,
         }
@@ -941,19 +952,34 @@ impl Decks {
         );
         let length = a.source.len() as f64 / 48000.;
         let position = a.seconds();
-        let origin = a.start as f64 / 48000.;
+        let cue_beat = bg.beat(incoming);
+        // A loaded cue is rounded to a source frame. Treat a boundary rounded
+        // within half a frame as exact, without moving an intentional manual cue.
+        let cue_beat = if (cue_beat - cue_beat.round()).abs() <= bg.bpm / (60. * 48000. * 2.) + 1e-9
+        {
+            cue_beat.round()
+        } else {
+            cue_beat
+        };
         // Try the configured overlap first, then each shorter supported length.
-        // Each NOW candidate keeps its own phrase boundaries anchored to track start.
+        // Both modes match the incoming cue's phrase phase on the outgoing grid.
+        // EOF may include a partial bar or tail, so it is a limit, not an anchor.
         let (start, beats) = [32_u8, 16, 8, 4, 2, 1, 0]
             .into_iter()
             .filter(|bars| *bars <= self.auto_bars)
             .find_map(|bars| {
                 let beats = f64::from(bars) * 4.;
                 let duration = beats * 60. / ag.bpm;
-                let start = if end || bars == 0 {
-                    length - duration
+                let start = if bars == 0 {
+                    length
                 } else {
-                    origin + (((position - origin) / duration).floor() + 1.) * duration
+                    let phase = cue_beat.rem_euclid(beats);
+                    let phrase = if end {
+                        ((ag.beat(length - duration) - phase) / beats + 1e-12).floor()
+                    } else {
+                        ((ag.beat(position) - phase) / beats + 1e-12).floor() + 1.
+                    };
+                    ag.seconds(phrase * beats + phase)
                 };
                 (start >= position
                     && start + duration <= length + 1e-6
@@ -967,6 +993,7 @@ impl Decks {
             end,
             start_seconds: start,
             incoming_start,
+            guide_start: std::array::from_fn(|d| if d == from { start } else { incoming }),
             beats,
             mixed_beats: 0.,
             started: false,
@@ -978,6 +1005,7 @@ impl Decks {
                 self.voices[d].as_ref().unwrap().mixer.settings.eq[0]
             }),
             bass_swap: self.auto_bass_swap,
+            bass_swapped: false,
             style: if self.auto_smart {
                 2
             } else if self.auto_bass_swap {
@@ -995,6 +1023,7 @@ impl Decks {
             },
         };
         self.drift_target = None;
+        self.tempo_target = None;
         self.global_beat = ag.beat(a.seconds());
         for voice in self.voices.iter_mut().flatten() {
             if (voice.target_bpm - self.master_bpm).abs() > 1e-9 {
@@ -1009,6 +1038,120 @@ impl Decks {
         self.auto = Some(auto);
         Ok(())
     }
+    fn replan_auto_after_seek(&mut self, mut auto: AutoTransition) -> Result<()> {
+        let outgoing = self.voices[auto.from].as_ref().unwrap();
+        let grid = outgoing.grid.unwrap();
+        let position = outgoing.seconds();
+        let length = outgoing.source.len() as f64 / 48000.;
+        let mut beats = auto.beats;
+        // Retain the edited incoming anchor, swap and overlap. Only relocate the
+        // outgoing region, preserving its own phrase phase (area edits are local).
+        let start = loop {
+            let duration = beats * 60. / grid.bpm;
+            let start = if beats == 0. {
+                length
+            } else {
+                let quantum = beats.min(16.);
+                let phase = grid.beat(auto.start_seconds).rem_euclid(quantum);
+                let phrase = if auto.end {
+                    ((grid.beat(length - duration) - phase) / quantum + 1e-12).floor()
+                } else {
+                    ((grid.beat(position) - phase) / quantum + 1e-12).floor() + 1.
+                };
+                grid.seconds(phrase * quantum + phase)
+            };
+            if start >= position - 1e-6 && start + duration <= length + 1e-6 {
+                break start;
+            }
+            anyhow::ensure!(beats > 0., "No playable transition remains");
+            beats = if beats > 16. {
+                beats - 16.
+            } else if beats > 8. {
+                8.
+            } else if beats > 4. {
+                4.
+            } else {
+                0.
+            };
+        };
+        auto.start_seconds = start;
+        auto.guide_start[auto.from] = start;
+        auto.beats = beats;
+        auto.swap_beat = auto.swap_beat.min(beats);
+        self.global_beat = grid.beat(position);
+        self.auto = Some(auto);
+        Ok(())
+    }
+    // Absolute source-time targets make repeated/coalesced pointer updates idempotent.
+    // Kinds: area, start, swap, end. Every edit preserves the original phrase phase.
+    fn edit_auto(&mut self, deck: usize, generations: [u64; 2], kind: u8, seconds: f64) {
+        let Some(mut auto) = self.auto else { return };
+        if auto.started
+            || auto.generations != generations
+            || !self.matches(generations)
+            || !seconds.is_finite()
+            || kind > 3
+            || (kind == 2 && !auto.bass_swap)
+            || self
+                .voices
+                .iter()
+                .flatten()
+                .any(|v| v.loop_end.is_some() || v.scrub.is_some())
+        {
+            return;
+        }
+        let beat_seconds = 60. / self.voices[deck].as_ref().unwrap().grid.unwrap().bpm;
+        let offset = match kind {
+            2 => auto.swap_beat,
+            3 => auto.beats,
+            _ => 0.,
+        };
+        let delta =
+            ((seconds - auto.guide_start[deck] - offset * beat_seconds) / beat_seconds / 16.)
+                .round()
+                * 16.;
+        if delta == 0. {
+            return;
+        }
+        match kind {
+            0 => auto.guide_start[deck] += delta * beat_seconds,
+            1 => {
+                for d in 0..2 {
+                    auto.guide_start[d] +=
+                        delta * 60. / self.voices[d].as_ref().unwrap().grid.unwrap().bpm;
+                }
+                auto.beats -= delta;
+                auto.swap_beat -= delta;
+            }
+            2 => auto.swap_beat += delta,
+            3 => auto.beats += delta,
+            _ => unreachable!(),
+        }
+        if !auto.bass_swap {
+            auto.swap_beat = auto.beats / 2.;
+        }
+        if auto.beats < 0. || auto.swap_beat < 0. || auto.swap_beat > auto.beats {
+            return;
+        }
+        let outgoing = self.voices[auto.from].as_ref().unwrap();
+        // Never move the launch behind the continuing master clock, including loops.
+        if outgoing.grid.unwrap().beat(auto.guide_start[auto.from]) <= self.global_beat {
+            return;
+        }
+        for d in 0..2 {
+            let voice = self.voices[d].as_ref().unwrap();
+            let start = auto.guide_start[d];
+            let end = start + auto.beats * 60. / voice.grid.unwrap().bpm;
+            if start < voice.start as f64 / 48000. - 1e-6
+                || end > voice.source.len() as f64 / 48000. + 1e-6
+            {
+                return;
+            }
+        }
+        auto.start_seconds = auto.guide_start[auto.from];
+        auto.incoming_start = (auto.guide_start[1 - auto.from] * 48000.).round() as usize;
+        self.auto = Some(auto);
+    }
     fn advance_auto(&mut self) {
         let Some(mut auto) = self.auto else { return };
         if !self.matches(auto.generations)
@@ -1016,16 +1159,12 @@ impl Decks {
                 && !self.voices[auto.from].as_ref().is_some_and(|v| {
                     v.playing || (auto.beats == 0. && v.position >= v.source.len())
                 }))
-            || (auto.started
-                && !self.voices[1 - auto.from]
-                    .as_ref()
-                    .is_some_and(|v| v.playing))
         {
             self.cancel_auto();
             return;
         }
         let a = self.voices[auto.from].as_ref().unwrap();
-        let outgoing_ended = !a.playing;
+        let outgoing_ended = !a.playing && a.position >= a.source.len();
         // A loop may repeat source positions, but must not repeat or postpone AUTO's
         // timeline. Lock the launch boundary to the continuing master beat clock.
         let launch_beat = a.grid.unwrap().beat(auto.start_seconds);
@@ -1048,7 +1187,10 @@ impl Decks {
         if !auto.started {
             return;
         }
-        let progress = if auto.beats == 0. || outgoing_ended {
+        // Natural EOF on either side completes the handoff. Pausing the outgoing
+        // deck during the overlap leaves the handoff on its musical timeline.
+        let incoming_ended = !self.voices[1 - auto.from].as_ref().unwrap().playing;
+        let progress = if auto.beats == 0. || outgoing_ended || incoming_ended {
             1.
         } else {
             (auto.mixed_beats / auto.beats).min(1.)
@@ -1070,7 +1212,12 @@ impl Decks {
         );
         self.voices[outgoing].as_mut().unwrap().gain = auto.starting_gains[outgoing] * fades[0];
         self.voices[incoming].as_mut().unwrap().gain = auto.starting_gains[outgoing] * fades[1];
-        if auto.bass_swap && swap_due(auto.mixed_beats, auto.swap_beat, self.master_bpm) {
+        // Scheduled EQ changes fire once so later manual edits remain effective.
+        if auto.bass_swap
+            && !auto.bass_swapped
+            && swap_due(auto.mixed_beats, auto.swap_beat, self.master_bpm)
+        {
+            auto.bass_swapped = true;
             self.voices[outgoing].as_mut().unwrap().set_bass(0.);
             self.voices[incoming].as_mut().unwrap().set_bass(0.5);
         }
@@ -1130,11 +1277,7 @@ impl Decks {
         for d in 0..2 {
             let voice = self.voices[d].as_ref().unwrap();
             let seconds_per_beat = 60. / voice.grid.unwrap().bpm;
-            let anchor = if d == auto.from {
-                auto.start_seconds
-            } else {
-                auto.incoming_start as f64 / 48000.
-            };
+            let anchor = auto.guide_start[d];
             frame.auto_points[d] = std::array::from_fn(|i| {
                 let original = anchor + offsets[i] * seconds_per_beat;
                 // Upcoming loop events keep their planned time, but appear at the
@@ -1189,7 +1332,7 @@ impl Decks {
             None
         };
         let voice = self.voices[deck].as_mut().unwrap();
-        if (voice.target_bpm - self.master_bpm).abs() > 1e-9 {
+        if self.master_bpm_set && (voice.target_bpm - self.master_bpm).abs() > 1e-9 {
             voice.tempo(self.master_bpm)?;
         }
         if let Some(position) = position {
@@ -1233,7 +1376,7 @@ impl Decks {
             launch_beat += quantum;
         }
         let voice = self.voices[deck].as_mut().unwrap();
-        if (voice.target_bpm - self.master_bpm).abs() > 1e-9 {
+        if self.master_bpm_set && (voice.target_bpm - self.master_bpm).abs() > 1e-9 {
             voice.tempo(self.master_bpm)?;
         }
         if let Some(position) = immediate_position {
@@ -1256,13 +1399,13 @@ impl Decks {
             Command::Remove(d, through) => self.voices[*d]
                 .as_ref()
                 .is_some_and(|v| v.generation <= *through),
-            Command::Play(d, g)
-            | Command::Pause(d, g)
-            | Command::PlayPause(d, g)
-            | Command::Stop(d, g)
+            Command::Play(d, g) | Command::Pause(d, g) | Command::PlayPause(d, g) => {
+                !self.auto.is_some_and(|a| a.started && *d == a.from)
+                    && self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
+            }
+            Command::Stop(d, g)
             | Command::CuePress(d, g)
             | Command::CueRelease(d, g)
-            | Command::Seek(d, g, _)
             | Command::ScrubStart(d, g, _)
             | Command::Scrub(d, g, _, _)
             | Command::Grid(d, g, _) => {
@@ -1272,16 +1415,13 @@ impl Decks {
                 self.auto.is_some_and(|a| a.started || *d != a.from)
                     && self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
             }
-            Command::Mixer(d, g, 1, _) => {
-                self.auto.is_some_and(|a| a.started && a.bass_swap)
-                    && self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
-            }
             Command::Tempo(_, generations, _)
             | Command::Sync(_, generations, _)
             | Command::Drift(_, generations) => self.matches(*generations),
-            Command::MasterTempo(_) | Command::Crossfader(_) | Command::CrossfaderEnabled(_) => {
-                true
-            }
+            Command::MasterTempo(_)
+            | Command::MasterTarget(_)
+            | Command::Crossfader(_)
+            | Command::CrossfaderEnabled(_) => true,
             _ => false,
         };
         if cancels_auto {
@@ -1304,6 +1444,9 @@ impl Decks {
                         voice.plan_overlap();
                     }
                 }
+            }
+            Command::EditAuto(d, generations, kind, seconds) => {
+                self.edit_auto(d, generations, kind, seconds);
             }
             Command::AutoTransition(d, generations, end) => {
                 if self.matches(generations) {
@@ -1427,7 +1570,7 @@ impl Decks {
                             .grid
                             .is_some_and(|grid| grid.speed(self.master_bpm).is_ok())
                         {
-                            if voice.tempo(self.master_bpm).is_ok() {
+                            if !self.master_bpm_set || voice.tempo(self.master_bpm).is_ok() {
                                 voice.synced = true;
                             }
                         }
@@ -1457,10 +1600,24 @@ impl Decks {
                             v.playing = false;
                             v.seek(v.cue_position);
                         } else {
-                            // Cue is sample-accurate and independent of the beat grid.
                             let position = (v.seconds() * 48000.).round() as usize;
                             if position.abs_diff(v.cue_position) > 1 {
-                                v.cue_position = position.min(v.source.len().saturating_sub(1));
+                                let seconds = if v.synced {
+                                    v.grid.map_or(v.seconds(), |grid| {
+                                        grid.align_quantum_from(
+                                            v.seconds(),
+                                            0.,
+                                            v.start as f64 / 48000.,
+                                            v.source.len() as f64 / 48000.,
+                                            f64::from(self.sync_quantum),
+                                        )
+                                        .unwrap_or(v.seconds())
+                                    })
+                                } else {
+                                    v.seconds()
+                                };
+                                v.cue_position = ((seconds * 48000.).round().max(0.) as usize)
+                                    .clamp(v.start, v.source.len().saturating_sub(1));
                                 v.seek(v.cue_position);
                             } else {
                                 v.seek(v.cue_position);
@@ -1480,6 +1637,15 @@ impl Decks {
                 }
             }
             Command::Play(d, g) => {
+                if !self.master_bpm_set {
+                    if let Some(v) = self.voices[d]
+                        .as_ref()
+                        .filter(|v| v.generation == g && v.grid.is_some())
+                    {
+                        self.master_bpm = v.target_bpm;
+                        self.master_bpm_set = true;
+                    }
+                }
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g && v.cue_preview {
                         // Latch the audition without restarting or scheduling a launch.
@@ -1540,7 +1706,14 @@ impl Decks {
             Command::Pitch(d, g, semitones) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
-                        let _ = v.pitch(semitones);
+                        if semitones.is_finite()
+                            && (-6. ..=6.).contains(&semitones)
+                            && semitones.fract() == 0.
+                        {
+                            self.note_lanes[d].manual = semitones;
+                            let shift = self.note_lanes[d].pitch(self.output_frame);
+                            let _ = v.pitch(shift);
+                        }
                     }
                 }
             }
@@ -1629,6 +1802,10 @@ impl Decks {
                 }
             }
             Command::Seek(d, g, p) => {
+                if !self.voices[d].as_ref().is_some_and(|v| v.generation == g) {
+                    return None;
+                }
+                let replan = self.auto.filter(|a| a.from == d && !a.started);
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
                         let looping = v.loop_end.is_some();
@@ -1661,6 +1838,41 @@ impl Decks {
                                 v.clear_loop();
                             }
                             v.seek(p);
+                        }
+                    }
+                }
+                if let Some(mut auto) = self.auto.filter(|a| a.started) {
+                    // Keep the current fade/tempo progress. Only compress the remaining
+                    // timeline if a seek leaves less playable material than the overlap.
+                    let remaining = (auto.beats - auto.mixed_beats).max(0.);
+                    let available = self
+                        .voices
+                        .iter()
+                        .flatten()
+                        .filter(|v| v.loop_end.is_none())
+                        .map(|v| {
+                            ((v.source.len() as f64 / 48000. - v.seconds()) * v.grid.unwrap().bpm
+                                / 60.)
+                                .max(0.)
+                        })
+                        .fold(remaining, f64::min);
+                    if remaining > 0. && available < remaining {
+                        let scale = available / remaining;
+                        auto.beats *= scale;
+                        auto.mixed_beats *= scale;
+                        auto.swap_beat *= scale;
+                    }
+                    auto.guide_start = std::array::from_fn(|deck| {
+                        let voice = self.voices[deck].as_ref().unwrap();
+                        voice.seconds() - auto.mixed_beats * 60. / voice.grid.unwrap().bpm
+                    });
+                    self.auto = Some(auto);
+                }
+                if let Some(auto) = replan {
+                    if self.replan_auto_after_seek(auto).is_err() {
+                        self.cancel_auto();
+                        if let Some(v) = &mut self.voices[d] {
+                            v.timing_error = 4;
                         }
                     }
                 }
@@ -1755,14 +1967,28 @@ impl Decks {
             }
             Command::MasterTempo(bpm) => {
                 if bpm.is_finite() && (15.0..=600.0).contains(&bpm) {
+                    self.tempo_target = None;
                     self.master_bpm = bpm;
+                    self.master_bpm_set = true;
                     self.drift_target = None;
+                }
+            }
+            Command::MasterTarget(bpm) => {
+                if bpm.is_finite() && (15.0..=600.0).contains(&bpm) {
+                    self.tempo_target = Some(bpm);
+                    self.drift_target = None;
+                    self.master_bpm_set = true;
                 }
             }
             Command::Drift(d, generations) => {
                 if self.matches(generations)
                     && self.voices[d].as_ref().is_some_and(|v| v.grid.is_some())
                 {
+                    if !self.master_bpm_set {
+                        self.master_bpm = self.voices[d].as_ref().unwrap().grid.unwrap().bpm;
+                        self.master_bpm_set = true;
+                    }
+                    self.tempo_target = None;
                     self.drift_target = Some(d);
                 }
             }
@@ -1798,6 +2024,20 @@ impl Decks {
         self.next_inner(false)
     }
     fn next_inner(&mut self, deferred: bool) -> Result<Frame> {
+        for d in 0..2 {
+            if let Some(v) = &mut self.voices[d] {
+                let shift = self.note_lanes[d].pitch(self.output_frame);
+                if self.note_lanes[d]
+                    .midi
+                    .host
+                    .generation
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == v.generation
+                {
+                    v.pitch(shift)?;
+                }
+            }
+        }
         self.advance_auto();
         let mut frame = Frame {
             auto_mode: std::array::from_fn(|d| {
@@ -1826,9 +2066,12 @@ impl Decks {
                 voice.launch_beat = None;
             }
         }
-        if let Some(d) = self.drift_target {
-            if let Some(v) = &self.voices[d] {
-                let target = v.grid.unwrap().bpm;
+        if self.drift_target.is_some() || self.tempo_target.is_some() {
+            let target = self.tempo_target.or_else(|| {
+                self.drift_target
+                    .and_then(|d| self.voices[d].as_ref()?.grid.map(|g| g.bpm))
+            });
+            if let Some(target) = target {
                 let step = self.drift_rate / 48000.;
                 let next = if (target - self.master_bpm).abs() <= step {
                     target
@@ -1842,9 +2085,11 @@ impl Decks {
                     .any(|v| v.synced && !v.grid.is_some_and(|g| g.speed(next).is_ok()))
                 {
                     self.drift_target = None;
+                    self.tempo_target = None;
                 } else {
                     self.master_bpm = next;
                     if next == target {
+                        self.tempo_target = None;
                         self.drift_target = None;
                     }
                 }
@@ -1852,16 +2097,22 @@ impl Decks {
                 self.drift_target = None;
             }
         }
+        let patterns_running = crate::patterns::clock_running();
+        if patterns_running {
+            self.master_bpm_set = true;
+        }
         if self
             .voices
             .iter()
             .flatten()
             .any(|v| v.playing && v.launch_beat.is_none())
+            || patterns_running
         {
             self.global_beat += self.master_bpm / (60. * 48000.);
         }
         frame.global_beat = self.global_beat;
         frame.master_bpm = self.master_bpm;
+        frame.master_bpm_set = self.master_bpm_set;
         frame.drift_rate = self.drift_rate;
         frame.sync_quantum = self.sync_quantum;
         frame.drift_target = self.drift_target;
@@ -1873,6 +2124,12 @@ impl Decks {
                     / self.crossfader_ramp as f32;
             }
             self.crossfader_ramp -= 1;
+        }
+        for d in 0..2 {
+            let (generation, pitch) = self.voices[d]
+                .as_ref()
+                .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
+            self.note_lanes[d].prepare(generation, pitch);
         }
         let routed = !self.routing.conventional;
         let mut players = [[0.; 2]; 2];
@@ -1886,12 +2143,15 @@ impl Decks {
                 {
                     voice.launch_beat = None;
                 }
-                let update_delta = if self.drift_target.is_some() {
+                let update_delta = if self.drift_target.is_some() || self.tempo_target.is_some() {
                     0.05
                 } else {
                     0.000001
                 };
-                if voice.synced && (voice.target_bpm - self.master_bpm).abs() > update_delta {
+                if self.master_bpm_set
+                    && voice.synced
+                    && (voice.target_bpm - self.master_bpm).abs() > update_delta
+                {
                     if voice.grid.is_some_and(|g| g.speed(self.master_bpm).is_ok()) {
                         let _ = voice.tempo(self.master_bpm);
                     } else {
@@ -2002,6 +2262,12 @@ impl Decks {
         block: &mut [Frame; PRODUCER_FRAMES],
         drivers: &mut [crate::teia_audio::Driver],
     ) -> Result<()> {
+        for d in 0..2 {
+            let (generation, pitch) = self.voices[d]
+                .as_ref()
+                .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
+            self.note_lanes[d].prepare(generation, pitch);
+        }
         let routed = !self.routing.conventional;
         for frame in block.iter_mut() {
             *frame = self.next_inner(routed)?;
@@ -2030,6 +2296,133 @@ impl Decks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn master_numeric_target_uses_drift_rate_and_stops_exactly() {
+        let mut decks = Decks::new();
+        decks.command(Command::MasterTempo(120.), [0, 0]);
+        decks.command(Command::DriftRate(2.), [0, 0]);
+        decks.command(Command::MasterTarget(123.), [0, 0]);
+        for _ in 0..48000 {
+            decks.next().unwrap();
+        }
+        assert!((decks.master_bpm - 122.).abs() < 1e-6);
+        for _ in 0..48000 {
+            decks.next().unwrap();
+        }
+        assert_eq!(decks.master_bpm, 123.);
+        assert_eq!(decks.tempo_target, None);
+        decks.command(Command::MasterTarget(119.), [0, 0]);
+        for _ in 0..24000 {
+            decks.next().unwrap();
+        }
+        assert!((decks.master_bpm - 122.).abs() < 1e-6);
+        decks.command(Command::MasterTempo(125.), [0, 0]);
+        assert_eq!(decks.tempo_target, None);
+    }
+
+    #[test]
+    fn active_deck_uses_rendered_eq_and_fader_levels_before_crossfader() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        install(&mut decks, 1, 1, source());
+        decks.command(Command::Play(0, 1), [1, 1]);
+        decks.command(Command::Play(1, 1), [1, 1]);
+        decks.command(Command::Crossfader(1.), [1, 1]);
+        decks.command(Command::Gain(1, 1, 0.1), [1, 1]);
+        let mut tracker = crate::active_deck::Tracker::default();
+        let observe = |decks: &mut Decks, tracker: &mut crate::active_deck::Tracker, count| {
+            for _ in 0..count {
+                let frame = decks.next().unwrap();
+                tracker.observe(frame.playing, frame.deck_samples);
+            }
+            tracker.selected()
+        };
+        assert_eq!(observe(&mut decks, &mut tracker, 8000), 0);
+        decks.command(Command::Gain(0, 1, 0.), [1, 1]);
+        decks.command(Command::Gain(1, 1, 1.), [1, 1]);
+        assert_eq!(observe(&mut decks, &mut tracker, 10000), 1);
+        decks.command(Command::Gain(0, 1, 1.), [1, 1]);
+        for band in 1..=3 {
+            decks.command(Command::Mixer(1, 1, band, 0.), [1, 1]);
+        }
+        assert_eq!(observe(&mut decks, &mut tracker, 16000), 0);
+    }
+    #[test]
+    fn deck_note_events_change_pitch_at_render_frame_and_restore_manual_control() {
+        use teia_kernel::hosted::EventKind;
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::Pitch(0, 1, -1.), [1, 0]);
+        decks.note_lanes[0].prepare(1, -1.);
+        let h = decks.note_lanes[0].midi.host.clone();
+        h.enqueue(
+            10,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 64,
+                velocity: 1.,
+            },
+        );
+        h.enqueue(
+            20,
+            EventKind::NoteOff {
+                channel: 1,
+                note: 64,
+            },
+        );
+        let mut block = [Frame::default(); PRODUCER_FRAMES];
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert_eq!(block[9].pitches[0], -1.);
+        assert_eq!(block[10].pitches[0], 3.);
+        assert_eq!(block[19].pitches[0], 3.);
+        assert_eq!(block[20].pitches[0], -1.);
+    }
+    #[test]
+    fn first_play_establishes_master_once() {
+        for first in 0..2 {
+            let mut decks = Decks::new();
+            for d in 0..2 {
+                install(&mut decks, d, 1, source());
+                let v = decks.voices[d].as_mut().unwrap();
+                v.apply_grid(Grid {
+                    bpm: 128. + d as f64 * 12.,
+                    downbeat_seconds: 0.,
+                    reviewed: false,
+                });
+            }
+            decks.command(Command::Sync(first, [1, 1], true), [1, 1]);
+            assert!(!decks.next().unwrap().master_bpm_set);
+            assert_eq!(
+                decks.voices[first].as_ref().unwrap().target_bpm,
+                128. + first as f64 * 12.
+            );
+            decks.command(Command::Play(first, 99), [1, 1]);
+            assert!(!decks.master_bpm_set);
+            decks.command(Command::Play(first, 1), [1, 1]);
+            let expected = 128. + first as f64 * 12.;
+            assert!(decks.next().unwrap().master_bpm_set);
+            assert_eq!(decks.master_bpm, expected);
+            decks.command(Command::Pause(first, 1), [1, 1]);
+            decks.command(Command::Play(1 - first, 1), [1, 1]);
+            assert_eq!(decks.master_bpm, expected);
+        }
+    }
+
+    #[test]
+    fn explicit_master_before_first_play_is_preserved() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.voices[0].as_mut().unwrap().apply_grid(Grid {
+            bpm: 140.,
+            downbeat_seconds: 0.,
+            reviewed: false,
+        });
+        decks.command(Command::MasterTempo(125.), [1, 1]);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        assert_eq!(decks.master_bpm, 125.);
+        assert!(decks.master_bpm_set);
+    }
+
     #[test]
     fn master_audition_stops_when_a_deck_plays() {
         let mut decks = Decks::new();
@@ -2280,6 +2673,90 @@ mod tests {
         assert_eq!(audition.overlap_start, 48000 * 66);
     }
     #[test]
+    fn automatic_end_ignores_partial_phrases_at_eof_and_matches_the_incoming_cue_phase() {
+        for from in 0..2 {
+            for cue_beats in [0., 5.25] {
+                let mut decks = auto_decks(from, 8, false);
+                for d in 0..2 {
+                    let voice = decks.voices[d].as_mut().unwrap();
+                    let grid = Grid {
+                        bpm: if d == from { 136. } else { 130. },
+                        downbeat_seconds: if d == from { 0.23117 } else { 0.31729 },
+                        reviewed: true,
+                    };
+                    voice.apply_grid(grid);
+                    voice.set_start(grid.downbeat_seconds);
+                    if d != from {
+                        voice.cue_position = (grid.seconds(cue_beats) * 48000.).round() as usize;
+                    }
+                }
+                decks.arm_auto(from, [1, 1], true).unwrap();
+                let auto = decks.auto.unwrap();
+                let outgoing = decks.voices[from].as_ref().unwrap();
+                let incoming = decks.voices[1 - from].as_ref().unwrap();
+                let ag = outgoing.grid.unwrap();
+                let bg = incoming.grid.unwrap();
+                let incoming_beat = bg.beat(auto.incoming_start as f64 / 48000.);
+                let phase = (ag.beat(auto.start_seconds) - incoming_beat).rem_euclid(auto.beats);
+                assert!(
+                    phase.min(auto.beats - phase) < 0.0001,
+                    "{phase} beats out of phrase"
+                );
+                let end = auto.start_seconds + auto.beats * 60. / ag.bpm;
+                assert!(end <= 40. + 1. / 48000.);
+                assert!(end + auto.beats * 60. / ag.bpm > 40.);
+                assert_eq!(auto.incoming_start, incoming.cue_position);
+                // Exercise the actual launch at a different master tempo, then
+                // check the grids remain aligned through the tempo ramp.
+                decks.master_bpm = 132.3;
+                decks.auto.as_mut().unwrap().initial_bpm = 132.3;
+                decks.auto.as_mut().unwrap().target_bpm = bg.bpm;
+                for voice in decks.voices.iter_mut().flatten() {
+                    voice.tempo(132.3).unwrap();
+                }
+                decks.voices[from]
+                    .as_mut()
+                    .unwrap()
+                    .seek((auto.start_seconds * 48000.).round() as usize);
+                decks.global_beat = ag.beat(decks.voices[from].as_ref().unwrap().seconds());
+                for _ in 0..4800 {
+                    let frame = decks.next().unwrap();
+                    assert!(frame.playing.iter().all(|playing| *playing));
+                    let a = decks.voices[from].as_ref().unwrap();
+                    let b = decks.voices[1 - from].as_ref().unwrap();
+                    let phase = (ag.beat(a.seconds()) - bg.beat(b.seconds())).rem_euclid(32.);
+                    assert!(
+                        phase.min(32. - phase) < 0.001,
+                        "rendered phase error: {phase}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn automatic_now_matches_a_custom_cue_instead_of_the_trimmed_file_start() {
+        for from in 0..2 {
+            let mut decks = auto_decks(from, 8, false);
+            let outgoing = decks.voices[from].as_mut().unwrap();
+            outgoing.grid.as_mut().unwrap().downbeat_seconds = 0.23;
+            outgoing.set_start(0.1);
+            outgoing.seek(48000 * 3);
+            let incoming = decks.voices[1 - from].as_mut().unwrap();
+            incoming.grid.as_mut().unwrap().downbeat_seconds = 0.31;
+            incoming.cue_position = 48000 * 7 + 1234;
+            decks.arm_auto(from, [1, 1], false).unwrap();
+            let auto = decks.auto.unwrap();
+            let ag = decks.voices[from].as_ref().unwrap().grid.unwrap();
+            let bg = decks.voices[1 - from].as_ref().unwrap().grid.unwrap();
+            let phase = (ag.beat(auto.start_seconds)
+                - bg.beat(auto.incoming_start as f64 / 48000.))
+            .rem_euclid(auto.beats);
+            assert!(phase.min(auto.beats - phase) < 0.0001);
+            assert!(auto.start_seconds > 3.);
+            assert!(auto.start_seconds - auto.beats * 60. / ag.bpm <= 3.);
+        }
+    }
+    #[test]
     fn automatic_now_counts_eight_bar_phrases_from_track_start_and_can_cancel() {
         let mut decks = auto_decks(0, 8, true);
         decks.command(Command::Seek(0, 1, 48000 * 3), [1, 1]);
@@ -2292,6 +2769,177 @@ mod tests {
         assert!(decks.auto.is_none());
         assert!(decks.voices[0].as_ref().unwrap().playing);
         assert!(!decks.voices[1].as_ref().unwrap().playing);
+    }
+    #[test]
+    fn seeking_during_transition_preserves_progress_and_reanchors_guides() {
+        for from in 0..2 {
+            for deck in 0..2 {
+                for style in [0, 1, 2] {
+                    let mut decks = auto_decks(from, 1, true);
+                    decks.command(Command::AutoStyle(style), [1, 1]);
+                    decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                    let mut auto = decks.auto.unwrap();
+                    decks.voices[from]
+                        .as_mut()
+                        .unwrap()
+                        .seek((auto.start_seconds * 48000.) as usize);
+                    decks.global_beat = decks.voices[from]
+                        .as_ref()
+                        .unwrap()
+                        .grid
+                        .unwrap()
+                        .beat(auto.start_seconds);
+                    decks.next().unwrap();
+                    auto = decks.auto.unwrap();
+                    auto.mixed_beats = 1.;
+                    decks.auto = Some(auto);
+                    for seconds in [12, 2, 39] {
+                        let before = decks.auto.unwrap();
+                        let gains = decks.voices.each_ref().map(|v| v.as_ref().unwrap().gain);
+                        let bpm = decks.master_bpm;
+                        decks.command(Command::Seek(deck, 1, seconds * 48000), [1, 1]);
+                        let after = decks.auto.expect("seek preserves handoff");
+                        assert!(after.started);
+                        assert_eq!(after.bass_swapped, before.bass_swapped);
+                        assert!(
+                            (after.mixed_beats / after.beats - before.mixed_beats / before.beats)
+                                .abs()
+                                < 1e-9
+                        );
+                        assert_eq!(decks.master_bpm, bpm);
+                        assert_eq!(
+                            decks.voices.each_ref().map(|v| v.as_ref().unwrap().gain),
+                            gains
+                        );
+                        assert!(decks
+                            .voices
+                            .iter()
+                            .flatten()
+                            .all(|v| v.playing && v.generation == 1));
+                        for d in 0..2 {
+                            let v = decks.voices[d].as_ref().unwrap();
+                            assert!(
+                                (after.guide_start[d]
+                                    + after.mixed_beats * 60. / v.grid.unwrap().bpm
+                                    - v.seconds())
+                                .abs()
+                                    < 1e-9
+                            );
+                            assert!(
+                                after.guide_start[d] + after.beats * 60. / v.grid.unwrap().bpm
+                                    <= 40. + 1e-9
+                            );
+                        }
+                        decks.next().unwrap();
+                        assert!(decks.auto.is_some());
+                    }
+                    let before = decks.auto.unwrap();
+                    decks.command(Command::Seek(deck, 0, 0), [1, 1]);
+                    assert_eq!(decks.auto.unwrap().guide_start, before.guide_start);
+                    while decks.auto.is_some() {
+                        decks.next().unwrap();
+                    }
+                    assert!(!decks.voices[from].as_ref().unwrap().playing);
+                    // A compressed handoff must complete, rather than cancel and
+                    // restore the incoming deck's original silent fader.
+                    assert_eq!(decks.voices[from].as_ref().unwrap().gain, 0.);
+                    assert!(decks.voices[1 - from].as_ref().unwrap().gain > 0.);
+                }
+            }
+        }
+    }
+    #[test]
+    fn seeking_outgoing_deck_replans_armed_auto_transition() {
+        for end in [false, true] {
+            let mut decks = auto_decks(0, 1, false);
+            decks.command(Command::AutoTransition(0, [1, 1], end), [1, 1]);
+            let previous = decks.auto.unwrap().start_seconds;
+            decks.command(Command::Seek(0, 1, 48000 * 20), [1, 1]);
+            let auto = decks.auto.expect("AUTO remains armed after seek");
+            assert_eq!(auto.end, end);
+            assert!(auto.start_seconds >= decks.voices[0].as_ref().unwrap().seconds());
+            if !end {
+                assert!(auto.start_seconds > previous);
+            }
+            assert_eq!(
+                decks.next().unwrap().auto_mode,
+                [if end { 2 } else { 1 }, 0]
+            );
+        }
+    }
+    #[test]
+    fn outgoing_seek_preserves_edited_incoming_points_and_armed_settings() {
+        for from in 0..2 {
+            for end in [false, true] {
+                for style in [0, 1, 2] {
+                    let mut decks = auto_decks(from, 8, false);
+                    let source = Arc::new(Source {
+                        bass_profile: Default::default(),
+                        left: vec![0.; 48000 * 130],
+                        right: vec![0.; 48000 * 130],
+                    });
+                    for voice in decks.voices.iter_mut().flatten() {
+                        voice.source = source.clone();
+                    }
+                    let incoming = 1 - from;
+                    decks.voices[incoming].as_mut().unwrap().cue_position = 24 * 48000;
+                    decks.command(Command::AutoStyle(style), [1, 1]);
+                    decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                    let step =
+                        16. * 60. / decks.voices[incoming].as_ref().unwrap().grid.unwrap().bpm;
+                    let start = decks.auto.unwrap().guide_start[incoming];
+                    decks.command(Command::EditAuto(incoming, [1, 1], 1, start - step), [1, 1]);
+                    let start = decks.auto.unwrap().guide_start[incoming];
+                    decks.command(
+                        Command::EditAuto(incoming, [1, 1], 0, start + 2. * step),
+                        [1, 1],
+                    );
+                    if style != 0 {
+                        let swap = decks.auto.unwrap().guide_start[incoming]
+                            + decks.auto.unwrap().swap_beat * step / 16.;
+                        decks.command(Command::EditAuto(incoming, [1, 1], 2, swap - step), [1, 1]);
+                    }
+                    let before = decks.auto.unwrap();
+                    assert_eq!(before.beats, 48.);
+                    assert!(before.guide_start[incoming] > 24.);
+                    let mut original = Frame::default();
+                    decks.transition_guides(&mut original);
+                    // Next-transition settings must not replace the armed plan either.
+                    decks.command(Command::AutoBars(1), [1, 1]);
+                    decks.command(Command::AutoStyle((style + 1) % 3), [1, 1]);
+                    for seek in [40, 16, 64] {
+                        decks.command(Command::Seek(from, 1, 48000 * seek), [1, 1]);
+                        let after = decks.auto.expect("AUTO stays armed");
+                        let mut frame = Frame::default();
+                        decks.transition_guides(&mut frame);
+                        assert_eq!(frame.auto_points[incoming], original.auto_points[incoming]);
+                        assert_eq!(after.incoming_start, before.incoming_start);
+                        assert_eq!(after.beats, before.beats);
+                        assert_eq!(after.swap_beat, before.swap_beat);
+                        assert_eq!(after.style, before.style);
+                        assert_eq!(after.starting_gains, before.starting_gains);
+                        assert_eq!(after.end, end);
+                        assert!(
+                            after.start_seconds >= decks.voices[from].as_ref().unwrap().seconds()
+                        );
+                        let phase = ((after.start_seconds - before.start_seconds) * 120. / 60.)
+                            .rem_euclid(16.);
+                        assert!(phase.min(16. - phase) < 1e-6);
+                    }
+                    // Near EOF, keep the edited incoming start and shorten only as needed.
+                    decks.command(Command::Seek(from, 1, 48000 * 126), [1, 1]);
+                    let shortened = decks.auto.expect("Shorter AUTO remains armed");
+                    assert_eq!(shortened.incoming_start, before.incoming_start);
+                    assert_eq!(
+                        shortened.guide_start[incoming],
+                        before.guide_start[incoming]
+                    );
+                    assert!(shortened.beats < before.beats);
+                    assert!(shortened.start_seconds + shortened.beats * 0.5 <= 130. + 1e-6);
+                    assert_eq!(shortened.swap_beat, before.swap_beat.min(shortened.beats));
+                }
+            }
+        }
     }
     #[test]
     fn automatic_transition_renders_handoff_in_both_directions_and_tempo_modes() {
@@ -2502,30 +3150,83 @@ mod tests {
         }
     }
     #[test]
-    fn cancelling_bass_swap_restores_bass_and_manual_low_eq_takes_over() {
-        for manual in [false, true] {
-            let mut decks = auto_decks(0, 1, false);
-            decks.command(Command::Mixer(0, 1, 1, 0.7), [1, 1]);
-            decks.command(Command::Mixer(1, 1, 1, 0.8), [1, 1]);
-            decks.command(Command::AutoStyle(1), [1, 1]);
-            decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
-            for _ in 0..48000 * 3 + 1000 {
+    fn manual_eq_keeps_bass_swap_running() {
+        for from in 0..2 {
+            for style in [1, 2] {
+                let mut decks = auto_decks(from, 1, false);
+                decks.command(Command::AutoStyle(style), [1, 1]);
+                decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                decks.command(Command::Mixer(from, 1, 1, 0.7), [1, 1]);
+                while !decks.auto.unwrap().started {
+                    decks.next().unwrap();
+                }
+                for deck in 0..2 {
+                    for band in 1..=3 {
+                        decks.command(Command::Mixer(deck, 1, band, 0.4), [1, 1]);
+                    }
+                }
                 decks.next().unwrap();
+                assert!(decks.auto.is_some());
+                assert!(decks
+                    .voices
+                    .iter()
+                    .flatten()
+                    .all(|v| v.playing && v.mixer.settings.eq[0] == 0.4));
+                while !decks.auto.unwrap().bass_swapped {
+                    decks.next().unwrap();
+                }
+                assert_eq!(
+                    decks.voices[from].as_ref().unwrap().mixer.settings.eq[0],
+                    0.
+                );
+                assert_eq!(
+                    decks.voices[1 - from].as_ref().unwrap().mixer.settings.eq[0],
+                    0.5
+                );
+                for deck in 0..2 {
+                    decks.command(Command::Mixer(deck, 1, 1, 0.3), [1, 1]);
+                }
+                for _ in 0..1000 {
+                    decks.next().unwrap();
+                }
+                assert!(decks.auto.is_some());
+                assert!(decks
+                    .voices
+                    .iter()
+                    .flatten()
+                    .all(|v| v.playing && v.generation == 1 && v.mixer.settings.eq[0] == 0.3));
+                while decks.auto.is_some() {
+                    decks.next().unwrap();
+                }
+                assert!(!decks.voices[from].as_ref().unwrap().playing);
+                assert!(decks.voices[1 - from].as_ref().unwrap().playing);
+                assert_eq!(
+                    decks.voices[from].as_ref().unwrap().mixer.settings.eq[0],
+                    0.7
+                );
+                assert_eq!(
+                    decks.voices[1 - from].as_ref().unwrap().mixer.settings.eq[0],
+                    0.3
+                );
             }
-            assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.);
-            if manual {
-                decks.command(Command::Mixer(0, 1, 1, 0.4), [1, 1]);
-            } else {
-                decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
-            }
-            assert!(decks.auto.is_none());
-            assert_eq!(
-                decks.voices[0].as_ref().unwrap().mixer.settings.eq[0],
-                if manual { 0.4 } else { 0.7 }
-            );
-            assert_eq!(decks.voices[1].as_ref().unwrap().mixer.settings.eq[0], 0.8);
-            assert!(!decks.voices[1].as_ref().unwrap().playing);
         }
+    }
+    #[test]
+    fn cancelling_bass_swap_restores_bass() {
+        let mut decks = auto_decks(0, 1, false);
+        decks.command(Command::Mixer(0, 1, 1, 0.7), [1, 1]);
+        decks.command(Command::Mixer(1, 1, 1, 0.8), [1, 1]);
+        decks.command(Command::AutoStyle(1), [1, 1]);
+        decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
+        for _ in 0..48000 * 3 + 1000 {
+            decks.next().unwrap();
+        }
+        assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.);
+        decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
+        assert!(decks.auto.is_none());
+        assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.7);
+        assert_eq!(decks.voices[1].as_ref().unwrap().mixer.settings.eq[0], 0.8);
+        assert!(!decks.voices[1].as_ref().unwrap().playing);
     }
     #[test]
     fn bass_swap_handles_sub_bar_midpoints_and_zero_overlap_without_leaving_eq_cut() {
@@ -2841,6 +3542,125 @@ mod tests {
         }
     }
     #[test]
+    fn planned_transition_edits_snap_link_points_and_move_only_the_selected_area() {
+        for from in 0..2 {
+            for deck in 0..2 {
+                for kind in 0..4 {
+                    let mut decks = auto_decks(from, 8, false);
+                    let source = Arc::new(Source {
+                        bass_profile: Default::default(),
+                        left: vec![0.; 48000 * 130],
+                        right: vec![0.; 48000 * 130],
+                    });
+                    for voice in decks.voices.iter_mut().flatten() {
+                        voice.source = source.clone();
+                    }
+                    decks.command(Command::AutoBars(16), [1, 1]);
+                    decks.command(Command::AutoStyle(1), [1, 1]);
+                    // Leave enough material before the incoming start for linked resizing.
+                    decks.voices[1 - from].as_mut().unwrap().cue_position = 12 * 48000;
+                    decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                    let before = decks.auto.unwrap();
+                    let mut original = Frame::default();
+                    decks.transition_guides(&mut original);
+                    let index = match kind {
+                        2 => 3,
+                        3 => 4,
+                        _ => 0,
+                    };
+                    let seconds_per_beat =
+                        60. / decks.voices[deck].as_ref().unwrap().grid.unwrap().bpm;
+                    let target = original.auto_points[deck][index] + 16. * seconds_per_beat + 0.1;
+                    decks.command(Command::EditAuto(deck, [1, 1], kind, target), [1, 1]);
+                    let mut edited = Frame::default();
+                    decks.transition_guides(&mut edited);
+                    for d in 0..2 {
+                        let step = 16. * 60. / decks.voices[d].as_ref().unwrap().grid.unwrap().bpm;
+                        for i in [0, 3, 4] {
+                            let moves = if kind == 0 { d == deck } else { i == index };
+                            let expected =
+                                original.auto_points[d][i] + if moves { step } else { 0. };
+                            assert!(
+                                (edited.auto_points[d][i] - expected).abs() < 1e-6,
+                                "from {from} deck {deck} kind {kind} point {i}"
+                            );
+                        }
+                    }
+                    // Repeating an absolute target must not add another step.
+                    decks.command(Command::EditAuto(deck, [1, 1], kind, target), [1, 1]);
+                    assert_eq!(
+                        decks.auto.unwrap().guide_start,
+                        edited.auto_points.map(|p| p[0])
+                    );
+                    assert_eq!(
+                        decks.auto.unwrap().incoming_start,
+                        (edited.auto_points[1 - from][0] * 48000.).round() as usize
+                    );
+                    assert_eq!(
+                        decks.auto.unwrap().start_seconds,
+                        edited.auto_points[from][0]
+                    );
+                    assert_eq!(decks.auto.unwrap().starting_gains, before.starting_gains);
+                }
+            }
+        }
+    }
+    #[test]
+    fn moved_transition_launches_at_edited_boundary_and_incoming_position() {
+        for from in 0..2 {
+            for deck in 0..2 {
+                let mut decks = auto_decks(from, 8, false);
+                decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                let before = decks.auto.unwrap();
+                let step = 16. * 60. / decks.voices[deck].as_ref().unwrap().grid.unwrap().bpm;
+                decks.command(
+                    Command::EditAuto(deck, [1, 1], 0, before.guide_start[deck] + step),
+                    [1, 1],
+                );
+                let edited = decks.auto.unwrap();
+                let launch = decks.voices[from]
+                    .as_ref()
+                    .unwrap()
+                    .grid
+                    .unwrap()
+                    .beat(edited.start_seconds);
+                decks.global_beat = launch - 1.;
+                decks.advance_auto();
+                assert!(!decks.auto.unwrap().started);
+                decks.global_beat = launch;
+                decks.advance_auto();
+                assert!(decks.auto.unwrap().started);
+                let incoming = decks.voices[1 - from].as_ref().unwrap();
+                assert!(incoming.playing);
+                assert!((incoming.seconds() - edited.guide_start[1 - from]).abs() <= 1. / 48000.);
+            }
+        }
+    }
+    #[test]
+    fn transition_edits_reject_crossing_bounds_stale_sources_and_active_transitions() {
+        let mut decks = auto_decks(0, 8, false);
+        decks.command(Command::AutoStyle(1), [1, 1]);
+        decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
+        let before = decks.auto.unwrap();
+        for (kind, seconds, generations) in [
+            (0, -8., [1, 1]),
+            (0, 100., [1, 1]),
+            (0, 0., [1, 1]),
+            (2, 100., [1, 1]),
+            (3, 0., [1, 1]),
+            (0, 24., [2, 1]),
+        ] {
+            decks.command(Command::EditAuto(0, generations, kind, seconds), [1, 1]);
+            let after = decks.auto.unwrap();
+            assert_eq!(after.guide_start, before.guide_start);
+            assert_eq!(after.beats, before.beats);
+            assert_eq!(after.swap_beat, before.swap_beat);
+        }
+        decks.auto.as_mut().unwrap().started = true;
+        decks.command(Command::EditAuto(0, [1, 1], 0, 24.), [1, 1]);
+        assert_eq!(decks.auto.unwrap().guide_start, before.guide_start);
+    }
+    #[test]
     fn transition_guides_report_cues_fader_points_and_bass_swap_and_clear_on_cancel() {
         for style in [0, 1, 2] {
             let mut decks = auto_decks(0, 8, false);
@@ -2850,14 +3670,15 @@ mod tests {
             let frame = decks.next().unwrap();
             assert_eq!(frame.auto_style, style);
             assert!(!frame.auto_started);
-            assert_eq!(frame.auto_points[0][0], 16.);
+            let launch = 7. * 140. / 120.;
+            assert!((frame.auto_points[0][0] - launch).abs() < 1e-9);
             assert_eq!(frame.auto_points[1][0], 7.);
-            assert_eq!(frame.auto_points[0][4], 32.);
+            assert!((frame.auto_points[0][4] - (launch + 16.)).abs() < 1e-9);
             assert!((frame.auto_points[1][4] - (7. + 32. * 60. / 140.)).abs() < 1e-9);
-            assert_eq!(frame.auto_points[0][3], 24.);
+            assert!((frame.auto_points[0][3] - (launch + 8.)).abs() < 1e-9);
             if style == 0 {
-                assert_eq!(frame.auto_points[0][1], 19.2);
-                assert_eq!(frame.auto_points[0][2], 28.8);
+                assert!((frame.auto_points[0][1] - (launch + 3.2)).abs() < 1e-9);
+                assert!((frame.auto_points[0][2] - (launch + 12.8)).abs() < 1e-9);
             } else {
                 assert_eq!(frame.auto_points[0][1], frame.auto_points[0][3]);
             }
@@ -2884,13 +3705,17 @@ mod tests {
         assert!(!decks.voices[1].as_ref().unwrap().playing);
     }
     #[test]
-    fn automatic_end_and_zero_overlap_schedule_at_eof_and_cancel_when_replaced() {
+    fn automatic_end_uses_the_last_complete_phrase_and_zero_overlap_uses_eof() {
         for bars in [0, 1, 8] {
             let mut decks = auto_decks(0, bars, false);
             decks.command(Command::AutoTransition(0, [1, 1], true), [1, 1]);
             assert_eq!(
                 decks.auto.unwrap().start_seconds,
-                40. - f64::from(bars) * 2.
+                if bars == 8 {
+                    16.
+                } else {
+                    40. - f64::from(bars) * 2.
+                }
             );
             if bars == 0 {
                 // Approach EOF without spending this test rendering forty seconds.
@@ -2907,6 +3732,69 @@ mod tests {
                 install(&mut decks, 1, 2, source());
                 assert!(decks.auto.is_none());
                 assert!(!decks.voices[1].as_ref().unwrap().playing);
+            }
+        }
+    }
+    #[test]
+    fn pausing_outgoing_during_overlap_keeps_the_transition_on_schedule() {
+        for from in 0..2 {
+            for change_tempo in [false, true] {
+                for bass_swap in [false, true] {
+                    for resume in [false, true] {
+                        let mut decks = auto_decks(from, 1, change_tempo);
+                        let mut reference = auto_decks(from, 1, change_tempo);
+                        for d in [&mut decks, &mut reference] {
+                            d.command(Command::AutoStyle(u8::from(bass_swap)), [1, 1]);
+                            d.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                            let boundary = d.auto.unwrap().start_seconds;
+                            d.voices[from]
+                                .as_mut()
+                                .unwrap()
+                                .seek((boundary * 48000.) as usize);
+                            d.global_beat = d.voices[from]
+                                .as_ref()
+                                .unwrap()
+                                .grid
+                                .unwrap()
+                                .beat(boundary);
+                            d.next().unwrap();
+                        }
+                        let command = if resume {
+                            Command::PlayPause(from, 1)
+                        } else {
+                            Command::Pause(from, 1)
+                        };
+                        decks.command(command, [1, 1]);
+                        assert!(decks.auto.unwrap().started);
+                        let paused_position = decks.voices[from].as_ref().unwrap().position;
+                        let mut completed = false;
+                        for i in 0..48000 * 3 {
+                            if resume && i == 4800 {
+                                decks.command(Command::PlayPause(from, 1), [1, 1]);
+                                assert!(decks.auto.unwrap().started);
+                            }
+                            let actual = decks.next().unwrap();
+                            let expected = reference.next().unwrap();
+                            assert_eq!(actual.auto_mode, expected.auto_mode);
+                            assert_eq!(actual.gains, expected.gains);
+                            assert_eq!(actual.master_bpm, expected.master_bpm);
+                            assert_eq!(actual.crossfader, expected.crossfader);
+                            assert_eq!(actual.mixer, expected.mixer);
+                            assert_eq!(actual.positions[1 - from], expected.positions[1 - from]);
+                            assert!(actual.playing[1 - from]);
+                            if !resume || i < 4800 {
+                                assert!(!actual.playing[from]);
+                                assert_eq!(actual.positions[from], paused_position as u64);
+                            }
+                            if decks.auto.is_none() {
+                                assert!(!actual.playing[from]);
+                                completed = true;
+                                break;
+                            }
+                        }
+                        assert!(completed, "Paused outgoing deck prevented the handoff");
+                    }
+                }
             }
         }
     }
@@ -3147,6 +4035,49 @@ mod tests {
         assert!(frame.playing[0] && !frame.cue_preview[0]);
         decks.command(Command::PlayPause(0, 1), [1, 1]);
         assert!(!decks.next().unwrap().playing[0]);
+    }
+
+    #[test]
+    fn cue_setting_snaps_only_locked_decks_to_the_selected_grid_boundary() {
+        let audio = Arc::new(Source {
+            left: vec![0.; 480000],
+            right: vec![0.; 480000],
+            bass_profile: Default::default(),
+        });
+        for (locked, quantum, position, expected) in [
+            (true, 4, 1.0, 0.25),
+            (true, 4, 1.4, 2.25),
+            (true, 1, 1.4, 1.25),
+            (true, 1, 1.6, 1.75),
+            (false, 4, 1.4, 1.4),
+            (false, 1, 1.6, 1.6),
+            (true, 4, 9.9, 8.25),
+        ] {
+            let mut decks = Decks::new();
+            install(&mut decks, 0, 1, audio.clone());
+            decks.sync_quantum = quantum;
+            let voice = decks.voices[0].as_mut().unwrap();
+            voice.apply_grid(Grid {
+                bpm: 120.,
+                downbeat_seconds: 0.25,
+                reviewed: true,
+            });
+            voice.set_start(0.25);
+            voice.synced = locked;
+            decks.command(Command::Seek(0, 1, (position * 48000.) as usize), [1, 1]);
+            decks.command(Command::CuePress(0, 1), [1, 1]);
+            let frame = decks.next().unwrap();
+            let expected = (expected * 48000_f64).round() as u64;
+            assert_eq!(frame.cue_positions[0], expected);
+            assert_eq!(frame.positions[0], expected);
+            assert!(!frame.playing[0] && !frame.cue_preview[0]);
+            // A snap back to the existing cue still sets it; the next press previews.
+            decks.command(Command::CueRelease(0, 1), [1, 1]);
+            decks.command(Command::CuePress(0, 1), [1, 1]);
+            assert!(decks.voices[0].as_ref().unwrap().cue_preview);
+            decks.command(Command::CueRelease(0, 1), [1, 1]);
+            assert_eq!(decks.voices[0].as_ref().unwrap().position as u64, expected);
+        }
     }
 
     #[test]
@@ -4193,6 +5124,7 @@ mod timing_tests {
     #[test]
     fn drift_is_rate_limited_and_keeps_lock_states() {
         let mut decks = decks();
+        decks.command(Command::MasterTempo(120.), [1, 1]);
         decks.command(Command::Tempo(1, [1, 1], 110.), [1, 1]);
         decks.command(Command::Sync(0, [1, 1], true), [1, 1]);
         decks.command(Command::Drift(1, [1, 1]), [1, 1]);
@@ -4245,6 +5177,7 @@ mod timing_tests {
     #[test]
     fn replacement_options_preserve_lock_and_reset_or_keep_mixer() {
         let mut decks = decks();
+        decks.command(Command::MasterTempo(120.), [1, 1]);
         decks.command(Command::Sync(0, [1, 1], true), [1, 1]);
         decks.command(Command::Gain(0, 1, 0.25), [1, 1]);
         decks.command(Command::Mixer(0, 1, 0, 6.), [1, 1]);

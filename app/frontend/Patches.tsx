@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { type Patch } from '@pauloricca/teia-hosted';
-import { gainPatch, prepare, type Parameter, type TeiaRecord, type TeiaState } from './teiaModel';
+import { addSessionPatch } from './patchLibrary';
+import { type Parameter, type TeiaRecord, type TeiaState } from './teiaModel';
 
 type Entry = { slot: number; state: TeiaState };
 type Library = { files: string[] };
@@ -13,23 +13,7 @@ function savedOrder(): string[] {
   try { const value: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? '[]'); return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === 'string'))] : []; }
   catch { return []; }
 }
-export const emptyPatch = (name: string): Patch => ({ name, nodes: [
-  { id: 'input', type: 'AudioInput', params: { gain: 1, level: 1 }, position: { x: 80, y: 160 } },
-  { id: 'output', type: 'AudioOut', params: { level: 1 }, position: { x: 480, y: 160 } },
-], links: [
-  { from: { node: 'input', port: 'left' }, to: { node: 'output', port: 'left' } },
-  { from: { node: 'input', port: 'right' }, to: { node: 'output', port: 'right' } },
-] });
-// An unconnected AudioOut is an editable draft, not an executable Teia graph.
-// Keep that document intact and run silence until its first valid editor apply.
-export function preparePatchInstance(document: Patch) {
-  if (document.links.length === 0 && document.nodes.length === 2 && document.nodes.some(n => n.type === 'AudioInput') && document.nodes.some(n => n.type === 'AudioOut')) {
-    const silent = { ...gainPatch, nodes: gainPatch.nodes.filter(n => n.type !== 'Params').map(n => n.type === 'AudioInput' ? { ...n, params: { ...n.params, gain: 0 } } : n), links: gainPatch.links.filter(l => l.from.node !== 'parameters') };
-    const prepared = prepare(silent);
-    return { prepared, draft: true };
-  }
-  return { prepared: prepare(document), draft: false };
-}
+export { emptyPatch, preparePatchInstance } from './patchLibrary';
 export function formatPatchValue(value: number) {
   const magnitude = Math.abs(value);
   if (magnitude > 0 && magnitude < .01) return value.toExponential(0);
@@ -66,6 +50,7 @@ export function Patches() {
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [pollError, setPollError] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [order, setOrder] = useState(savedOrder);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -133,7 +118,7 @@ export function Patches() {
   };
   useEffect(() => {
     let stopped = false, timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { try { const [library, next] = await Promise.all([invoke<Library>('teia_library'), invoke<Entry[]>('patches_state')]); if (!stopped) { if (!Array.isArray(library?.files) || !Array.isArray(next)) throw new Error('Unable to read patches'); setFiles(library.files); setEntries(next); } } catch (e) { if (!stopped) setError(String(e)); } if (!stopped) timer = setTimeout(poll, 300); };
+    const poll = async () => { try { const [library, next] = await Promise.all([invoke<Library>('teia_library'), invoke<Entry[]>('patches_state')]); if (!stopped) { if (!Array.isArray(library?.files) || !Array.isArray(next)) throw new Error('Unable to read patches'); setFiles(library.files); setEntries(next); setPollError(''); } } catch (e) { if (!stopped) setPollError(String(e)); } if (!stopped) timer = setTimeout(poll, 300); };
     void poll(); return () => { stopped = true; clearTimeout(timer); };
   }, []);
   useEffect(() => {
@@ -147,18 +132,8 @@ export function Patches() {
   const add = async (file?: string) => {
     setMenu(false);
     await run(async () => {
-      let name = file;
-      if (!name) {
-        let index = 1;
-        while (files.includes(`New patch${index === 1 ? '' : ` ${index}`}.json`)) index++;
-        name = `New patch${index === 1 ? '' : ` ${index}`}.json`;
-        await invoke('teia_import', { name, document: emptyPatch(name.replace(/\.json$/, '')) });
-      }
-      const source = await invoke<{ document: Patch; hash: string }>('teia_read', { name });
-      const { prepared, draft } = preparePatchInstance(source.document);
-      const added = await invoke<Entry>('patches_add', { name, savedHash: source.hash, document: prepared.document, prepared, draft });
-      await refresh(); window.dispatchEvent(new Event('patches-changed'));
-      if (!file) await invoke('teia_open_editor', { slot: added.slot });
+      await addSessionPatch(file);
+      await refresh();
     });
   };
   const control = (entry: Entry, action: string, parameter: string | null, value: number) => {
@@ -238,6 +213,7 @@ export function Patches() {
       <div><button autoFocus disabled={busy} onClick={() => setRemoving(null)}>Cancel</button><button disabled={busy} onClick={() => void remove()}>{busy ? 'Removing…' : 'Remove patch'}</button></div>
       {error && <p className="error" role="alert">{error}</p>}
     </dialog>}
+    {pollError && <p className="error" role="alert">{pollError}</p>}
     {error && !removing && <p className="error" role="alert">{error}</p>}
     {entries.some(e => e.state.restoreError) && <p className="error" role="alert">{entries.find(e => e.state.restoreError)?.state.restoreError}</p>}
   </section>;

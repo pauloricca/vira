@@ -9,6 +9,7 @@ test('crossfade and bass modes use the native event positions on each deck', () 
   expect(transitionMarkers(plan, 0).map(m => m.seconds)).toEqual([16, 19.2, 28.8, 32]);
   expect(transitionMarkers(plan, 1).map(m => m.seconds)).toEqual([7, 10.2, 19.8, 23]);
   expect(transitionMarkers({ ...plan, style: 'bass-swap' }, 0).map(m => m.label)).toEqual(['AUTO START', 'BASS SWAP', 'AUTO END']);
+  expect(transitionMarkers({ ...plan, style: 'smart' }, 1).map(m => m.label)).toEqual(['AUTO START', 'BASS SWAP', 'AUTO END']);
   expect(transitionMarkers({ ...plan, style: 'smart' }, 1).find(m => m.id === 'bass')?.seconds).toBe(15);
   expect(transitionMarkers(null, 0)).toEqual([]);
 });
@@ -24,6 +25,6 @@ test('canvas guides draw bass markers at the same native positions as overview g
   const ctx = { save: vi.fn(), restore: vi.fn(), fillRect: vi.fn(), setLineDash: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), measureText: () => ({ width: 50 }), fillText: vi.fn() };
   drawTransitionGuides(ctx as unknown as CanvasRenderingContext2D, transitionMarkers({ ...plan, style: 'smart' }, 1), marker => marker.seconds * 10, 600, 100);
   expect(ctx.moveTo).toHaveBeenCalledWith(150, 0);
-  expect(ctx.fillText).toHaveBeenCalledWith('SMART BASS', 154, 53);
+  expect(ctx.fillText).toHaveBeenCalledWith('BASS SWAP', 154, 53);
   expect(ctx.restore).toHaveBeenCalledOnce();
 });

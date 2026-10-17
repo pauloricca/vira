@@ -8,6 +8,24 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
 const state: DeckState = { deck: 0, loading: false, error: null, playing: false, position_seconds: 0, gain: .8, generation: 1, requested_generation: 1,
   track: { track_id: 'a'.repeat(64), artifact_id: 'b'.repeat(64), title: 'Unanalysed song', artist: 'Test artist', filename: 'test.wav', duration_seconds: 100, frames: 4800000, peak_frames: 4800000, peaks: [[.2, .1]] } };
+test('phrase jumps preserve fractional beat position and use the latest playhead', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const deck = { ...state, position_seconds: 18.375, grid: { bpm: 120, downbeat_seconds: .25, reviewed: true } };
+  const { rerender } = render(<Deck {...props} state={deck} />);
+  const forward = screen.getByRole('button', { name: 'Jump 4 bars forward on deck A' });
+  fireEvent.pointerDown(forward);
+  expect(control).not.toHaveBeenCalled();
+  fireEvent.click(forward);
+  expect(control).toHaveBeenLastCalledWith(0, 'seek', 26.375);
+  fireEvent.click(screen.getByRole('button', { name: 'Jump 8 bars back on deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'seek', 2.375);
+  rerender(<Deck {...props} state={{ ...deck, position_seconds: 21.125, position_epoch: 1 }} />);
+  fireEvent.click(forward);
+  expect(control).toHaveBeenLastCalledWith(0, 'seek', 29.125);
+  rerender(<Deck {...props} state={state} />);
+  expect(screen.queryByRole('button', { name: 'Jump 4 bars forward on deck A' })).toBeNull();
+});
 test('the first beat displays as zero and Home seeks to that playable boundary', () => {
   const control = vi.fn();
   render(<Deck state={{ ...state, position_seconds: .25, synced: true, track: { ...state.track!, start_seconds: .25 }, grid: { bpm: 120, downbeat_seconds: .25, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={control} />);
@@ -659,10 +677,40 @@ test('transition guides appear on both overview and rolling waveforms and clear 
     const overview = screen.getByRole('slider', { name: `Waveform seek deck ${deck}` });
     expect(overview.querySelector('[data-transition-marker="bass"]')).toBeTruthy();
     expect(overview.querySelector('[data-transition-marker="out"]')).toBeNull();
-    expect(screen.getByRole('group', { name: `Automatic transition guides rolling deck ${deck}` }).textContent).toContain('SMART BASS');
+    expect(screen.getByRole('group', { name: `Automatic transition guides rolling deck ${deck}` }).textContent).toContain('BASS SWAP');
   }
-  expect(screen.getByRole('group', { name: 'Automatic transition guides deck B' }).textContent).toContain('SMART BASS at 0:13.0');
+  expect(screen.getByRole('group', { name: 'Automatic transition guides deck B' }).textContent).toContain('BASS SWAP at 0:13.0');
   view.rerender(<Guides engaged={false} />);
   expect(document.querySelector('[data-transition-marker]')).toBeNull();
   expect(screen.queryByRole('group', { name: /Automatic transition guides/ })).toBeNull();
+});
+
+test('planned transition points and areas intercept seeking on both overview and rolling waveforms', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    for (const rolling of [false, true]) for (const deck of [0, 1]) {
+      for (const [x, action, target] of [[20, 'auto_start', 28], [40, 'auto_swap', 48], [60, 'auto_finish', 68], [30, 'auto_move', 28]] as const) {
+        const control = vi.fn().mockResolvedValue(undefined);
+        const deckState = { ...state, deck, position_seconds: 50, grid: { bpm: 120, downbeat_seconds: .25, reviewed: true } };
+        const transition = { from: 0, style: 'bass-swap' as const, started: false, points: [[20,40,40,40,60], [20,40,40,40,60]] as [import('./TransitionGuides').TransitionPoints, import('./TransitionGuides').TransitionPoints], remaining_beats: [40,72,72,72,104] as import('./TransitionGuides').TransitionPoints };
+        const view = render(rolling
+          ? <RollingRow state={deckState} running window={100} transition={transition} control={control} />
+          : <Deck state={deckState} running loading={false} error={null} load={vi.fn()} transition={transition} control={control} />);
+        const waveform = screen.getByRole(rolling ? 'img' : 'slider', { name: `${rolling ? 'Rolling waveform' : 'Waveform seek'} deck ${deck === 0 ? 'A' : 'B'}` });
+        vi.spyOn(waveform, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+        Object.assign(waveform, { setPointerCapture: vi.fn() });
+        await act(async () => {
+          fireEvent.pointerDown(waveform, { button: 0, clientX: x });
+          fireEvent.pointerMove(waveform, { clientX: x + 3 }); // Less than half a phrase.
+        });
+        expect(control).not.toHaveBeenCalled();
+        await act(async () => {
+          fireEvent.pointerMove(waveform, { clientX: x + 6 });
+          fireEvent.pointerUp(waveform, { clientX: x + 6 });
+        });
+        expect(control.mock.calls).toEqual([[deck, action, target]]);
+        view.unmount();
+      }
+    }
+  } finally { vi.unstubAllGlobals(); }
 });

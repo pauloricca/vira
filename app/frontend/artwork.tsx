@@ -3,11 +3,25 @@ import { invoke } from '@tauri-apps/api/core';
 
 const artwork = new Map<string, string | null>();
 const pending = new Map<string, Promise<string | null>>();
+const waiting: (() => void)[] = [];
+let activeRequests = 0;
+
+async function acquire() {
+  if (activeRequests < 4) { activeRequests++; return; }
+  await new Promise<void>(resolve => waiting.push(resolve));
+}
+
+function release() {
+  const next = waiting.shift();
+  if (next) next();
+  else activeRequests--;
+}
 
 function load(trackId: string) {
   const existing = pending.get(trackId);
   if (existing) return existing;
   const request = (async () => {
+    await acquire();
     try {
       const value = await invoke<string | null>('get_track_artwork', { trackId });
       const result = typeof value === 'string' && value.startsWith('data:image/') ? value : null;
@@ -17,6 +31,7 @@ function load(trackId: string) {
       artwork.set(trackId, null);
       return null;
     } finally {
+      release();
       pending.delete(trackId);
     }
   })();

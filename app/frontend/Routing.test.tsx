@@ -23,9 +23,8 @@ async function mount() {
   const view = render(<Routing />); await screen.findByRole('button', { name: 'a-eq output audio' }); return view;
 }
 const canvas = () => document.querySelector('.routing-canvas')!;
-function create(kind = 'Compressor', wire = false) {
-  fireEvent.doubleClick(wire ? document.querySelector('[data-wire="0"]')! : canvas(), { clientX: 480, clientY: 600 });
-  fireEvent.click(screen.getByRole('menuitem', { name: kind }));
+function create(kind = 'Compressor', _wire = false) {
+  fireEvent.doubleClick(screen.getByRole('button', {name:kind}));
 }
 async function applied() {
   fireEvent.click(screen.getByRole('button', { name: 'Apply routing' }));
@@ -52,18 +51,18 @@ test('dragging onto an input branches without applying audio early', async () =>
   expect(invoke).not.toHaveBeenCalledWith('set_routing_graph', expect.anything());
   expect((await applied()).wires).toEqual([...graph.wires, { ...graph.wires[0], to: 'b-fader', gain: 1 }]);
 });
-test('double-click cable menu inserts an effect and preserves the wire gain', async () => {
+test('palette adds an effect without changing existing connections', async () => {
   await mount(); create('Compressor', true);
   expect(screen.getByRole('button', { name: /input sidechain/ })).toBeTruthy();
   expect(screen.getByRole('button', { name: /output dry/ })).toBeTruthy();
   const value = await applied();
-  expect(value.nodes.at(-1)).toMatchObject({ kind: 'compressor', x: 500, y: 500 });
-  expect(value.wires).toEqual([expect.objectContaining({ from: 'a-eq', to: value.nodes.at(-1)!.id, gain: .6 }), expect.objectContaining({ to: 'a-fader', gain: 1 })]);
+  expect(value.nodes.at(-1)).toMatchObject({ kind: 'compressor', x: 727.5, y: 440 });
+  expect(value.wires).toEqual(graph.wires);
   expect(screen.queryByRole('combobox', { name: 'Insert into wire' })).toBeNull();
 });
 test('empty-space categories create an instrument without inserting a wire', async () => {
   await mount(); create('Sine instrument');
-  const value = await applied(); expect(value.nodes.at(-1)).toMatchObject({ kind: 'oscillator', x: 500, y: 500 }); expect(value.wires).toEqual(graph.wires);
+  const value = await applied(); expect(value.nodes.at(-1)).toMatchObject({ kind: 'oscillator', x: 727.5, y: 440 }); expect(value.wires).toEqual(graph.wires);
 });
 test('draft, selection and undo history survive navigating away and back', async () => {
   const view = await mount(); create();
@@ -84,12 +83,12 @@ test('delete selected node removes its connections; undo and redo restore whole 
   expect(node).toBeTruthy(); fireEvent.keyDown(window, { key: 'Backspace' });
   expect(screen.queryByRole('button', { name: /input sidechain/ })).toBeNull();
   fireEvent.keyDown(window, { key: 'z', metaKey: true });
-  expect(document.querySelectorAll('[data-wire]')).toHaveLength(2);
+  expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
   expect(screen.getByRole('button', { name: /input sidechain/ })).toBeTruthy();
   fireEvent.keyDown(window, { key: 'z', metaKey: true, shiftKey: true });
-  expect(document.querySelectorAll('[data-wire]')).toHaveLength(0);
+  expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
 });
-test('selected wires delete, empty-space deselects, and built-in nodes can be deleted', async () => {
+test('selected wires delete and empty-space deselects without removing default nodes', async () => {
   await mount();
   fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!, { button: 0 });
   fireEvent.pointerDown(canvas(), { button: 0 });
@@ -98,7 +97,8 @@ test('selected wires delete, empty-space deselects, and built-in nodes can be de
   fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!, { button: 0 });
   fireEvent.keyDown(window, { key: 'Delete' }); expect(document.querySelector('[data-wire="0"]')).toBeNull();
   fireEvent.pointerDown(document.querySelector('[data-node-id="a-eq"]')!, { button: 0 });
-  fireEvent.keyDown(window, { key: 'Backspace' }); expect(screen.queryByRole('button', { name: 'a-eq output audio' })).toBeNull();
+  fireEvent.keyDown(window, { key: 'Backspace' }); expect(screen.getByRole('button', { name: 'a-eq output audio' })).toBeTruthy();
+  expect((screen.getByRole('button', {name:'Remove node'}) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.keyDown(window, { key: 'z', metaKey: true }); expect(screen.getByRole('button', { name: 'a-eq output audio' })).toBeTruthy();
 });
 test('dragging a node is one undoable edit and release preserves selection', async () => {
@@ -216,27 +216,14 @@ test('live editor updates add independent pins and their default wires while pre
   expect(screen.queryByRole('button', { name: 'patch-0 input first' })).toBeNull();
   expect(screen.getByRole('button', { name: 'patch-0 input second' })).toBeTruthy();
 });
-test('deleting a routing patch confirms removal of the session instance instead of leaving a silent panel entry', async () => {
-  const patch = { id: 'patch-0', kind: 'patch' as const, deck: null, label: 'Patch', x: 800, y: 500, value: 1, patch_inputs: [] };
-  let removed = false;
-  invoke.mockImplementation(command => {
-    if (command === 'patches_state') return Promise.resolve([{ slot: 0, state: { generation: '7', record: {} } }]);
-    if (command === 'patches_remove') { removed = true; return Promise.resolve(); }
-    return Promise.resolve(removed ? graph : { nodes: [...graph.nodes, patch], wires: graph.wires });
-  });
-  render(<Routing />);
-  await screen.findByRole('button', { name: 'patch-0 output audio' });
-  fireEvent.pointerDown(document.querySelector('[data-node-id="patch-0"]')!, { button: 0 });
-  fireEvent.keyDown(window, { key: 'Delete' });
-  await screen.findByRole('dialog', { name: 'Remove patch?' });
+test('deleting a patch placement preserves its session instance and supports undo', async () => {
+  const patch = {id:'patch-0',kind:'patch' as const,deck:null,label:'Patch',x:800,y:500,value:1,patch_inputs:[]};
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_routing_graph' ? {nodes:[...graph.nodes,patch],wires:graph.wires} : undefined));
+  render(<Routing />); await screen.findByRole('button',{name:'patch-0 output audio'});
+  fireEvent.pointerDown(document.querySelector('[data-node-id="patch-0"]')!,{button:0}); fireEvent.keyDown(window,{key:'Delete'});
+  expect(screen.queryByRole('button',{name:'patch-0 output audio'})).toBeNull();
   expect(invoke.mock.calls.some(([command]) => command === 'patches_remove')).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  expect(screen.getByRole('button', { name: 'patch-0 output audio' })).toBeTruthy();
-  fireEvent.keyDown(window, { key: 'Delete' });
-  fireEvent.click(screen.getByRole('button', { name: 'Remove patch' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_remove', { slot: 0, generation: '7' }));
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'patch-0 output audio' })).toBeNull());
-  expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.keyDown(window,{key:'z',metaKey:true}); expect(screen.getByRole('button',{name:'patch-0 output audio'})).toBeTruthy();
 });
 
 test('selected cable exposes both endpoints and reconnecting its target preserves gain as one undoable edit', async () => {
@@ -298,4 +285,39 @@ test('reconnecting onto an existing connection rejects the duplicate and keeps t
   fireEvent.pointerUp(canvas(), { pointerId: 1 });
   expect(screen.getByRole('alert').textContent).toContain('This connection already exists');
   expect((await applied()).wires).toEqual([...graph.wires, { ...graph.wires[0], to: 'b-fader', gain: 1 }]);
+});
+test('loads a library patch into the shared session and places its audio node without losing draft edits', async () => {
+  let live = structuredClone(graph);
+  const patch = {id:'patch-2',kind:'patch' as const,deck:null,label:'Saved synth',x:800,y:500,value:1,patch_inputs:[]};
+  invoke.mockImplementation((command, args) => {
+    if (command === 'teia_library') return Promise.resolve({files:['Saved synth.json']});
+    if (command === 'patches_state') return Promise.resolve([]);
+    if (command === 'teia_read') return Promise.resolve({document:{name:'Synth',nodes:[{id:'out',type:'AudioOut',params:{level:1},position:{x:0,y:0}}],links:[]},hash:'hash'});
+    if (command === 'patches_add') {live={...live,nodes:[...live.nodes,patch]}; return Promise.resolve({slot:2,state:{record:{name:args.name}}});}
+    return Promise.resolve(command === 'get_routing_graph' ? structuredClone(live) : undefined);
+  });
+  // Use a valid prepared patch through the same factory as Decks.
+  const {gainPatch} = await import('./teiaModel');
+  const implementation = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command,args) => command === 'teia_read' ? Promise.resolve({document:gainPatch,hash:'hash'}) : implementation(command,args));
+  render(<Routing />); await screen.findByRole('button',{name:'a-eq output audio'});
+  create('Gain'); fireEvent.doubleClick(await screen.findByRole('button',{name:'Saved synth'}));
+  await screen.findByRole('button',{name:'patch-2 output audio'});
+  expect(document.querySelector('[data-node-id="patch-2"]')?.getAttribute('style')).toContain('left: 727.5px');
+  expect(screen.getByRole('spinbutton',{name:/value$/})).toBeTruthy();
+  expect(invoke).toHaveBeenCalledWith('patches_add',expect.objectContaining({name:'Saved synth.json',savedHash:'hash'}));
+  expect(screen.queryByRole('menu')).toBeNull(); expect(document.querySelector('.routing-inspector')).toBeNull();
+});
+
+test('default routing nodes stay off the palette and Delete preserves their cables', async () => {
+  await mount();
+  const palette = screen.getByRole('complementary',{name:'Node palette'});
+  expect(palette.textContent).not.toMatch(/Deck A|Deck B|Mix & outputs|PLAYER|FADER/);
+  expect(palette.textContent).toContain('Compressor');
+  fireEvent.pointerDown(document.querySelector('[data-node-id="a-fader"]')!,{button:0});
+  fireEvent.keyDown(window,{key:'Delete'});
+  fireEvent.click(screen.getByRole('button',{name:'Remove node'}));
+  expect(document.querySelector('[data-node-id="a-fader"]')).toBeTruthy();
+  expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
+  expect((screen.getByRole('button',{name:'Undo'}) as HTMLButtonElement).disabled).toBe(true);
 });

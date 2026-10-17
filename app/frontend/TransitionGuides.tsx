@@ -16,7 +16,7 @@ export function transitionMarkers(plan: TransitionPlan | null | undefined, deck:
   return [make(0, 'start', 'AUTO START', EDGE, 0),
     ...(plan.style === 'crossfade'
       ? [make(1, 'out', 'OUT FADE', FADE, 1), make(2, 'in', 'IN FULL', FADE, 3)]
-      : [make(3, 'bass', plan.style === 'smart' ? 'SMART BASS' : 'BASS SWAP', BASS, 2)]),
+      : [make(3, 'bass', 'BASS SWAP', BASS, 2)]),
     make(4, 'end', 'AUTO END', EDGE, 4)];
 }
 function stamp(seconds: number) {

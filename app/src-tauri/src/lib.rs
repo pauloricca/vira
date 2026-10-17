@@ -1,19 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
+mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
 mod cue_output;
+mod deck_notes;
 pub mod decks;
 mod dsp;
 mod metrics;
+mod midi_live;
 mod mixer;
 pub mod native_check;
 pub mod paths;
+mod pattern_routing;
+pub mod patterns;
 pub mod routing;
 pub mod runtime;
 mod scheduling;
 mod smart;
 pub mod source;
+mod tags;
 pub mod teia;
 pub mod teia_audio;
 mod teia_bridge;
@@ -200,13 +206,23 @@ fn service_response(
     post: bool,
 ) -> Result<reqwest::blocking::Response, String> {
     // Called on an ordinary background thread, never the webview or audio callback.
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Cannot create preparation client: {e}"))?;
+    // Share the runtime and connection pool across library/artwork requests. A
+    // client per cover creates a burst of runtimes and descriptors on macOS.
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    let client = CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(4)
+                .build()
+                .map_err(|e| format!("Cannot create preparation client: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     let url = format!("{SERVICE_URL}{endpoint}");
     let mut request = if post {
         client.post(url)
@@ -288,6 +304,38 @@ pub fn track_artwork(track_id: &str) -> Result<Option<String>, String> {
 
 #[cfg(target_os = "macos")]
 pub fn run() {
+    #[tauri::command]
+    async fn get_tags() -> Result<Vec<tags::Tag>, String> {
+        tauri::async_runtime::spawn_blocking(tags::get)
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn update_tag(
+        action: String,
+        name: String,
+        track_id: Option<String>,
+    ) -> Result<Vec<tags::Tag>, String> {
+        tauri::async_runtime::spawn_blocking(move || {
+            tags::update(&action, &name, track_id.as_deref())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    #[tauri::command]
+    async fn update_tag_tracks(
+        action: String,
+        name: String,
+        track_ids: Vec<String>,
+    ) -> Result<Vec<tags::Tag>, String> {
+        tauri::async_runtime::spawn_blocking(move || {
+            tags::update_tracks(&action, &name, &track_ids)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     #[tauri::command]
     async fn refresh_library() -> Result<Library, String> {
         tauri::async_runtime::spawn_blocking(scan_library)
@@ -602,9 +650,58 @@ pub fn run() {
             paths::select(&kind, std::path::Path::new(path)).map(Some).map_err(|e| format!("{e:#}"))
         }).await.map_err(|e| e.to_string())?
     }
+    #[tauri::command]
+    fn patterns_state(window: tauri::WebviewWindow) -> Result<serde_json::Value, String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        Ok(patterns::state())
+    }
+    #[tauri::command]
+    async fn patterns_save(
+        window: tauri::WebviewWindow,
+        bank: patterns::Bank,
+    ) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            patterns::save(bank).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    fn patterns_transport(
+        window: tauri::WebviewWindow,
+        id: String,
+        play: bool,
+    ) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        patterns::transport(id, play).map_err(|e| e.to_string())
+    }
+    #[tauri::command]
+    fn patterns_deck_keys(
+        window: tauri::WebviewWindow,
+        keys: [Option<pattern_routing::Harmony>; 2],
+    ) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        patterns::deck_keys(keys).map_err(|e| e.to_string())
+    }
     tauri::Builder::default()
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
+            patterns_deck_keys,
+            patterns_state,
+            patterns_save,
+            patterns_transport,
+            get_tags,
+            update_tag,
+            update_tag_tracks,
             get_path_settings,
             remove_music_folder,
             choose_library_folder,
@@ -649,8 +746,13 @@ pub fn run() {
             teia_window::teia_midi_configure,
             teia_window::teia_load_draft
         ])
-        .run(tauri::generate_context!())
-        .expect("Unable to start VIRA");
+        .build(tauri::generate_context!())
+        .expect("Unable to start VIRA")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                patterns::shutdown();
+            }
+        });
 }
 
 #[cfg(test)]

@@ -241,6 +241,10 @@ impl Host {
             crate::teia_midi::start(self.midi.clone(), self.root.join(file));
         }
     }
+    pub fn instrument_info(&self) -> Value {
+        let state = self.state.lock().unwrap();
+        json!({"name":state.record.as_ref().map(|r|&r.name),"loaded":state.record.is_some(),"running":self.telemetry.alive.load(SeqCst)})
+    }
     pub fn default_root() -> PathBuf {
         crate::paths::active().patches.clone()
     }
