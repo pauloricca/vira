@@ -1,8 +1,10 @@
+import { Instruments } from './Instruments';
 import { AuditionControls, PlayIcon, StopIcon, useAudition } from './Audition';
 import { useAutopilot } from './Autopilot';
 import { TagsSidebar, TrackTags, useTags, TRACKS_MIME } from './Tags';
 import { FolderSettings } from './FolderSettings';
 import { CollectionSelector } from './CollectionSelector';
+import { TrackActions } from './Dropdown';
 import { useTempoDrag } from './tempoDrag';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -89,6 +91,11 @@ function isKeySelector(target: EventTarget | null) {
 function isTextInput(target: EventTarget | null) {
   return target instanceof HTMLInputElement && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'color'].includes(target.type)
     || target instanceof HTMLTextAreaElement || target instanceof HTMLElement && target.isContentEditable;
+}
+
+function isTempoTap(event: KeyboardEvent) {
+  return event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey &&
+    (event.key === ' ' || event.code === 'Space');
 }
 
 export function App() {
@@ -193,8 +200,15 @@ export function App() {
   useEffect(() => { if (decks.audio.running) void decks.control(0, 'sync_quantum', syncQuantum); }, [decks.audio.running]);
   const [routingVisited, setRoutingVisited] = useState(false);
   const [patternsVisited, setPatternsVisited] = useState(false);
-  const [view, setView] = useState<'decks' | 'settings' | 'shortcuts' | 'routing' | 'patterns'>('decks');
+  const [view, setView] = useState<'decks' | 'settings' | 'shortcuts' | 'routing' | 'patterns' | 'instruments'>('decks');
   const spaceHeld = useRef(false);
+  const tempoTaps = useRef<{ deck: number; generation: number; times: number[] } | null>(null);
+  const [tapFeedback, setTapFeedback] = useState<{ message: string } | null>(null);
+  useEffect(() => {
+    if (!tapFeedback) return;
+    const timer = setTimeout(() => setTapFeedback(null), 3000);
+    return () => clearTimeout(timer);
+  }, [tapFeedback]);
   const lastPlayed = useRef([0, 0]);
   const wasPlaying = useRef([false, false]);
   const playOrder = useRef(0);
@@ -428,7 +442,7 @@ export function App() {
   useEffect(() => {
     if (view !== 'decks') return;
     function onKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || isKeySelector(event.target)) return;
+      if (event.defaultPrevented || event.isComposing || isKeySelector(event.target) && !isTempoTap(event)) return;
       if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'n') {
         if (isTextInput(event.target)) return;
         event.preventDefault();
@@ -475,6 +489,30 @@ export function App() {
         }
         return;
       }
+      if (isTempoTap(event)) {
+        event.preventDefault();
+        spaceHeld.current = false;
+        if (event.repeat) return;
+        const target = decks.audio.decks[activeDeck];
+        if (!decks.audio.running || !target?.track || !target.grid || target.loading || decks.loading[activeDeck]) {
+          tempoTaps.current = null;
+          setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: ${!decks.audio.running ? 'start audio first' : !target?.track ? 'load a track first' : target.loading || decks.loading[activeDeck] ? 'track is loading' : 'timing grid required'}` });
+          return;
+        }
+        const now = performance.now();
+        const previous = tempoTaps.current;
+        const times = previous?.deck === activeDeck && previous.generation === target.generation &&
+          now - previous.times.at(-1)! <= 4000
+          ? [...previous.times.slice(-8), now] : [now];
+        tempoTaps.current = { deck: activeDeck, generation: target.generation, times };
+        setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: 1 · keep tapping` });
+        if (times.length > 1) {
+          const bpm = 60000 * (times.length - 1) / (now - times[0]);
+          setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: ${bpm >= 15 && bpm <= 600 ? `${bpm.toFixed(1)} BPM${target.synced ? ' · master' : ''}` : 'tap between 15–600 BPM'}` });
+          if (Number.isFinite(bpm) && bpm >= 15 && bpm <= 600) void decks.control(activeDeck, target.synced ? 'master_tempo' : 'tempo', bpm);
+        }
+        return;
+      }
       if (event.key === ' ' || event.code === 'Space') {
         if (!isTextInput(event.target)) event.preventDefault();
         spaceHeld.current = !isTextInput(event.target);
@@ -515,11 +553,15 @@ export function App() {
     function onKeyUp(event: KeyboardEvent) {
       if (event.key === ' ' || event.code === 'Space') spaceHeld.current = false;
     }
-    function clearSpaceHeld() { spaceHeld.current = false; }
+    function clearSpaceHeld() { spaceHeld.current = false; tempoTaps.current = null; }
+    // Capture before focused inputs and dropdowns can stop keyboard propagation.
+    function onTapCapture(event: KeyboardEvent) { if (isTempoTap(event)) onKeyDown(event); }
+    window.addEventListener('keydown', onTapCapture, true);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearSpaceHeld);
     return () => {
+      window.removeEventListener('keydown', onTapCapture, true);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearSpaceHeld);
@@ -527,7 +569,8 @@ export function App() {
   }, [view, visibleTracks, selectedTrackId, decks.audio, decks.loading, preserveLock, resetMixer, activeDeck, library, approving, selectedTrackIds, autopilot.enabled, nextTracks]);
   return <main className={view === 'decks' && libraryExpanded ? 'library-expanded' : undefined} onFocusCapture={event => { if (!isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }} onClickCapture={event => { if (event.target instanceof HTMLElement && !isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }}>
     <header className="app-header"><h1><img className="app-wordmark" src="/vira-wordmark.svg" alt="VIRA" /></h1>
-      <nav aria-label="Workspace"><button className={view === 'decks' ? 'active' : undefined} aria-current={view === 'decks' ? 'page' : undefined} onClick={() => setView('decks')}>DECKS</button><button className={view === 'routing' ? 'active' : undefined} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => { setRoutingVisited(true); setView('routing'); }}>ROUTING</button><button className={view === 'patterns' ? 'active' : undefined} aria-current={view === 'patterns' ? 'page' : undefined} onClick={() => { setPatternsVisited(true); setView('patterns'); }}>PATTERNS</button><button className={view === 'settings' ? 'active' : undefined} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => { setView('settings'); }}>SETTINGS</button><button className={view === 'shortcuts' ? 'active' : undefined} aria-current={view === 'shortcuts' ? 'page' : undefined} onClick={() => { setView('shortcuts'); }}>SHORTCUTS</button></nav>
+      <nav aria-label="Workspace"><button className={view === 'decks' ? 'active' : undefined} aria-current={view === 'decks' ? 'page' : undefined} onClick={() => setView('decks')}>DECKS</button><button className={view === 'routing' ? 'active' : undefined} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => { setRoutingVisited(true); setView('routing'); }}>ROUTING</button><button className={view === 'patterns' ? 'active' : undefined} aria-current={view === 'patterns' ? 'page' : undefined} onClick={() => { setPatternsVisited(true); setView('patterns'); }}>PATTERNS</button><button className={view === 'instruments' ? 'active' : undefined} aria-current={view === 'instruments' ? 'page' : undefined} onClick={() => setView('instruments')}>INSTRUMENTS</button><button className={view === 'settings' ? 'active' : undefined} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => { setView('settings'); }}>SETTINGS</button><button className={view === 'shortcuts' ? 'active' : undefined} aria-current={view === 'shortcuts' ? 'page' : undefined} onClick={() => { setView('shortcuts'); }}>SHORTCUTS</button></nav>
+      {view === 'decks' && tapFeedback && <span className="tap-tempo-feedback" role="status" aria-label="Tap tempo">{tapFeedback.message}</span>}
       <div className="master-tempo">
         <button className="master-drift deck-0" aria-label="Drift master tempo to deck A; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[0].grid || decks.audio.decks[0].grid.bpm.toFixed(1) === (decks.audio.master_bpm ?? 120).toFixed(1)} onClick={event => driftOrSet(0, event.detail)} onDoubleClick={() => setFromDeck(0)}>A {decks.audio.decks[0].grid?.bpm.toFixed(1) ?? '—'} ←</button>
         <div className="master-tempo-value">{tempoEntry === null ? <output className="master-bpm-edit" title="Click to enter target BPM" onClick={() => setTempoEntry(String(decks.audio.master_bpm ?? 120))} aria-label="Master BPM">{decks.audio.master_bpm?.toFixed(1) ?? '—'}</output> : <input className="master-bpm-input" aria-label="Target master BPM" type="text" inputMode="decimal" value={tempoEntry} ref={element => { if (element && document.activeElement !== element) { element.focus(); element.select(); } }} onChange={event => setTempoEntry(event.target.value)} onBlur={() => setTempoEntry(null)} onKeyDown={event => {
@@ -556,7 +599,7 @@ export function App() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={libraryExpanded ? 'M3 9h6V3m6 0v6h6M3 15h6v6m6 0v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></svg>
       </button></div></div>
       {audition.error && <p className="error" role="alert">{audition.error}</p>}
-      <div className="library-filters"><CollectionSelector collections={collections} value={activeCollection} select={path => { setCollection(path); setSelectedTrackId(null); }} /><label className="library-search"><span aria-hidden="true">⌕</span><input ref={searchInput} type="search" aria-label="Search music library" placeholder="Search tracks, artists…" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
+      <div className="library-filters"><CollectionSelector collections={collections} value={activeCollection} select={path => { setCollection(path); setSelectedTrackId(null); }} /><label className="library-search"><span aria-hidden="true">⌕</span><input ref={searchInput} type="search" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} aria-label="Search music library" placeholder="Search tracks, artists…" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
       {(error || pollError) && <div className="error" role="alert"><strong>Library unavailable</strong><p>{error || pollError}</p>
         {library && <p>The table shows the last successful scan; it may be out of date.</p>}</div>}
       <div className="library-content"><TagsSidebar state={tags} tracks={collectionTracks} tagging={tagging} selectedIds={visibleTracks.filter(track => selectedTrackIds.has(track.id)).map(track => track.id)} /><div className="library-track-list"><div className="table-wrap"><table className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" />{nextTracks.length > 0 && <col className="next-col" />}{sessionActive && <col className="played-col" />}<col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
@@ -589,11 +632,11 @@ export function App() {
         <td><span className={`status ${track.status} ${track.analysis.state}`}>{track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable'}</span>
           {(track.error || (track.analysis.state !== 'stale' && track.analysis.error)) && <small className="row-error">{track.error || track.analysis.error}</small>}
           {rowErrors[track.id] && <small className="row-error" role="alert">{rowErrors[track.id]}</small>}</td>
-        <td><details className="row-actions" onClick={event => { if (event.target instanceof HTMLButtonElement) event.currentTarget.removeAttribute('open'); }}><summary aria-label={`Actions for ${track.title}`}>•••</summary><div className="row-action-buttons"><button onClick={() => void analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)}
+        <td><TrackActions title={track.title}><div className="row-action-buttons"><button onClick={() => void analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)}
           aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
           {track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : ['queued', 'analysing'].includes(track.analysis.state) ? labels[track.analysis.state] : 'Reanalyse'}
-        </button><div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</button>
-          <button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></details></td>
+        </button>{track.analysis.state !== 'approved' && <button onClick={() => void approve(track.id)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || approving.has(track.id) || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state)} aria-label={`Approve ${track.title}`}>{approving.has(track.id) ? 'Approving…' : 'Approve'}</button>}<div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</button>
+          <button disabled={track.status !== 'ready' || !decks.audio.running} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></TrackActions></td>
       </tr>})}</tbody></table></div>
       {!busy && !error && !pollError && library && collectionTracks.length === 0 && <p className="empty">{collections.length ? 'No files in this collection. Add MP3 or PCM WAV files, then Refresh.' : 'Add a music folder in Settings to load a collection.'}</p>}
       {library && collectionTracks.length > 0 && visibleTracks?.length === 0 && <p className="empty">No tracks match your search or selected tags.</p>}
@@ -601,7 +644,7 @@ export function App() {
       <footer role="status">{busy ? 'Reading file metadata…' : library ? `${collectionTracks.length} files · ${collectionTracks.filter(t => t.status === 'ready').length} readable` : 'No scan available'}
         <span>*BPM uses saved timing corrections when available; otherwise BPM and key are automatic draft estimates.</span></footer>
     </section><Patches /></div>
-    </> : view === 'routing' || view === 'patterns' ? null : view === 'shortcuts' ? <Shortcuts /> : <section className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><h2>Settings</h2><p>Workspace controls and system status</p></div><div className="settings-grid">
+    </> : view === 'instruments' ? <Instruments /> : view === 'routing' || view === 'patterns' ? null : view === 'shortcuts' ? <Shortcuts /> : <section className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><h2>Settings</h2><p>Workspace controls and system status</p></div><div className="settings-grid">
       <Audio audio={decks.audio} />
       <section className="settings-card"><h3>Automatic transitions</h3><div className="settings-row"><div><strong>Transition mode</strong><p>Crossfade brings the incoming track up over 0–80% of the transition and fades the outgoing track down over 20–100%. Bass swap holds the outgoing level while bringing in the incoming track with bass cut, gradually cuts the outgoing high EQ as the incoming fader rises, swaps bass just before the halfway beat, then fades out the outgoing track. Smart uses a clear bass return on an incoming bar boundary instead of the midpoint, otherwise it follows Bass swap exactly.</p></div><select aria-label="Automatic transition mode" value={autoStyle} onChange={event => { setAutoStyle(event.target.value); localStorage.setItem('vira.auto-style', event.target.value); }}><option value="crossfade">Crossfade</option><option value="bass-swap">Bass swap</option><option value="smart">Smart</option></select></div><div className="settings-row"><div><strong>Overlap</strong><p>AUTO NOW uses the next matching phrase position on the beat grids. AUTO END uses the last matching phrase with room for this overlap, ignoring partial bars or tails at the file end. The incoming cue is preserved and a shorter overlap is used if needed. Library Play All overlaps the final bars. No overlap hands off at the end.</p></div><select aria-label="Automatic transition overlap" value={autoBars} onChange={event => { setAutoBars(Number(event.target.value)); localStorage.setItem('vira.auto-bars', event.target.value); }}>{[0, 1, 2, 4, 8, 16, 32].map(value => <option key={value} value={value}>{value === 0 ? 'No overlap' : `${value} ${value === 1 ? 'bar' : 'bars'}`}</option>)}</select></div><div className="settings-row"><div><strong>Fast transition overlap</strong><p>Double-click AUTO NOW or AUTO END to use this overlap. The selected button blinks faster. Single-click the blinking button to cancel.</p></div><select aria-label="Fast transition overlap" value={autoFastBars} onChange={event => { setAutoFastBars(Number(event.target.value)); localStorage.setItem('vira.auto-fast-bars', event.target.value); }}>{[0, 1, 2, 4, 8, 16, 32].map(value => <option key={value} value={value}>{value === 0 ? 'No overlap' : `${value} ${value === 1 ? 'bar' : 'bars'}`}</option>)}</select></div><div className="settings-row"><div><strong>Master BPM during transition</strong><p>Both decks lock to master BPM when engaged. Tempo changes span the crossfade. Changes here apply to the next transition.</p></div><select aria-label="Automatic transition tempo" value={autoTempo ? 'change' : 'keep'} onChange={event => { const enabled = event.target.value === 'change'; setAutoTempo(enabled); localStorage.setItem('vira.auto-tempo', String(enabled)); }}><option value="change">Move to incoming track BPM</option><option value="keep">Keep current master BPM</option></select></div></section>
       <section className="settings-card"><h3>Autopilot</h3><p className="settings-hint">Chooses unplayed tracks from the current collection and selected tags, ignoring search. Equal scores are chosen at random. Start playback to begin automatic transitions; both decks need timing grids.</p>{([['bpm', 'BPM proximity', 'Prefer tempos within 10% of the playing track’s original BPM.'], ['tags', 'Shared tags', 'Prefer tracks sharing more of the playing track’s tags.'], ['harmonic', 'Harmonic compatibility', 'Prefer the same key, neighbours on the circle of fifths, or the relative major/minor.'], ['direction', 'BPM direction', 'Prefer continuing the last transition’s rise or fall in original BPM. No preference before the first transition or after equal BPM.'], ['randomness', 'Randomness', 'Add a fresh random score to each candidate when choosing the next track. Zero disables this factor.']] as const).map(([key, label, description]) => <div className="settings-row" key={key}><div><strong>{label}</strong><p>{description}</p></div><label className="autopilot-weight"><input type="range" min="0" max="100" step="1" aria-label={`Autopilot ${label.toLowerCase()} weight`} value={autopilot.weights[key]} onChange={event => autopilot.changeWeight(key, Number(event.target.value))} /><output>{autopilot.weights[key]}</output></label></div>)}</section>

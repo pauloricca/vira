@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { folderName } from './FolderSettings';
+import { useOutsideDismiss } from './Dropdown';
 
 export function CollectionSelector({ collections, value, select, label = 'Music collection', menuLabel = 'Music collections', optionLabel = folderName }: {
   collections: string[]; value: string; select: (path: string) => void; label?: string; menuLabel?: string; optionLabel?: (value: string) => string;
@@ -12,14 +13,10 @@ export function CollectionSelector({ collections, value, select, label = 'Music 
   const trigger = useRef<HTMLButtonElement>(null);
   const typed = useRef({ text: '', time: 0 });
   useEffect(() => { setOpen(false); }, [value, collections.join('\n')]);
+  useOutsideDismiss(open, () => setOpen(false), container, menu);
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent) => {
-      if (!container.current?.contains(event.target as Node) && !menu.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', outside);
     menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
-    return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   return <div className="collection-dropdown" ref={container} onBlur={event => {
     if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && !menu.current?.contains(event.relatedTarget)) setOpen(false);

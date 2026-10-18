@@ -1,3 +1,4 @@
+import { useInstruments } from './instrumentModel';
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { fitLength, keys, newPattern, pitch, pitchLabel, scales, snap, uid, type Bank, type Pattern, type PatternNote } from './patternModel';
@@ -8,6 +9,7 @@ type Snapshot = { activeDeck?: number; deviceNotes?:Record<string,number>; input
 const rows = Array.from({ length: 35 }, (_, i) => 20 - i); // degrees from -2 to +2 octaves
 const rowDegree = (row: number) => ({ degree: ((row % 7) + 7) % 7 + 1, octave: Math.floor(row / 7) });
 export function Patterns({ active }: { active: boolean }) {
+  const namedInstruments = useInstruments(active);
   const [bank, setBank] = useState<Bank | null>(null);
   const current = useRef<Bank | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -44,11 +46,15 @@ export function Patterns({ active }: { active: boolean }) {
   const rootLink = bank && rawPattern ? linkedHarmony(bank, rawPattern.id, snapshot?.deckKeys ?? [null, null], 'root', snapshot?.liveRoots, snapshot?.activeDeck ?? 0) : null;
   const scaleLink = bank && rawPattern ? linkedHarmony(bank, rawPattern.id, snapshot?.deckKeys ?? [null, null], 'scale', snapshot?.liveRoots, snapshot?.activeDeck ?? 0) : null;
   const pattern = rawPattern ? { ...rawPattern, key: rootLink?.harmony?.key ?? rawPattern.key, scale: scaleLink?.harmony?.scale ?? rawPattern.scale } : rawPattern;
-  const targets = bank && pattern ? patternTargets(bank, pattern.id) : [];
+  const targets = (bank && pattern ? patternTargets(bank, pattern.id) : []).map(node => {
+    if (!node.id.startsWith('instrument-')) return node;
+    const instrument = namedInstruments.find(i => node.id === `instrument-${i.id}`);
+    return {...node, destination:{kind:'midi' as const, output:instrument?.midi_output?.device ?? 0}};
+  });
   const midiTargets = targets.filter(n => n.destination?.kind === 'midi');
   const outputIds = midiTargets.map(n => (n.destination as { output: number }).output);
   const outputId = outputIds.includes(compensationOutput) ? compensationOutput : outputIds[0] ?? 0;
-  const instrumentLabel = (n: typeof targets[number]) => n.destination?.kind === 'midi' ? snapshot?.outputs.find(o => o.id === (n.destination as { output: number }).output)?.name ?? n.label : n.destination?.kind === 'teia' ? snapshot?.instruments?.find(i => i.slot === (n.destination as { slot: number }).slot)?.name?.replace(/\.json$/, '') ?? n.label : n.label;
+  const instrumentLabel = (n: typeof targets[number]) => n.id.startsWith('instrument-') ? namedInstruments.find(i => n.id === `instrument-${i.id}`)?.name ?? 'Missing instrument' : n.destination?.kind === 'midi' ? snapshot?.outputs.find(o => o.id === (n.destination as { output: number }).output)?.name ?? n.label : n.destination?.kind === 'teia' ? snapshot?.instruments?.find(i => i.slot === (n.destination as { slot: number }).slot)?.name?.replace(/\.json$/, '') ?? n.label : n.label;
   function update(p: Pattern) {
     const b = current.current; if (!b) return;
     const raw = b.patterns.find(old => old.id === p.id);

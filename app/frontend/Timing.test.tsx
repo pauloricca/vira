@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { TimingEditor, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
+import { TimingEditor, dragGrid, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
 import { RollingWaveforms, type AudioState } from './Decks';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -61,4 +61,29 @@ test('rolling rows share output scale and keep unequal target beat spacing visib
   expect(container.querySelectorAll('.rolling-row canvas')).toHaveLength(2);
   expect(container.querySelectorAll('.rolling-playhead')).toHaveLength(2);
   expect(screen.getByText('Beat grid · 16.00 seconds output window')).toBeTruthy();
+});
+
+test('grid drags shift at every position until a beat is explicitly pinned', () => {
+  const original = { bpm: 120, downbeat_seconds: .25, reviewed: true };
+  for (const origin of [2, 8.25, 9.73]) {
+    const shifted = dragGrid(original, origin, .13, 100);
+    expect(shifted.bpm).toBe(120);
+    expect(shifted.downbeat_seconds).toBeCloseTo(.38);
+    expect(markers(shifted, 8.37, 8.39)[0]).toMatchObject({ bar: 5, beat: 1 });
+  }
+  const anchor = 8.75; // A non-yellow beat remains fixed, with its beat identity.
+  for (const origin of [4.75, 12.75]) {
+    const scaled = dragGrid(original, origin, (origin - anchor) * .5, 100, anchor);
+    expect(scaled.bpm).toBeCloseTo(80);
+    const pinned = markers(scaled, anchor - .001, anchor + .001)[0];
+    expect(pinned.seconds).toBeCloseTo(anchor);
+    expect(pinned.beat).toBe(2);
+  }
+  const crossed = dragGrid(original, 0, -.5, 100);
+  const yellow = markers(crossed, 7.74, 7.76)[0];
+  expect(yellow.beat).toBe(1);
+  expect((yellow.bar - 1) % 4).toBe(0);
+  expect(dragGrid(original, anchor, 1, 100, anchor)).toEqual(original);
+  expect(dragGrid(original, anchor + 1, -2, 100, anchor)).toEqual(original);
+  expect(dragGrid(original, anchor + 1, 20, 100, anchor)).toEqual(original);
 });

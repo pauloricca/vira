@@ -95,5 +95,6 @@ export function TagsSidebar({ state, tracks, tagging = false, selectedIds = [] }
 }
 
 export function TrackTags({ state, track }: { state: TagsState; track: Track }) {
+  if (!state.tags.some(tag => tag.tracks.includes(track.id))) return null;
   return <fieldset className="track-tags" onKeyDown={event => event.stopPropagation()}><legend>Tags</legend>{state.tags.length ? state.tags.map(tag => <label key={tag.name}><input type="checkbox" checked={tag.tracks.includes(track.id)} disabled={state.loading || state.pending} onChange={event => void state.update(event.target.checked ? 'assign' : 'unassign', tag.name, track.id)} />{tag.name}</label>) : null}</fieldset>;
 }

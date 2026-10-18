@@ -1,3 +1,4 @@
+import { useInstruments } from './instrumentModel';
 import { invoke } from '@tauri-apps/api/core';
 import { addSessionPatch, usePatchLibrary } from './patchLibrary';
 import { PatchingPage, PatchingHeading, PatchingNodeHeader, patchPortTop, patchPortPoint, NodePalette, nodePlacement, paletteDrop, paletteDragOver, withoutPatchNode, usePatchingKeys, type PatchPoint } from './Patching';
@@ -8,6 +9,7 @@ type Props = { activeDeck: number; deviceNotes: Record<string,number>; inputs: {
 type CableDrag = { pointer: number; from: string; kind: MusicalWire['kind']; x: number; y: number; reconnect?: { wire: MusicalWire; end: 'source' | 'target' } };
 const portPoint = (n: MusicalNode, output: boolean, kind: string) => patchPortPoint(n, kind === 'scale' || n.kind === 'transformation' && kind === 'midi' || output && n.kind !== 'deck' && kind === 'midi' ? 1 : 0, output);
 export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots, outputs, instruments, deckKeys, active, status, canPlay, onGraph, onCreate, onExpand, onPlay, error }: Props) {
+  const namedInstruments = useInstruments(active);
   const [adding, setAdding] = useState(false);
   const addingRef = useRef(false);
   const {files} = usePatchLibrary(active);
@@ -74,6 +76,13 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
     if (addingRef.current) return;
     addingRef.current = true; setAdding(true);
     try {
+      if (value.startsWith('named:')) {
+        const instrument = namedInstruments.find(i => i.id === value.slice(6));
+        if (!instrument) throw new Error('Instrument no longer exists');
+        const id = `instrument-${instrument.id}`;
+        const node: MusicalNode = {id, kind:'instrument', label:instrument.name, destination:{kind:'midi', output:instrument.midi_output?.device ?? 0}, input:instrument.midi_input?.device ?? 0, channel:instrument.midi_output?.channel ?? null, ...point};
+        edit({...graph, nodes:[...graph.nodes.filter(n => n.id !== id), node]}); setSelection({node:id}); return;
+      }
       if (value === 'new-pattern') { onCreate(point); return; }
       if (value.startsWith('patch:') || value === 'new-patch') {
         const entry = await addSessionPatch(value === 'new-patch' ? undefined : value.slice(6));
@@ -100,6 +109,7 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
     {label:'Transformations', items:[{id:'octaveShift',label:'Octave shift'}, {id:'filter',label:'Filter'}]},
     {label:'Patterns', items:bank.patterns.map(p => ({id:`pattern:${p.id}`, label:p.name}))},
     {label:'Decks', items:[{id:'deck:0',label:'Deck A'}, {id:'deck:1',label:'Deck B'}, {id:'deck:2',label:'Active deck'}]},
+    {label:'Instruments', items:namedInstruments.filter(i => i.midi_input || i.midi_output).map(i => ({id:`named:${i.id}`,label:i.name}))},
     {label:'MIDI destinations', items:outputs.map(o => ({id:`midi:${o.id}`,label:o.name}))},
     {label:'MIDI sources', items:inputs.map(o => ({id:`input:${o.id}`,label:o.name}))},
     {label:'Patches', footer:<button disabled={adding} onClick={() => void addNode('new-patch')}>+ New patch</button>, items:[...new Set([...files, ...instruments.filter(i => i.loaded && i.name).map(i => i.name!)])].map(name => ({id:`patch:${name}`, label:name.replace(/\.json$/, '')}))},
@@ -107,6 +117,7 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
   const selectedWire = selection && 'wire' in selection ? graph.wires.find(w => w.id === selection.wire) : undefined;
   const selectedNode = selection && 'node' in selection ? graph.nodes.find(n => n.id === selection.node) : undefined;
   function nodeTitle(n: MusicalNode) {
+    if (n.id.startsWith('instrument-')) return namedInstruments.find(i => n.id === `instrument-${i.id}`)?.name ?? 'Missing instrument';
     if (n.kind === 'pattern') return bank.patterns.find(p => p.id === n.pattern)?.name ?? n.label;
     if (n.destination?.kind === 'midi') return outputs.find(o => o.id === (n.destination as { output: number }).output)?.name ?? n.label;
     if (n.destination?.kind === 'teia') return instruments.find(i => i.slot === (n.destination as { slot: number }).slot)?.name?.replace(/\.json$/, '') ?? n.label;
@@ -123,7 +134,9 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
         const path = cablePath(portPoint(from, true, w.kind), portPoint(to, false, w.kind));
         return <g key={w.id} className={`${selection && 'wire' in selection && selection.wire === w.id ? 'selected' : ''} music-${w.kind}`}><path className="routing-wire" d={path} /><path className="routing-wire-hit" data-musical-wire={w.id} aria-label={`${w.kind} cable ${nodeTitle(from)} to ${nodeTitle(to)}`} d={path} onPointerDown={e => { e.stopPropagation(); setSelection({ wire: w.id }); }} /></g>;
       })}{drag && (() => { const from = show.nodes.find(n => n.id === drag.from), to = show.nodes.find(n => n.id === drag.reconnect?.wire.to); const source = drag.reconnect?.end === 'source'; return from && (!source || to) && <path className={`routing-wire preview music-wire-${drag.kind}`} data-testid="musical-wire-preview" d={source ? cablePath(drag, portPoint(to!, false, drag.kind)) : cablePath(portPoint(from, true, drag.kind), drag)} />; })()}</svg>
-      {show.nodes.map(n => {
+      {show.nodes.map(raw => {
+        const named = namedInstruments.find(i => raw.id === `instrument-${i.id}`);
+        const n = raw.id.startsWith('instrument-') ? {...raw, destination:{kind:'midi' as const, output:named?.midi_output?.device ?? 0}, input:named?.midi_input?.device ?? 0} : raw;
         const p = bank.patterns.find(p => p.id === n.pattern); const harmony = n.kind === 'deck' ? deckKeys[n.deck === 2 ? activeDeck : n.deck ?? 0] : n.harmony;
         const mapping = p ? { key: linkedHarmony(bank, p.id, deckKeys, 'root', liveRoots, activeDeck)?.harmony?.key ?? p.key, scale: linkedHarmony(bank, p.id, deckKeys, 'scale', liveRoots, activeDeck)?.harmony?.scale ?? p.scale } : null;
         const hasSource = n.destination?.kind === 'midi'
@@ -147,6 +160,6 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
       })}
       {selectedWire && (['source','target'] as const).map(end => { const source = end === 'source'; const node = show.nodes.find(n => n.id === (source ? selectedWire.from : selectedWire.to)); if (!node) return null; const point = drag?.reconnect?.end === end ? drag : portPoint(node, source, selectedWire.kind); return <button key={end} className="routing-wire-endpoint" aria-label={`Reconnect musical cable ${end}`} style={{ left: point.x, top: point.y, pointerEvents: drag ? 'none' : undefined }} onPointerDown={e => begin(e, show.nodes.find(n => n.id === selectedWire.from)!, selectedWire.kind, { wire: selectedWire, end })} />; })}
     </div></div></div></div>
-    {selection && <div className="patching-selection"><span>{selectedNode ? nodeTitle(selectedNode) : selectedWire?.kind}</span>{selectedNode?.destination?.kind === 'midi' && <label>MIDI source<select aria-label="Device MIDI source" value={selectedNode.input ?? ''} onChange={e => edit({...graph, nodes:graph.nodes.map(n => n.id === selectedNode.id ? {...n, input:e.target.value === '' ? null : Number(e.target.value)} : n)})}><option value="">Auto-match device name</option><option value={0}>None</option>{inputs.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>}{selectedNode?.destination?.kind === 'midi' && <label>Channel<select aria-label="Device MIDI channel" value={selectedNode.channel ?? ''} onChange={e => edit({...graph, nodes:graph.nodes.map(n => n.id === selectedNode.id ? {...n, channel:e.target.value === '' ? null : Number(e.target.value)} : n)})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(channel => <option key={channel} value={channel}>{channel}</option>)}</select></label>}<button onClick={remove}>{selectedNode ? 'Remove node' : 'Disconnect'}</button></div>}
+    {selection && <div className="patching-selection"><span>{selectedNode ? nodeTitle(selectedNode) : selectedWire?.kind}</span>{selectedNode?.destination?.kind === 'midi' && !selectedNode.id.startsWith('instrument-') && <label>MIDI source<select aria-label="Device MIDI source" value={selectedNode.input ?? ''} onChange={e => edit({...graph, nodes:graph.nodes.map(n => n.id === selectedNode.id ? {...n, input:e.target.value === '' ? null : Number(e.target.value)} : n)})}><option value="">Auto-match device name</option><option value={0}>None</option>{inputs.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}</select></label>}{selectedNode?.destination?.kind === 'midi' && !selectedNode.id.startsWith('instrument-') && <label>Channel<select aria-label="Device MIDI channel" value={selectedNode.channel ?? ''} onChange={e => edit({...graph, nodes:graph.nodes.map(n => n.id === selectedNode.id ? {...n, channel:e.target.value === '' ? null : Number(e.target.value)} : n)})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(channel => <option key={channel} value={channel}>{channel}</option>)}</select></label>}<button onClick={remove}>{selectedNode ? 'Remove node' : 'Disconnect'}</button></div>}
   </PatchingPage>;
 }

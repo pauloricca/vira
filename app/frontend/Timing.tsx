@@ -3,6 +3,21 @@ import { invoke } from '@tauri-apps/api/core';
 import { waveformColour } from './waveform';
 import type { Prepared } from './Decks';
 export type Grid = { bpm: number; downbeat_seconds: number; reviewed: boolean };
+/** Shift freely, or scale about an explicitly pinned source-time beat. */
+export function dragGrid(grid: Grid, origin: number, delta: number, duration: number, anchor?: number): Grid {
+  if (anchor != null && Math.abs(origin - anchor) < 1 / 48000) return grid;
+  const factor = anchor == null ? 1 : (origin + delta - anchor) / (origin - anchor);
+  const bpm = grid.bpm / factor;
+  if (!Number.isFinite(factor) || factor <= 0 || bpm < 30 || bpm > 300) return grid;
+  let downbeat_seconds = anchor == null ? grid.downbeat_seconds + delta
+    : anchor + (grid.downbeat_seconds - anchor) * factor;
+  // Wrap by whole yellow phrases so beat/bar colour survives crossing source zero.
+  const phraseSeconds = 16 * 60 / bpm;
+  if (downbeat_seconds < 0) downbeat_seconds += Math.ceil(-downbeat_seconds / phraseSeconds) * phraseSeconds;
+  if (downbeat_seconds >= duration) downbeat_seconds -= Math.ceil((downbeat_seconds - duration + 1 / 48000) / phraseSeconds) * phraseSeconds;
+  const result = { bpm, downbeat_seconds, reviewed: false };
+  return validGrid(result, duration) ? result : grid;
+}
 /** Fit a constant beat grid to one or two source-time beat references. */
 export function gridForReferenceBeats(grid: Grid, references: number[], duration: number): Grid {
   if (!references.length || references.length > 2 || references.some(seconds => !Number.isFinite(seconds) || seconds < 0 || seconds >= duration)) throw new Error('Reference beat must lie within the track');

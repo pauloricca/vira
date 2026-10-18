@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { keyChoices, shiftedKey } from './harmonic';
+import { useOutsideDismiss } from './Dropdown';
 
 export function KeySelector({ deck, generation, original, other, semitones, disabled, select }: {
   deck: number; generation: number; original?: string | null; other?: string | null;
@@ -15,12 +16,10 @@ export function KeySelector({ deck, generation, original, other, semitones, disa
   const current = shiftedKey(original, semitones);
   const name = deck === 0 ? 'A' : 'B';
   useEffect(() => { setOpen(false); }, [generation, original, disabled]);
+  useOutsideDismiss(open, () => setOpen(false), container, menu);
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent) => { if (!container.current?.contains(event.target as Node) && !menu.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', outside);
     menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
-    return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   return <div className="deck-key" ref={container} onBlur={event => {
     if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && !menu.current?.contains(event.relatedTarget)) setOpen(false);

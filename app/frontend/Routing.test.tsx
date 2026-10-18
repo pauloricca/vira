@@ -321,3 +321,58 @@ test('default routing nodes stay off the palette and Delete preserves their cabl
   expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
   expect((screen.getByRole('button',{name:'Undo'}) as HTMLButtonElement).disabled).toBe(true);
 });
+
+test('input devices stay in the list until dragged in, then can be routed and removed', async () => {
+  const source = { id: 'input-interface', kind: 'input' as const, deck: null, label: 'USB Interface', x: 40, y: 650, value: 1 };
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_audio_inputs' ? [source] : command === 'get_routing_graph' || command === 'default_routing_graph' ? structuredClone(graph) : undefined));
+  render(<Routing />);
+  await screen.findByRole('button', { name: 'USB Interface' });
+  expect(screen.queryByRole('button', { name: 'input-interface output audio' })).toBeNull();
+  const drop = new MouseEvent('drop', {bubbles:true, clientX:480, clientY:600});
+  Object.defineProperty(drop, 'dataTransfer', {value:{getData:() => source.id}});
+  fireEvent(document.querySelector('.routing-scroll')!, drop);
+  const output = await screen.findByRole('button', { name: 'input-interface output audio' });
+  expect(document.querySelector('[data-node-id="input-interface"]')?.getAttribute('style')).toContain('left: 500px');
+  expect(screen.queryByRole('button', { name: 'USB Interface' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'input-interface input audio' })).toBeNull();
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph', expect.anything());
+  fireEvent.pointerDown(output, { button: 0, pointerId: 1 });
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByRole('button', { name: 'a-eq input audio' }));
+  fireEvent.pointerUp(canvas(), { pointerId: 1 });
+  expect((await applied()).wires).toContainEqual({ from: source.id, to: 'a-eq', output: 'audio', input: 'audio', gain: 1 });
+  fireEvent.pointerDown(document.querySelector('[data-node-id="input-interface"]')!, {button:0});
+  fireEvent.click(screen.getByRole('button', {name:'Remove node'}));
+  expect(screen.queryByRole('button', {name:'input-interface output audio'})).toBeNull();
+  expect(screen.getByRole('button', {name:'USB Interface'})).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', {name:'Undo'}));
+  expect(screen.getByRole('button', {name:'input-interface output audio'})).toBeTruthy();
+});
+
+test('discovering an input updates only the palette and preserves draft undo history', async () => {
+  const view = await mount(); create();
+  const source = { id: 'input-interface', kind: 'input' as const, deck: null, label: 'USB Interface', x: 40, y: 650, value: 1 };
+  const implementation = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command, args) => command === 'get_audio_inputs' ? Promise.resolve([source]) : implementation(command, args));
+  view.rerender(<Routing active={false} />);
+  view.rerender(<Routing active />);
+  await screen.findByRole('button', {name:'USB Interface'});
+  expect(screen.queryByRole('button', { name: 'input-interface output audio' })).toBeNull();
+  expect(screen.getByRole('spinbutton', { name: /value/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(screen.queryByRole('spinbutton', { name: /value/ })).toBeNull();
+  expect(screen.getByRole('button', {name:'USB Interface'})).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'input-interface output audio' })).toBeNull();
+});
+
+test('named instruments expose independent audio source and destination nodes', async () => {
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_instruments' ? [{id:'synth',name:'Hardware synth',audio_input:{device:'Interface',channels:[3,4]},audio_output:{device:'Interface',channels:[7]},midi_input:null,midi_output:null}] : command === 'get_routing_graph' ? structuredClone(graph) : undefined));
+  render(<Routing />);
+  fireEvent.doubleClick(await screen.findByRole('button', {name:'From Hardware synth'}));
+  await screen.findByLabelText('instrument-in-synth output audio');
+  fireEvent.doubleClick(screen.getByRole('button', {name:'To Hardware synth'}));
+  await screen.findByLabelText('instrument-out-synth input audio');
+  expect(screen.queryByLabelText('instrument-out-synth output audio')).toBeNull();
+  expect(screen.queryByLabelText('instrument-in-synth input audio')).toBeNull();
+  const value = await applied();
+  expect(value.nodes.filter(n => n.id.startsWith('instrument-')).map(n => n.kind)).toEqual(['input', 'output']);
+});

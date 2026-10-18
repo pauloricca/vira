@@ -667,6 +667,103 @@ test('Alt arrows select the active deck; Cmd L locks and Cmd Shift L unlocks it'
   expect(audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'sync')).toEqual(calls);
   expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
 });
+test('Shift Space taps the selected deck while Shift stays held, including from text fields', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null,
+      track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] },
+      grid: { bpm: 120, downbeat_seconds: 0, reviewed: false },
+      position_seconds: 12, playing: false, gain: .8, generation: deck + 1, requested_generation: deck + 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByRole('button', { name: 'Play deck B' });
+  let now = 1000;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const taps = () => audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'tempo');
+  const tap = () => {
+    fireEvent.keyDown(window, { key: ' ', code: 'Space', shiftKey: true });
+    fireEvent.keyUp(window, { key: ' ', code: 'Space', shiftKey: true });
+  };
+  try {
+    fireEvent.keyDown(window, { key: ' ', code: 'Space', altKey: true });
+    fireEvent.keyUp(window, { key: ' ', code: 'Space', altKey: true });
+    expect(screen.queryByRole('status', { name: 'Tap tempo' })).toBeNull();
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+    tap();
+    expect(taps()).toHaveLength(0);
+    expect(screen.getByRole('status', { name: 'Tap tempo' }).textContent).toBe('Tap A: 1 · keep tapping');
+    now += 500;
+    tap();
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'tempo', value: 120, generation: 1 }));
+    now += 250;
+    fireEvent.keyDown(window, { key: ' ', code: 'Space', shiftKey: true, repeat: true });
+    now += 250;
+    tap();
+    await waitFor(() => expect(taps()).toHaveLength(2));
+    expect(taps()[1][1].value).toBe(120);
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'play_pause')).toBe(false);
+    now += 500;
+    fireEvent.keyDown(screen.getByRole('searchbox'), { key: ' ', code: 'Space', shiftKey: true });
+    await waitFor(() => expect(taps()).toHaveLength(3));
+    expect(screen.getByRole('status', { name: 'Tap tempo' }).textContent).toBe('Tap A: 120.0 BPM');
+    fireEvent.keyDown(window, { key: 'ArrowRight', altKey: true });
+    tap();
+    expect(taps()).toHaveLength(3);
+    now += 600;
+    tap();
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'tempo', value: 100, generation: 2 }));
+    now += 4001;
+    tap();
+    expect(taps()).toHaveLength(4);
+    now += 750;
+    tap();
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'tempo', value: 80, generation: 2 }));
+  } finally { clock.mockRestore(); }
+});
+test('Shift Space updates master BPM for a locked selected deck without unlocking it', async () => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, synced: true,
+      track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] },
+      grid: { bpm: 120, downbeat_seconds: 0, reviewed: false },
+      position_seconds: 12, playing: true, gain: .8, generation: deck + 1, requested_generation: deck + 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByRole('button', { name: 'Pause deck B' });
+  fireEvent.keyDown(window, { key: 'ArrowRight', altKey: true });
+  fireEvent.click(screen.getByLabelText('Master BPM'));
+  const masterInput = screen.getByRole('textbox', { name: 'Target master BPM' });
+  let now = 1000;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  try {
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+    for (let i = 0; i < 3; i++) {
+      fireEvent.keyDown(masterInput, { key: ' ', shiftKey: true });
+      fireEvent.keyUp(masterInput, { key: ' ', shiftKey: true });
+      now += 600;
+    }
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'master_tempo', value: 100, generation: 2 }));
+    expect(audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'master_tempo')).toHaveLength(2);
+    expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && (args.action === 'tempo' || args.action === 'sync' && args.value === 0))).toBe(false);
+    expect(screen.getByRole('button', { name: 'Unlock deck B to master tempo' }).getAttribute('aria-pressed')).toBe('true');
+  } finally { clock.mockRestore(); }
+});
+test('Shift Space does not change tempo on an empty deck', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  for (let i = 0; i < 3; i++) {
+    fireEvent.keyDown(window, { key: ' ', code: 'Space', shiftKey: true });
+    fireEvent.keyUp(window, { key: ' ', code: 'Space', shiftKey: true });
+  }
+  expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'tempo')).toBe(false);
+  expect(screen.getByRole('status', { name: 'Tap tempo' }).textContent).toBe('Tap A: load a track first');
+});
 test('Cmd L does not lock an empty active deck or fall back to the other deck', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -685,7 +782,7 @@ test('Shortcuts sits to the right of Settings and lists workspace and local keyb
   expect(tab.getAttribute('aria-current')).toBe('page');
   fireEvent.click(screen.getByText('Deck playback & tempo'));
   expect(screen.getByRole('table', { name: 'Deck playback & tempo shortcuts' })).toBeTruthy();
-  for (const key of ['Alt + ←', 'Alt + →', 'Cmd + L', 'Cmd + Shift + L', 'Hold Space + ←', 'Hold Space + →', 'Cmd + B', 'Cmd + Shift + A', 'Shift + ← / →']) expect(screen.getByText(key)).toBeTruthy();
+  for (const key of ['Alt + ←', 'Alt + →', 'Shift + Space', 'Cmd + L', 'Cmd + Shift + L', 'Hold Space + ←', 'Hold Space + →', 'Cmd + B', 'Cmd + Shift + A', 'Shift + ← / →']) expect(screen.getByText(key)).toBeTruthy();
   fireEvent.keyDown(window, { key: 'l', metaKey: true });
   expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'sync')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));

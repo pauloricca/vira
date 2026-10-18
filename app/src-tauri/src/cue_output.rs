@@ -21,6 +21,9 @@ impl CueOutput {
         self.phase = 0.;
     }
     pub fn render(&mut self, data: &mut [f32], channels: usize) {
+        self.render_at_rate(data, channels, 1.);
+    }
+    pub fn render_at_rate(&mut self, data: &mut [f32], channels: usize, source_rate: f64) {
         data.fill(0.);
         // Recover from a stopped/disconnected callback without replaying old audio.
         let target = (data.len() / channels + 512).min(4096);
@@ -36,8 +39,8 @@ impl CueOutput {
         }
         // Keep ~10 ms queued. +/-0.5% covers separate hardware clocks and
         // gradually corrects queue fill; neither callback blocks the other.
-        let rate =
-            (1. + (self.consumer.slots() as f64 - target as f64) * 0.00002).clamp(0.995, 1.005);
+        let rate = source_rate
+            * (1. + (self.consumer.slots() as f64 - target as f64) * 0.00002).clamp(0.995, 1.005);
         for frame in data.chunks_exact_mut(channels) {
             let pair = self.pair.unwrap();
             for channel in 0..2 {
@@ -62,6 +65,22 @@ impl CueOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn converts_input_sample_rates_to_engine_time() {
+        for rate in [44100, 48000, 96000] {
+            let (mut producer, consumer) = rtrb::RingBuffer::new(8192);
+            for _ in 0..2048 {
+                producer.push([0.2, -0.3]).unwrap();
+            }
+            let mut bridge = CueOutput::new(consumer);
+            let before = bridge.consumer.slots();
+            let mut data = [0.; 480 * 2];
+            bridge.render_at_rate(&mut data, 2, rate as f64 / 48000.);
+            let consumed = before - bridge.consumer.slots();
+            assert!((rate / 100 - 10..=rate / 100 + 10).contains(&(consumed as u32)));
+            assert!(data.chunks_exact(2).all(|frame| frame == [0.2, -0.3]));
+        }
+    }
     #[test]
     fn bridges_clock_drift_without_unbounded_latency_or_other_channels() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(8192);

@@ -4,10 +4,13 @@ use crate::mixer::{MixerDsp, Settings};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
+const NODE_LIMIT: usize = 128;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Player,
+    Input,
     Trim,
     Eq,
     Filter,
@@ -46,7 +49,7 @@ impl Node {
             }
         }
         let ports: &[&str] = match self.kind {
-            Kind::Player | Kind::Oscillator => &[],
+            Kind::Player | Kind::Input | Kind::Oscillator => &[],
             Kind::Crossfader | Kind::Cue => &["A", "B"],
             Kind::Compressor => &["audio", "sidechain"],
             Kind::RingModulation => &["audio", "carrier"],
@@ -132,7 +135,7 @@ impl Default for Graph {
             ("mix", Kind::Crossfader, "Crossfader / mix", 940., 100.),
             ("cue", Kind::Cue, "Cue mix", 940., 350.),
             ("master", Kind::Output, "Master output", 1160., 100.),
-            ("headphones", Kind::Output, "Headphone output", 1160., 350.),
+            ("headphones", Kind::Output, "Cue output", 1160., 350.),
         ] {
             nodes.push(Node {
                 patch_inputs: None,
@@ -164,6 +167,8 @@ struct Step {
     envelope: f32,
     phase: f32,
     external_detector: bool,
+    capture: Option<std::sync::Arc<crate::audio_inputs::Capture>>,
+    send: Option<crate::instrument_output::Output>,
 }
 pub struct Plan {
     pub conventional: bool,
@@ -176,6 +181,23 @@ pub struct Plan {
     patch_frames: Box<[crate::decks::Frame; crate::decks::PRODUCER_FRAMES]>,
 }
 impl Graph {
+    pub fn from_saved(bytes: &[u8]) -> Result<Self> {
+        let value: serde_json::Value = serde_json::from_slice(bytes)?;
+        let mut graph: Self = serde_json::from_value(value.clone())?;
+        // Older versions saved every detected device as a node. Preserve wired
+        // inputs, but move unused automatically placed devices back to the palette.
+        if value["input_palette"] != true {
+            graph.nodes.retain(|n| {
+                n.kind != Kind::Input || graph.wires.iter().any(|w| w.from == n.id || w.to == n.id)
+            });
+        }
+        Ok(graph)
+    }
+    pub fn saved_value(&self) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self)?;
+        value["input_palette"] = true.into();
+        Ok(value)
+    }
     pub fn same_audio(&self, other: &Self) -> bool {
         self.nodes.len() == other.nodes.len()
             && self.wires.len() == other.wires.len()
@@ -192,15 +214,20 @@ impl Graph {
     }
     pub fn compile(&self) -> Result<Box<Plan>> {
         ensure!(
-            self.nodes.len() <= 32 && self.wires.len() <= 128,
-            "Routing limit: 32 nodes and 128 wires"
+            self.nodes.len() <= NODE_LIMIT && self.wires.len() <= 512,
+            "Routing limit: 128 nodes and 512 wires"
         );
         let default = Self::default();
         for (i, n) in self.nodes.iter().enumerate() {
             ensure!(
                 !n.id.is_empty()
                     && n.id.len() <= 64
-                    && n.label.len() <= 80
+                    && n.label.len()
+                        <= if n.kind == Kind::Input || n.id.starts_with("instrument-") {
+                            512
+                        } else {
+                            80
+                        }
                     && n.x.is_finite()
                     && n.y.is_finite()
                     && n.value.is_finite(),
@@ -229,7 +256,9 @@ impl Graph {
                     || (n.deck.is_none()
                         && matches!(
                             n.kind,
-                            Kind::Gain
+                            Kind::Input
+                                | Kind::Output
+                                | Kind::Gain
                                 | Kind::Compressor
                                 | Kind::Oscillator
                                 | Kind::RingModulation
@@ -239,6 +268,9 @@ impl Graph {
             );
             ensure!(
                 match n.kind {
+                    Kind::Output =>
+                        n.id.starts_with("instrument-out-")
+                            || default.nodes.iter().any(|b| b.id == n.id),
                     Kind::Patch => patch_slot(&n.id).is_some(),
                     Kind::Gain => (0. ..=2.).contains(&n.value),
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
@@ -306,7 +338,8 @@ impl Graph {
             order.len() == self.nodes.len(),
             "Feedback loops are not supported; this connection creates a cycle"
         );
-        let conventional = self.nodes.len() == default.nodes.len()
+        let conventional = self.nodes.iter().filter(|n| n.kind != Kind::Input).count()
+            == default.nodes.len()
             && self.wires.len() == default.wires.len()
             && default.wires.iter().all(|w| self.wires.contains(w));
         let steps = order
@@ -319,29 +352,61 @@ impl Graph {
                 dsp: MixerDsp::default(),
                 envelope: 0.,
                 phase: 0.,
+                capture: None,
+                send: None,
             })
             .collect();
         Ok(Box::new(Plan {
             conventional,
             steps,
             routed_inputs: vec![[[0.; crate::decks::PRODUCER_FRAMES]; 2]; 32].into_boxed_slice(),
-            block_outputs: vec![[[[0.; 2]; 2]; crate::decks::PRODUCER_FRAMES]; 33]
+            block_outputs: vec![[[[0.; 2]; 2]; crate::decks::PRODUCER_FRAMES]; NODE_LIMIT + 1]
                 .into_boxed_slice(),
             patch_frames: vec![crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES]
                 .into_boxed_slice()
                 .try_into()
                 .unwrap(),
-            // Slot 32 is immutable silence when a built-in meter/output is removed.
-            master: index("master").unwrap_or(32),
-            headphones: index("headphones").unwrap_or(32),
+            // The final slot is immutable silence when a built-in meter/output is removed.
+            master: index("master").unwrap_or(NODE_LIMIT),
+            headphones: index("headphones").unwrap_or(NODE_LIMIT),
             faders: [
-                index("a-fader").unwrap_or(32),
-                index("b-fader").unwrap_or(32),
+                index("a-fader").unwrap_or(NODE_LIMIT),
+                index("b-fader").unwrap_or(NODE_LIMIT),
             ],
         }))
     }
 }
 impl Plan {
+    #[cfg(target_os = "macos")]
+    pub fn bind_inputs(
+        &mut self,
+        graph: &Graph,
+        sources: &crate::audio_inputs::Inputs,
+    ) -> Result<()> {
+        let mut error = None;
+        for step in &mut self.steps {
+            if step.node.kind == Kind::Output
+                && step.node.id.starts_with("instrument-out-")
+                && graph.wires.iter().any(|w| w.to == step.node.id)
+            {
+                match crate::instruments::audio(&step.node.id, false)
+                    .and_then(crate::instrument_output::Output::open)
+                {
+                    Ok(send) => step.send = Some(send),
+                    Err(e) => error = Some(e),
+                }
+            }
+            if step.node.kind == Kind::Input && graph.wires.iter().any(|w| w.from == step.node.id) {
+                match sources.open(&step.node.id) {
+                    Ok(capture) => step.capture = Some(capture),
+                    Err(e) => {
+                        error = Some(e);
+                    }
+                }
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
     // Preserve processor history across edits; bounded swaps do not allocate or free.
     pub fn inherit(&mut self, previous: &mut Self) {
         for step in &mut self.steps {
@@ -364,7 +429,7 @@ impl Plan {
         cross: [f32; 2],
         cue: [f32; 2],
     ) -> ([[f32; 2]; 2], [[f32; 2]; 2]) {
-        let mut outputs = [[[0.; 2]; 2]; 33];
+        let mut outputs = [[[0.; 2]; 2]; NODE_LIMIT + 1];
         for step in &mut self.steps {
             let mut input = [[0.; 2]; 32];
             for link in &step.links {
@@ -390,6 +455,98 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_input_routes_through_gain_to_cue_without_leaking_to_master() {
+        let mut graph = Graph::default();
+        graph.wires.clear();
+        graph.nodes.push(Node {
+            id: "input-test".into(),
+            kind: Kind::Input,
+            deck: None,
+            label: "Interface".into(),
+            x: 0.,
+            y: 0.,
+            value: 1.,
+            patch_inputs: None,
+        });
+        graph.nodes.push(Node {
+            id: "input-gain".into(),
+            kind: Kind::Gain,
+            deck: None,
+            label: "Gain".into(),
+            x: 0.,
+            y: 0.,
+            value: 0.5,
+            patch_inputs: None,
+        });
+        for (from, to) in [("input-test", "input-gain"), ("input-gain", "headphones")] {
+            graph.wires.push(Wire {
+                from: from.into(),
+                to: to.into(),
+                output: "audio".into(),
+                input: "audio".into(),
+                gain: 1.,
+            });
+        }
+        assert!(graph.nodes.last().unwrap().inputs().contains(&"audio"));
+        assert!(graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == Kind::Input)
+            .unwrap()
+            .inputs()
+            .is_empty());
+        let mut plan = graph.compile().unwrap();
+        plan.steps
+            .iter_mut()
+            .find(|s| s.node.kind == Kind::Input)
+            .unwrap()
+            .capture = Some(crate::audio_inputs::test_capture(2048, [0.4, -0.2], 44100));
+        let mut block = [crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES];
+        plan.render_block(&mut block, &mut []);
+        assert!(block
+            .iter()
+            .all(|f| f.samples == [0.; 2] && f.cue_samples == [0.2, -0.1]));
+        // A disconnected source must become silent, including on a reused plan.
+        plan.steps
+            .iter_mut()
+            .find(|s| s.node.kind == Kind::Input)
+            .unwrap()
+            .capture = None;
+        plan.render_block(&mut block, &mut []);
+        assert!(block
+            .iter()
+            .all(|f| f.samples == [0.; 2] && f.cue_samples == [0.; 2]));
+    }
+    #[test]
+    fn saved_input_palette_migrates_only_unused_automatic_devices() {
+        let mut graph = Graph::default();
+        for id in ["input-unused", "input-connected"] {
+            graph.nodes.push(Node {
+                id: id.into(),
+                kind: Kind::Input,
+                deck: None,
+                label: id.into(),
+                x: 40.,
+                y: 650.,
+                value: 1.,
+                patch_inputs: None,
+            });
+        }
+        graph.wires.push(Wire {
+            from: "input-connected".into(),
+            to: "master".into(),
+            input: "audio".into(),
+            output: "audio".into(),
+            gain: 1.,
+        });
+        let migrated = Graph::from_saved(&serde_json::to_vec(&graph).unwrap()).unwrap();
+        assert!(!migrated.nodes.iter().any(|n| n.id == "input-unused"));
+        assert!(migrated.nodes.iter().any(|n| n.id == "input-connected"));
+        let restored =
+            Graph::from_saved(&serde_json::to_vec(&graph.saved_value().unwrap()).unwrap()).unwrap();
+        assert_eq!(restored, graph);
+    }
     #[test]
     fn default_and_feedback_validation() {
         let mut g = Graph::default();
@@ -638,6 +795,7 @@ impl Step {
         let d = self.node.deck.unwrap_or(0);
         match self.node.kind {
             Kind::Player => players[d],
+            Kind::Input => [0.; 2],
             Kind::Trim | Kind::Eq | Kind::Filter => {
                 if self.dsp.settings != settings[d] {
                     self.dsp.set(settings[d]);
@@ -775,6 +933,10 @@ impl Plan {
         let patch = &mut self.patch_frames;
         let routed_inputs = &mut self.routed_inputs;
         for step in &mut self.steps {
+            let mut captured = [0.; PRODUCER_FRAMES * 2];
+            if let Some(source) = &step.capture {
+                source.render(&mut captured);
+            }
             if step.node.kind == Kind::Patch {
                 routed_inputs.fill([[0.; PRODUCER_FRAMES]; 2]);
             }
@@ -793,7 +955,16 @@ impl Plan {
                     frame.routing_cross,
                     frame.routing_cue,
                 );
-                outputs[step.index][i][0] = value.map(|v| if v.is_finite() { v } else { 0. });
+                let value = if step.node.kind == Kind::Input {
+                    [captured[i * 2], captured[i * 2 + 1]]
+                } else {
+                    value
+                };
+                let value = value.map(|v| if v.is_finite() { v } else { 0. });
+                if let Some(send) = &mut step.send {
+                    send.push(value);
+                }
+                outputs[step.index][i][0] = value;
                 outputs[step.index][i][1] = if step.node.kind == Kind::Oscillator {
                     [(step.phase * std::f32::consts::TAU).cos() * 0.1; 2]
                 } else {

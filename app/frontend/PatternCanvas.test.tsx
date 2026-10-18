@@ -227,3 +227,14 @@ test('adds transformations with inline settings and connects Note and MIDI ports
   expect(() => connectMusical(bank.graph!, {id:'cycle',from:filter.id,to:shift.id,kind:'midi'}, bank.graph!.wires.find(w => w.to === shift.id)!.id)).toThrow(/feedback/);
   expect(() => connectMusical(bank.graph!, {id:'second-input',from:'midi-42',to:filter.id,kind:'midi'})).toThrow(/one.*input/);
 });
+
+test('named instruments keep their identity and expose MIDI source and target ports', async () => {
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command, args) => command === 'get_instruments' ? Promise.resolve([{id:'synth',name:'My synth',audio_input:null,audio_output:null,midi_input:{device:44,channel:2},midi_output:{device:43,channel:9}}]) : original(command,args));
+  await mount();
+  fireEvent.doubleClick(await screen.findByRole('button', {name:'My synth'})); await saved();
+  expect(bank.graph!.nodes.find(n => n.id === 'instrument-synth')).toMatchObject({input:44,channel:9,destination:{kind:'midi',output:43}});
+  expect(screen.getByLabelText('instrument-synth output midi')).toBeTruthy();
+  expect(screen.getByLabelText('instrument-synth input midi')).toBeTruthy();
+  expect(screen.queryByLabelText('Device MIDI channel')).toBeNull();
+});

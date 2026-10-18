@@ -229,6 +229,11 @@ impl Router {
                 } else {
                     to.destination.clone()
                 };
+                // A disabled or deleted instrument has no outgoing hardware port.
+                // Omitting the route also releases notes owned by its old destination.
+                if matches!(dest, Some(Destination::Midi { output: 0 })) {
+                    continue;
+                }
                 if let (Source::Midi(input), Some(Destination::Midi { output })) = (&source, &dest)
                 {
                     if self.available.iter().any(|e| {
@@ -255,7 +260,7 @@ impl Router {
                     destination: dest,
                     owner: w.route.unwrap_or(index as u16),
                     generation,
-                    source_channel: from.channel,
+                    source_channel: input_channel(from),
                     destination_channel: to.channel,
                     transformations: transformations.clone(),
                 });
@@ -399,7 +404,7 @@ impl Router {
             .filter(|n| ["instrument", "pattern"].contains(&n.kind.as_str()))
             .filter_map(|n| {
                 self.source(n)
-                    .and_then(|s| self.core.value(&s, n.channel))
+                    .and_then(|s| self.core.value(&s, input_channel(n)))
                     .map(|note| (n.id.clone(), note))
             })
             .collect();
@@ -410,5 +415,15 @@ impl Router {
         self.inputs.clear();
         self.teia.clear();
         self.pattern_events.clear();
+    }
+}
+
+fn input_channel(node: &Node) -> Option<u8> {
+    if node.id.starts_with("instrument-") {
+        crate::instruments::named(&node.id)
+            .and_then(|i| i.midi_input)
+            .and_then(|p| p.channel)
+    } else {
+        node.channel
     }
 }

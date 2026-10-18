@@ -8,6 +8,7 @@ import '@pauloricca/teia-hosted/flow.css';
 import '@pauloricca/teia-hosted/themes.css';
 import '@pauloricca/teia-hosted/styles.css';
 import './teia-editor.css';
+import './text-inputs.css';
 import { encodeTeiaCommand, decodeTeiaReply } from './teiaWire';
 import { assets } from './teiaAssets';
 import { hostNodeTypes } from './teiaModel';

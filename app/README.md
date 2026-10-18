@@ -196,8 +196,18 @@ with 24 dB/oct crossovers at 250 Hz and 2.5 kHz. **FL** sweeps a low-pass to the
 left (20 kHz down to 30 Hz) and a high-pass to the right (20 Hz up to 18 kHz);
 the center bypasses the filter. Double-click any dial to reset. Dial changes
 ramp over 10 ms, and settings carry over when replacing a loaded track.
-Expand **Timing & tempo** for grid editing,
-tempo presets and click volume. Future controls are disabled;
+Use **Timing & tempo** for grid editing, tempo presets and click volume.
+**Edit grid** enables dragging beat marks while the deck is stopped in that deck's rolling waveform.
+Dragging anywhere shifts the whole grid without changing BPM. **Command-click**
+any beat mark to pin it (shown green); subsequent drags scale the grid and BPM
+around that beat. Command-click another beat to move the pin, or the pinned beat
+to unpin and return to shifting. The hand cursor appears over any beat mark, with a horizontal resize cursor
+between marks. These cursors remain visible during playback while editing is paused. Save and Cancel clear the pin.
+Play and pause freely while editing to listen with the unsaved draft grid.
+Moving, scaling and pinning are disabled during playback and resume when paused.
+The draft and pin survive playback; Cancel also restores the original audible grid. **Save grid** persists and applies
+the draft; **Cancel** restores the previous grid without saving. Other timing
+edits are disabled until the draft is saved or cancelled. Future controls are disabled;
 **Approve analysis** marks a completed analysis as Approved
 in the library. The timing grid's reviewed flag remains a separate assertion.
 The last deck touched, including its top rolling waveform, receives ⌘B to set a
@@ -785,8 +795,18 @@ device dependent. Dual-device listening still needs verification on macOS hardwa
 **ROUTING** opens a stereo audio patchbay. Deck A and B keep their labeled, color-coded groups;
 player → trim → EQ → filter → fader is the initial chain. These nodes retain the
 Decks page's controls. Crossfader/mix and cue mix retain their existing controls;
-Master and Headphone outputs use the devices selected in Settings. No MIDI routing
+Master and Cue outputs use the devices selected in Settings. No MIDI routing
 is included.
+
+Connected audio input devices appear in the **Input devices** palette list, which
+refreshes automatically. Drag a device onto the canvas (or double-click it) to add
+its source node. Input nodes can be removed and added again from the list.
+Connect a source's audio output to a processor, patch, mix, or output and select
+**Apply routing** to begin capture. Each device supplies its first two channels;
+mono inputs feed both stereo channels. Native device sample rates are converted
+to the routing engine's 48 kHz rate. macOS microphone permission is required.
+Disconnected inputs become silent; reconnect the device and apply routing again
+to restart capture. Capture errors appear when applying routing.
 
 Drag an output port onto an input port. Release anywhere else to cancel.
 Multiple destinations create branches; multiple wires feeding an input sum their
@@ -811,7 +831,7 @@ this increment does not host third-party plug-ins.
 Edits are staged. **Apply routing** validates and publishes the complete graph;
 invalid ports, duplicate wires, non-finite/out-of-range values and all directed
 cycles are rejected without changing the current audio configuration. The graph
-is limited to 32 nodes and 128 wires. Select an added node or any cable, then
+is limited to 128 nodes and 512 wires. Select an added node or any cable, then
 press Delete / Backspace to remove it; removing a node also removes its cables.
 Default nodes can still be moved and their cables edited.
 Disconnected outputs are silent. Revert edits restores the last accepted graph;
@@ -1020,3 +1040,22 @@ and musical graphs retain their own signal validation and publishing rules.
 `frontend/patchLibrary.ts` shares patch creation and session loading with Decks.
 Keep canvas chrome in that stylesheet; `patterns.css` contains only the melodic
 editor and pattern-specific content such as its note preview.
+
+**Instruments** stores named sets of optional hardware connections. Create an
+instrument, name it, choose its audio input/output and MIDI input/output, then
+click **Save instruments**. Audio input receives from the instrument; audio
+output sends to it. Choose one hardware channel for mono or two independently
+selected channels for stereo. Mono capture duplicates to both graph channels;
+mono sends average left and right. MIDI input and output have independent
+channel selectors: **All** receives every input channel and preserves source
+channels on output. Definitions persist in the app support `instruments.json`.
+
+In **Routing → Instruments**, add **From [name]** to receive audio or **To [name]**
+to send it, then cable these endpoints to decks, effects, or patch audio ports
+and **Apply routing**. In **Patterns → Instruments**, add a named instrument and
+connect its MIDI/note ports to patterns, patches, or other destinations. Saved
+cables refer to the instrument identity, so renaming or changing its connections
+updates existing routes. Removing an audio connection removes its endpoint and
+cables; a deleted MIDI instrument remains visibly missing with disabled ports.
+Explicit audio devices never fall back to the system speakers. Device support,
+round trip latency, and independent hardware clocks need verification on macOS.

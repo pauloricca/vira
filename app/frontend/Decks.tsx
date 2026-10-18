@@ -9,7 +9,7 @@ import { RollingRow } from './RollingRow';
 import { TransitionOverview, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 import { useWaveformZoom, waveformZoomIntervals } from './zoom';
 import { DisplayPosition, animate } from './transport';
-import { Grid, TimingRecord, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
+import { Grid, TimingRecord, dragGrid, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
 import { TrackArtwork } from './artwork';
 import { beginDeckLoad } from './loadPriority';
 import { LevelMeter, useMeterFeed } from './LevelMeter';
@@ -19,7 +19,7 @@ import { KeySelector } from './KeySelector';
 export const TRACK_MIME = 'application/x-vira-track-id';
 export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; start_seconds?: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
 type FineWaveform = Pick<Prepared, 'artifact_id' | 'fine_peak_frames' | 'fine_peaks' | 'fine_features'>;
-export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; loop_release_pending?: boolean; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; pitch_semitones?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
+export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; loop_release_pending?: boolean; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid_edit?: Grid | null; grid_saving?: boolean; grid_previewing?: boolean; grid_pin?: number; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; pitch_semitones?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
 export type AudioState = { auto_fast?: boolean; auto_transition?: TransitionPlan | null; auto_mode?: [number, number]; audition?: { index?: number; generation: number; position_seconds: number; playing: boolean }; routing?: { master: string | null; cue: string | null; cue_running: boolean; cue_error: string | null }; crossfader?: number; crossfader_enabled?: boolean; master_bpm?: number | null; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number; resources?: { process_cpu_seconds?: number } } };
 const empty = (deck: number): DeckState => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 });
 
@@ -35,6 +35,11 @@ export function useDecks() {
   const currentAudio = useRef(audio);
   currentAudio.current = audio;
   const references = useRef([{ generation: 0, beats: [] as number[], grid: null as Grid | null, loaded: false }, { generation: 0, beats: [] as number[], grid: null as Grid | null, loaded: false }]);
+  const gridEdits = useRef<({ generation: number; grid: Grid; original: Grid; auditioned?: boolean; previewing?: boolean; drag?: { grid: Grid; origin: number }; pin?: number; saving: boolean } | null)[]>([null, null]);
+  function showGridEdit(deck: number) {
+    const edit = gridEdits.current[deck];
+    setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid_edit: edit?.generation === d.generation ? edit.grid : null, grid_saving: edit?.saving ?? false, grid_previewing: edit?.previewing ?? false, grid_pin: edit?.pin } : d) }));
+  }
   const transportQueue = useRef([Promise.resolve(), Promise.resolve()]);
   const referenceQueue = useRef([Promise.resolve(), Promise.resolve()]);
   const referenceLoads = useRef([null as { key: string; promise: Promise<void> } | null, null as { key: string; promise: Promise<void> } | null]);
@@ -91,7 +96,9 @@ export function useDecks() {
           const stableTrack = cached && track && !track.fine_peaks?.length ? { ...track, fine_features: cached.fine_features, fine_peaks: cached.fine_peaks, fine_peak_frames: cached.fine_peak_frames } : track;
           const stored = references.current[d.deck];
           if (stored.generation !== d.generation) { stored.generation = d.generation; stored.beats = []; stored.grid = null; stored.loaded = false; }
-          return { ...d, track: stableTrack, reference_beats: stored.beats, received_at: received, sampled_at: (sent + received) / 2 };
+          if (gridEdits.current[d.deck]?.generation !== d.generation) gridEdits.current[d.deck] = null;
+          const edit = gridEdits.current[d.deck];
+          return { ...d, grid_edit: edit?.grid, grid_saving: edit?.saving, grid_previewing: edit?.previewing, grid_pin: edit?.pin, track: stableTrack, reference_beats: stored.beats, received_at: received, sampled_at: (sent + received) / 2 };
         }) }); setPollError(null); }
         if (!cancelled) for (const d of value.decks) {
           if ((!d.track && !(d.track_unchanged && d.generation > 0)) || d.loading) continue;
@@ -143,7 +150,51 @@ export function useDecks() {
   }
   async function control(deck: number, action: string, value?: number) {
     try {
-      if (['reference_beat', 'shift_bar_start', 'detected_bpm', 'original_bpm'].includes(action)) {
+      if (['grid_edit', 'grid_cancel', 'grid_save', 'grid_pin', 'grid_drag_start', 'grid_drag'].includes(action)) {
+        const state = currentAudio.current.decks[deck];
+        const edit = gridEdits.current[deck];
+        if (action === 'grid_cancel') {
+          if (edit?.saving || edit?.previewing) return;
+          if (edit?.auditioned && edit.generation === state.generation) {
+            await invoke('apply_timing', { deck, generation: state.generation, grid: edit.original, preserveSpeed: true });
+            setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck && d.generation === state.generation ? { ...d, grid: edit.original, target_bpm: edit.original.bpm * (d.speed ?? 1) } : d) }));
+          }
+          gridEdits.current[deck] = null;
+        } else if (action === 'grid_edit') {
+          if (!state.track || !state.grid || state.loading) throw new Error('Load a track with a timing grid first');
+          gridEdits.current[deck] = { generation: state.generation, grid: { ...state.grid }, original: { ...state.grid }, saving: false };
+        } else {
+          if (!state.track || !edit || edit.generation !== state.generation || edit.saving || edit.previewing) return;
+          if ((state.playing || state.launch_pending) && ['grid_pin', 'grid_drag_start', 'grid_drag'].includes(action)) return;
+          if (action === 'grid_pin') {
+            const beat = Math.round((value! - edit.grid.downbeat_seconds) * edit.grid.bpm / 60);
+            const seconds = edit.grid.downbeat_seconds + beat * 60 / edit.grid.bpm;
+            if (!Number.isFinite(seconds) || seconds < (state.track.start_seconds ?? 0) || seconds >= state.track.duration_seconds) return;
+            edit.pin = edit.pin != null && Math.abs(edit.pin - seconds) < 1 / 48000 ? undefined : seconds;
+            edit.drag = undefined;
+          } else if (action === 'grid_drag_start') edit.drag = { grid: edit.grid, origin: value! };
+          else if (action === 'grid_drag' && edit.drag) edit.grid = dragGrid(edit.drag.grid, edit.drag.origin, value!, state.track.duration_seconds, edit.pin);
+          else if (action === 'grid_save') {
+            edit.saving = true;
+            showGridEdit(deck);
+            try {
+              await invoke('apply_timing', { deck, generation: state.generation, grid: edit.grid, preserveSpeed: true });
+              try {
+                await invoke('track_timing', { trackId: state.track.track_id, grid: edit.grid, referenceBeats: [] });
+              } catch (error) {
+                await invoke('apply_timing', { deck, generation: state.generation, grid: edit.original, preserveSpeed: true });
+                throw error;
+              }
+              if (currentAudio.current.decks[deck].generation !== state.generation) return;
+              references.current[deck] = { generation: state.generation, beats: [], grid: edit.grid, loaded: true };
+              setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck && d.generation === state.generation ? { ...d, grid: edit.grid, reference_beats: [], target_bpm: edit.grid.bpm * (d.speed ?? 1) } : d) }));
+              gridEdits.current[deck] = null;
+            } finally { edit.saving = false; showGridEdit(deck); }
+          }
+        }
+        showGridEdit(deck);
+      } else if (['reference_beat', 'shift_bar_start', 'detected_bpm', 'original_bpm'].includes(action)) {
+        if (gridEdits.current[deck]) throw new Error('Save or cancel the grid edit first');
         const task = referenceQueue.current[deck].then(async () => {
           const state = currentAudio.current.decks[deck];
           if (!state.track) throw new Error('Load a track first');
@@ -188,9 +239,22 @@ export function useDecks() {
         const stored = references.current[deck]; stored.beats = []; stored.grid = null; stored.loaded = true;
         setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck ? { ...d, reference_beats: [] } : d) }));
       } else {
+        if (gridEdits.current[deck] && ['auto_now', 'auto_end', 'auto_now_fast', 'auto_end_fast'].includes(action)) throw new Error('Save or cancel the grid edit before starting an automatic transition');
         const args = { deck, action, value: value ?? null, generation: currentAudio.current.decks[deck].generation };
         if (['cue_press', 'cue_release', 'play_pause', 'play', 'pause', 'stop'].includes(action)) {
-          const task = transportQueue.current[deck].then(() => invoke<void>('deck_control', args));
+          const task = transportQueue.current[deck].then(async () => {
+            const edit = gridEdits.current[deck];
+            if (edit && edit.generation === args.generation && ['play', 'play_pause', 'cue_press'].includes(action)) {
+              edit.drag = undefined;
+              edit.previewing = true;
+              showGridEdit(deck);
+              try {
+                await invoke('apply_timing', { deck, generation: args.generation, grid: edit.grid, preserveSpeed: true });
+                edit.auditioned = true;
+                await invoke<void>('deck_control', args);
+              } finally { edit.previewing = false; showGridEdit(deck); }
+            } else await invoke<void>('deck_control', args);
+          });
           transportQueue.current[deck] = task.catch(() => {});
           await task;
         } else await invoke('deck_control', args);
@@ -352,8 +416,8 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     {!state.track && <span className="waveform-empty">Drag a track from the library</span>}
     </div></div>
     <div className="deck-actions"><div className="transport">
-      <button className={`cue-button${cue.pressed || state.cue_preview ? ' pressed' : !state.playing && Math.abs(state.position_seconds - (state.cue_seconds ?? 0)) < 1 / 48000 ? ' at-cue' : ''}`} disabled={!ready} aria-label={`Cue deck ${name}`} title={`Paused: set Cue${state.synced ? ` at nearest ${syncQuantum === 1 ? 'beat' : 'bar'}` : ''}. Playing: return to Cue. Hold at Cue to preview; press Play to continue.`} {...cue.handlers}>CUE</button>
-      <button className="play-button" aria-label={`${state.playing && !state.cue_preview ? 'Pause' : 'Play'} deck ${name}`} disabled={!ready} onClick={() => void control(state.deck, 'play_pause')}><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">{state.playing ? <><rect x="5" y="3" width="3" height="14" /><rect x="12" y="3" width="3" height="14" /></> : <path d="M6 3.5 17 10 6 16.5Z" />}</svg></button>
+      <button className={`cue-button${cue.pressed || state.cue_preview ? ' pressed' : !state.playing && Math.abs(state.position_seconds - (state.cue_seconds ?? 0)) < 1 / 48000 ? ' at-cue' : ''}`} disabled={!ready || state.grid_saving || state.grid_previewing} aria-label={`Cue deck ${name}`} title={`Paused: set Cue${state.synced ? ` at nearest ${syncQuantum === 1 ? 'beat' : 'bar'}` : ''}. Playing: return to Cue. Hold at Cue to preview; press Play to continue.`} {...cue.handlers}>CUE</button>
+      <button className="play-button" aria-label={`${state.playing && !state.cue_preview ? 'Pause' : 'Play'} deck ${name}`} disabled={!ready || state.grid_saving || state.grid_previewing} onClick={() => void control(state.deck, 'play_pause')}><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">{state.playing ? <><rect x="5" y="3" width="3" height="14" /><rect x="12" y="3" width="3" height="14" /></> : <path d="M6 3.5 17 10 6 16.5Z" />}</svg></button>
     </div>
     <div className="deck-loop-bank"><div className="auto-controls" aria-label={`Automatic transitions deck ${name}`}>
       {(['NOW', 'END'] as const).map((mode, index) => <button key={mode} aria-label={`AUTO ${mode} deck ${name}`} aria-pressed={autoMode === index + 1} className={autoMode === index + 1 ? `auto-engaged${autoFast ? ' auto-fast' : ''}` : undefined} disabled={autoMode !== index + 1 && (!ready || !autoAvailable)} title={autoMode === index + 1 ? 'Cancel automatic transition' : mode === 'NOW' ? 'Transition at the next phrase boundary; double-click for fast overlap' : 'Transition at the end of the track; double-click for fast overlap'} onClick={event => clickAuto(mode, event.detail)} onDoubleClick={() => fastAuto(mode)}>AUTO {mode}</button>)}
@@ -369,6 +433,8 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     <output ref={timeLabel} className="numeric deck-time" aria-label={`Time deck ${name}`}>{time(Math.max(0, state.position_seconds - start))} / {time(duration)}</output></div>
     <section className="deck-settings" aria-label={`Timing & tempo deck ${name}`}><div className="timing-controls">
       {showVolume && <label>Volume <input type="range" min="0" max="1" step="0.01" value={gain} disabled={!ready} aria-label={`Volume deck ${name}`} onChange={event => {gainInput.current=performance.now();setGain(Number(event.target.value));void control(state.deck,'gain',Number(event.target.value));}} /></label>}
+      {state.grid_edit ? <><button disabled={!ready || state.grid_saving || state.grid_previewing} onClick={() => void control(state.deck, 'grid_save')}>{state.grid_saving ? 'Saving grid…' : 'Save grid'}</button><button disabled={state.grid_saving || state.grid_previewing} onClick={() => void control(state.deck, 'grid_cancel')}>Cancel</button><span role="status">{state.playing || state.launch_pending || state.grid_previewing ? 'Listening to draft grid. Pause to move, scale or pin beats.' : state.grid_pin == null ? 'Drag anywhere to move the grid. Command-click a beat to pin it for scaling.' : 'Drag to scale around the green pinned beat. Command-click it to unpin, or another beat to move the pin.'} {state.grid_edit.bpm.toFixed(2)} BPM</span></> : <button disabled={!ready || preparing || !state.grid} onClick={() => void control(state.deck, 'grid_edit')}>Edit grid</button>}
+      <fieldset className="grid-timing-fields" disabled={!!state.grid_edit}>
       <button disabled={!ready || state.playing || !state.grid} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / 48000)))}>Set reference beat</button>
       <div className="shift-bar-row"><span>Shift bar start</span><button disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', -1)}>Back</button><button disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', 1)}>Forward</button></div>
       <button disabled={!ready || !analysisState || !['analysed', 'needs_review', 'stale'].includes(analysisState) || approving} onClick={approveAnalysis}>Approve analysis</button>
@@ -380,6 +446,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       <button disabled={!ready || !state.grid || state.grid.bpm / 2 < 30} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm / 2)}>Half BPM</button>
       <button disabled={!ready || !state.grid || state.grid.bpm * 2 > 300} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm * 2)}>Double BPM</button>
       <button disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'original_bpm')}>Original BPM</button>
+      </fieldset>
       <span>Speed {(state.speed ?? 1).toFixed(3)}× · supported 15–600 BPM · pitch {state.pitch_semitones ? `${state.pitch_semitones > 0 ? '+' : ''}${state.pitch_semitones} st` : 'preserved'}</span>
       <label>Click volume (0 = off) <input type="range" min="0" max="1" step=".01" value={clickGain} disabled={!ready || !state.grid} onChange={e => {clickInput.current=performance.now();setClickGain(Number(e.target.value));void control(state.deck,'click',Number(e.target.value));}} /></label>
     </div></section>

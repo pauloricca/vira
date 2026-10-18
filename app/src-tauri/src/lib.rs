@@ -3,10 +3,13 @@ use std::{collections::HashSet, time::Duration};
 mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
+mod audio_inputs;
 mod cue_output;
 mod deck_notes;
 pub mod decks;
 mod dsp;
+mod instrument_output;
+mod instruments;
 mod metrics;
 mod midi_live;
 mod mixer;
@@ -20,7 +23,6 @@ mod scheduling;
 mod smart;
 pub mod source;
 mod tags;
-mod track_meta;
 pub mod teia;
 pub mod teia_audio;
 mod teia_bridge;
@@ -30,6 +32,7 @@ pub mod teia_resources;
 #[cfg(target_os = "macos")]
 mod teia_window;
 pub mod timing;
+mod track_meta;
 
 // Default location for existing installations; selected roots live in paths.json.
 pub const MUSIC_BIN: &str = "/Users/pauloricca/Desktop/projects/vira/music";
@@ -377,8 +380,52 @@ pub fn run() {
             .map_err(|e| format!("Artwork worker failed: {e}"))?
     }
     #[tauri::command]
+    fn get_instruments() -> Vec<instruments::Instrument> {
+        instruments::list()
+    }
+    #[tauri::command]
+    fn get_instrument_devices() -> Result<serde_json::Value, String> {
+        instruments::devices().map_err(|e| e.to_string())
+    }
+    #[tauri::command]
+    async fn save_instruments(
+        items: Vec<instruments::Instrument>,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<(), String> {
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let previous = instruments::list();
+            instruments::save(items).map_err(|e| e.to_string())?;
+            let mut graph = engine.routing_graph();
+            graph.nodes.retain(|node| {
+                if node.id.starts_with("instrument-in-") {
+                    instruments::audio(&node.id, true).is_ok()
+                } else if node.id.starts_with("instrument-out-") {
+                    instruments::audio(&node.id, false).is_ok()
+                } else {
+                    true
+                }
+            });
+            graph.wires.retain(|w| {
+                graph.nodes.iter().any(|n| n.id == w.from)
+                    && graph.nodes.iter().any(|n| n.id == w.to)
+            });
+            if let Err(error) = engine.set_routing_graph(graph) {
+                instruments::save(previous).map_err(|rollback| format!("Audio routing failed: {error}; restoring instrument definitions also failed: {rollback}"))?;
+                return Err(format!("Changes not saved; audio routing could not be reopened: {error}"));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
     fn default_routing_graph() -> routing::Graph {
         routing::Graph::default()
+    }
+    #[tauri::command]
+    fn get_audio_inputs() -> Result<Vec<routing::Node>, String> {
+        crate::audio_inputs::nodes().map_err(|e| e.to_string())
     }
     #[tauri::command]
     fn get_routing_graph(
@@ -725,7 +772,11 @@ pub fn run() {
             get_track_artwork,
             get_audio_state,
             get_routing_graph,
+            get_audio_inputs,
             default_routing_graph,
+            get_instruments,
+            get_instrument_devices,
+            save_instruments,
             set_routing_graph,
             get_audio_levels,
             get_audio_devices,

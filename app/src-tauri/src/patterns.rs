@@ -741,6 +741,9 @@ mod mac {
         let mut previous_roots = HashMap::new();
         let mut previous = Arc::new(Bank::default());
         let mut previous_source = Arc::new(Bank::default());
+        let mut instrument_revision = 0;
+        let mut definition_source = Arc::new(Bank::default());
+        let mut resolved_source = Arc::new(Bank::default());
         let mut previous_decks = [None, None];
         let mut previous_active = usize::MAX;
         let mut generations = Vec::new();
@@ -794,9 +797,15 @@ mod mac {
                 }
             }
             polls += 1;
+            let revision = crate::instruments::revision();
+            if revision != instrument_revision || !Arc::ptr_eq(&definition_source, &s.bank) {
+                resolved_source = Arc::new(crate::instruments::resolve(&s.bank));
+                definition_source = s.bank.clone();
+                instrument_revision = revision;
+            }
             let active = active_deck();
             let roots = if live_running {
-                live.tick(&s.bank, &mut ports, now, active, s.decks)
+                live.tick(&resolved_source, &mut ports, now, active, s.decks)
             } else {
                 HashMap::new()
             };
@@ -817,7 +826,7 @@ mod mac {
             live_generations.extend((0..2).map(|deck| {
                 internal_host(&Destination::Deck { deck }).map_or(0, |h| h.generation.load(SeqCst))
             }));
-            let bank = if Arc::ptr_eq(&previous_source, &s.bank)
+            let bank = if Arc::ptr_eq(&previous_source, &resolved_source)
                 && previous_decks == s.decks
                 && previous_active == active
                 && generations == live_generations
@@ -825,7 +834,7 @@ mod mac {
             {
                 previous.clone()
             } else {
-                let mut effective = s.bank.as_ref().clone();
+                let mut effective = resolved_source.as_ref().clone();
                 if let Some(graph) = &mut effective.graph {
                     for node in &mut graph.nodes {
                         if node.kind == "instrument" {
@@ -848,7 +857,7 @@ mod mac {
                         p.target_generation = h.generation.load(SeqCst);
                     }
                 }
-                previous_source = s.bank.clone();
+                previous_source = resolved_source.clone();
                 previous_decks = s.decks;
                 previous_active = active;
                 generations = live_generations;

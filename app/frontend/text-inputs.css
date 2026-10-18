@@ -1,0 +1,10 @@
+/* Keep editable text selectable even inside the app's non-selectable surfaces. */
+:is(input:not([type]), input[type=''], input[type='text'], input[type='search'], input[type='number'], input[type='email'], input[type='url'], input[type='tel'], input[type='password'], textarea) {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+input::selection, textarea::selection {
+  background: #1769aa;
+  color: #fff;
+}

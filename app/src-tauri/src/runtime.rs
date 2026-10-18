@@ -22,6 +22,7 @@ use std::{
 
 struct Shared {
     routes: Mutex<crate::audio_devices::Routes>,
+    inputs: crate::audio_inputs::Inputs,
     cue_running: AtomicBool,
     cue_error: Mutex<Option<String>>,
     cue_device_errors: AtomicU64,
@@ -98,6 +99,7 @@ pub struct AudioLevels {
 impl Shared {
     fn new() -> Self {
         Self {
+            inputs: crate::audio_inputs::Inputs::default(),
             cancel: false.into(),
             routes: Mutex::new(crate::audio_devices::Routes::load()),
             cue_running: false.into(),
@@ -478,7 +480,7 @@ impl EngineHandle {
         let saved_graph =
             std::fs::read(crate::teia::Host::default_root().join(".vira-routing.json"))
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<crate::routing::Graph>(&bytes).ok())
+                .and_then(|bytes| crate::routing::Graph::from_saved(&bytes).ok())
                 .filter(|g| g.compile().is_ok());
         let mut graph = saved_graph.clone().unwrap_or_default();
         if saved_graph.is_none() {
@@ -545,7 +547,56 @@ impl EngineHandle {
         self.shared.audible().gains
     }
     pub fn routing_graph(&self) -> crate::routing::Graph {
-        self.graph.lock().unwrap().clone()
+        let mut graph = self.graph.lock().unwrap().clone();
+        if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == "headphones") {
+            node.label = "Cue output".into();
+        }
+        #[cfg(target_os = "macos")]
+        if let Ok(nodes) = crate::audio_inputs::nodes() {
+            for node in &mut graph.nodes {
+                if node.id.starts_with("instrument-in-") || node.id.starts_with("instrument-out-") {
+                    let input = node.id.starts_with("instrument-in-");
+                    let id = node
+                        .id
+                        .strip_prefix(if input {
+                            "instrument-in-"
+                        } else {
+                            "instrument-out-"
+                        })
+                        .unwrap();
+                    node.label = crate::instruments::list()
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map_or_else(
+                            || "Missing instrument".into(),
+                            |i| {
+                                format!(
+                                    "{} · {}",
+                                    i.name,
+                                    if input { "audio from" } else { "audio to" }
+                                )
+                            },
+                        );
+                } else if node.kind == crate::routing::Kind::Input {
+                    node.label = nodes
+                        .iter()
+                        .find(|live| live.id == node.id)
+                        .map(|live| live.label.clone())
+                        .unwrap_or_else(|| {
+                            format!(
+                                "{} (disconnected)",
+                                node.label
+                                    .trim_end_matches(" (capture stopped)")
+                                    .trim_end_matches(" (disconnected)")
+                            )
+                        });
+                    if self.shared.inputs.failed(&node.id) {
+                        node.label.push_str(" (capture stopped)");
+                    }
+                }
+            }
+        }
+        graph
     }
     pub fn sync_patch_routing(&self, slot: usize) -> Result<Option<crate::routing::Graph>> {
         let state = self.patches[slot].snapshot();
@@ -604,15 +655,22 @@ impl EngineHandle {
         Ok(())
     }
     pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
-        let plan = graph.compile()?;
+        let mut plan = graph.compile()?;
+        #[cfg(target_os = "macos")]
+        plan.bind_inputs(&graph, &self.shared.inputs)?;
         let mut current = self.graph.lock().unwrap();
-        if !graph.same_audio(&current) {
+        if !graph.same_audio(&current)
+            || graph.nodes.iter().any(|n| {
+                (n.kind == crate::routing::Kind::Input || n.id.starts_with("instrument-out-"))
+                    && graph.wires.iter().any(|w| w.from == n.id || w.to == n.id)
+            })
+        {
             self.send(Command::Routing(plan))?;
         }
         let root = crate::teia::Host::default_root();
         std::fs::create_dir_all(&root)?;
         let temporary = root.join(".vira-routing.tmp");
-        std::fs::write(&temporary, serde_json::to_vec(&graph)?)?;
+        std::fs::write(&temporary, serde_json::to_vec(&graph.saved_value()?)?)?;
         std::fs::rename(temporary, root.join(".vira-routing.json"))?;
         *current = graph;
         Ok(())
@@ -1457,7 +1515,9 @@ fn native_output(
         .map(|d| d.midi.host.clone())
         .chain(deck_midi)
         .collect();
-    let initial_plan = initial_graph.compile()?;
+    let mut initial_plan = initial_graph.compile()?;
+    // A disconnected saved input should not prevent deck playback on launch.
+    let _ = initial_plan.bind_inputs(&initial_graph, &shared.inputs);
     let worker = thread::spawn(move || -> Result<()> {
         for driver in &drivers {
             driver.telemetry.alive.store(true, Release);
