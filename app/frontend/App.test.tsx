@@ -407,8 +407,7 @@ test('typing BPM in either deck or the master field keeps focus and leaves libra
   const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
   fireEvent.change(search, { target: { value: 'Filename' } });
   for (const name of ['A', 'B']) {
-    fireEvent.click(screen.getByLabelText(`Timing & tempo deck ${name}`));
-    const panel = screen.getByLabelText(`Timing & tempo deck ${name}`).closest('details')!;
+    const panel = screen.getByRole('region', { name: `Timing & tempo deck ${name}` });
     const input = panel.querySelector<HTMLInputElement>('input[type="number"]')!;
     await waitFor(() => expect(input.disabled).toBe(false));
     input.focus();
@@ -497,12 +496,16 @@ test('timing shortcuts use the last touched rolling waveform with the panel clos
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', expect.objectContaining({ deck: 1, grid: expect.objectContaining({ downbeat_seconds: .5 }) })));
   fireEvent.keyDown(screen.getByRole('slider', { name: 'Waveform seek deck B' }), { key: 'ArrowLeft', metaKey: true, shiftKey: true });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', expect.objectContaining({ deck: 1, grid: expect.objectContaining({ downbeat_seconds: 0 }) })));
+  expect(document.querySelectorAll('.deck-1 .reference-beat')).toHaveLength(1);
   fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('approve_track_analysis', { trackId: 'loaded-1' }));
   await screen.findAllByText('Approved');
+  await waitFor(() => expect(document.querySelectorAll('.deck-1 .reference-beat')).toHaveLength(0));
+  fireEvent.keyDown(window, { key: 'b', metaKey: true });
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'track_timing').at(-1)?.[1]).toEqual(expect.objectContaining({ trackId: 'loaded-1', referenceBeats: [12] })));
   expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(0);
 });
-test.each(['needs_review', 'stale'] as const)('command shift A approves the playing %s deck without enabling beat edits', async state => {
+test.each(['needs_review', 'stale'] as const)('solo playing %s deck supports bar shifts and approval but blocks reference beats', async state => {
   const track = { ...library.tracks[0], id: 'playing-track', analysis: { state, result: estimate, error: null } };
   const current = { ...library, tracks: [track] };
   invoke.mockImplementation((command: string, args?: { trackId?: string }) => {
@@ -525,7 +528,8 @@ test.each(['needs_review', 'stale'] as const)('command shift A approves the play
   fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true, shiftKey: true });
   fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('approve_track_analysis', { trackId: 'playing-track' }));
-  expect(invoke.mock.calls.filter(([command, args]) => command === 'apply_timing' || command === 'track_timing' && args?.grid != null)).toHaveLength(0);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', expect.objectContaining({ deck: 1, preserveSpeed: true, followClock: true, grid: expect.objectContaining({ downbeat_seconds: .5 }) })));
+  expect(invoke.mock.calls.some(([command, args]) => command === 'track_timing' && args?.referenceBeats?.length)).toBe(false);
 });
 test('deck membership marks only the row index while selection highlights the row', async () => {
   invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform' ? { artifact_id: 'artifact-0', fine_peaks: [], fine_peak_frames: 0 } : library));
@@ -689,7 +693,7 @@ test('track loading preferences are independent and persist across loads', async
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   const lock = screen.getByRole('checkbox', { name: 'Keep deck locked when loading a track' }) as HTMLInputElement;
-  const mixer = screen.getByRole('checkbox', { name: 'Reset gain, EQ and filter when loading a track' }) as HTMLInputElement;
+  const mixer = screen.getByRole('checkbox', { name: 'Reset volume, EQ and filter when loading a track' }) as HTMLInputElement;
   expect(lock.checked).toBe(true);
   expect(mixer.checked).toBe(true);
   fireEvent.click(lock);

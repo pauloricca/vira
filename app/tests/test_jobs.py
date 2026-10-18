@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from preparation.timing import Timing
 from preparation.jobs import LibraryJobs, atomic_json, ANALYZER_VERSION, ANALYSIS_SCHEMA, validate_result
 
 
@@ -95,12 +96,18 @@ class JobTests(unittest.TestCase):
         manager.request(track_id)
         manager.pending.join()
         before = self.track(manager)["analysis"]["result"]
+        grid = {"bpm": 123, "downbeat_seconds": .2, "reviewed": False}
+        Timing(manager).save(track_id, grid, [.2, .7])
         approved = manager.approve(track_id)
+        self.assertEqual(Timing(manager).get(track_id)["reference_beats"], [])
+        self.assertEqual(Timing(manager).get(track_id)["grid"], grid)
         self.assertEqual(approved["tracks"][0]["analysis"]["state"], "approved")
         self.assertEqual(approved["tracks"][0]["analysis"]["result"], before)
         reopened = self.manager(lambda *_: self.fail("Restoring must not run analysis"))
         reopened.reconcile([self.row()])
         self.assertEqual(self.track(reopened)["analysis"]["state"], "approved")
+        self.assertEqual(Timing(reopened).get(track_id)["reference_beats"], [])
+        self.assertEqual(Timing(reopened).get(track_id)["grid"], grid)
 
     def test_same_stat_content_changes_are_checked_on_use_not_scan(self):
         manager = self.manager()

@@ -246,9 +246,12 @@ impl Voice {
         Ok(())
     }
     fn set_bass(&mut self, value: f32) {
-        if self.mixer.settings.eq[0] != value {
+        self.set_eq(0, value);
+    }
+    fn set_eq(&mut self, band: usize, value: f32) {
+        if self.mixer.settings.eq[band] != value {
             let mut settings = self.mixer.settings;
-            settings.eq[0] = value;
+            settings.eq[band] = value;
             self.mixer.set(settings);
         }
     }
@@ -546,10 +549,12 @@ impl Audition {
         self.overlap_start = usize::MAX;
         self.overlap_beats = 0.;
         self.voice.set_bass(0.5);
+        self.voice.set_eq(2, 0.5);
         let Some(next) = &mut self.queued else { return };
         next.position = 0;
         next.stretched = false;
         next.voice.set_bass(0.5);
+        next.voice.set_eq(2, 0.5);
         next.voice.seek(0);
         if let Some(grid) = next.voice.grid {
             next.set_tempo(grid.bpm);
@@ -671,6 +676,11 @@ impl Audition {
                 self.voice.set_bass(0.);
                 self.queued.as_mut().unwrap().voice.set_bass(0.5);
             }
+            if self.bass_swap {
+                let incoming =
+                    transition_fades_at(progress, true, self.swap_beat / self.overlap_beats)[1];
+                self.voice.set_eq(2, 0.5 * (1. - incoming));
+            }
             let a = self.sample()?;
             let b = self.queued.as_mut().unwrap().sample()?;
             self.mixed_beats += bpm / (60. * 48000.);
@@ -728,6 +738,7 @@ pub enum Command {
     Remove(usize, u64),
     Grid(usize, u64, Grid),
     ReinterpretGrid(usize, u64, Grid),
+    ShiftBarGrid(usize, u64, Grid),
     Tempo(usize, [u64; 2], f64),
     Pitch(usize, u64, f64),
     Click(usize, u64, f32),
@@ -816,9 +827,12 @@ struct AutoTransition {
     started: bool,
     initial_bpm: f64,
     target_bpm: f64,
+    manual_tempo: bool,
     saved_crossfader: f32,
     starting_gains: [f32; 2],
     starting_bass: [f32; 2],
+    starting_high: f32,
+    manual_high: bool,
     bass_swap: bool,
     bass_swapped: bool,
     swap_beat: f64,
@@ -887,29 +901,9 @@ impl Decks {
         }
     }
     fn cancel_auto(&mut self) {
-        if let Some(auto) = self.auto.take() {
-            if self.matches(auto.generations) {
-                // Arming lowers the stopped incoming fader. Restore it even if
-                // cancelled before the musical launch boundary.
-                let incoming = 1 - auto.from;
-                self.voices[incoming].as_mut().unwrap().gain = auto.starting_gains[incoming];
-                if auto.started {
-                    self.voices[incoming].as_mut().unwrap().playing = false;
-                    self.voices[auto.from].as_mut().unwrap().gain = auto.starting_gains[auto.from];
-                    if auto.bass_swap {
-                        for deck in 0..2 {
-                            self.voices[deck]
-                                .as_mut()
-                                .unwrap()
-                                .set_bass(auto.starting_bass[deck]);
-                        }
-                    }
-                }
-            }
-            self.crossfader = auto.saved_crossfader;
-            self.crossfader_target = crossfader_gains(self.crossfader, self.crossfader_enabled);
-            self.crossfader_ramp = 240;
-        }
+        // Release automation only. A DJ taking over must inherit the exact
+        // transport and mix, including a partially completed bass swap or fade.
+        self.auto = None;
     }
     fn arm_auto(&mut self, from: usize, generations: [u64; 2], end: bool) -> Result<()> {
         anyhow::ensure!(
@@ -1004,8 +998,11 @@ impl Decks {
             started: false,
             initial_bpm: self.master_bpm,
             target_bpm: target,
+            manual_tempo: false,
             saved_crossfader: self.crossfader,
             starting_gains: std::array::from_fn(|d| self.voices[d].as_ref().unwrap().gain),
+            starting_high: a.mixer.settings.eq[2],
+            manual_high: false,
             starting_bass: std::array::from_fn(|d| {
                 self.voices[d].as_ref().unwrap().mixer.settings.eq[0]
             }),
@@ -1038,7 +1035,6 @@ impl Decks {
             voice.launch_beat = None;
         }
         // Silence the incoming channel before playback can begin, in both modes.
-        // Its old fader position is retained only for cancellation.
         self.voices[1 - from].as_mut().unwrap().gain = 0.;
         self.auto = Some(auto);
         Ok(())
@@ -1175,8 +1171,9 @@ impl Decks {
         let launch_beat = a.grid.unwrap().beat(auto.start_seconds);
         if !auto.started && self.global_beat + self.master_bpm / (60. * 48000.) >= launch_beat {
             // Capture the outgoing level at the musical boundary, including changes
-            // made while waiting. Keep the incoming deck's pre-arm level for cancel.
+            // made while waiting.
             auto.starting_gains[auto.from] = a.gain;
+            auto.starting_high = a.mixer.settings.eq[2];
             auto.saved_crossfader = self.crossfader;
             auto.starting_bass =
                 std::array::from_fn(|d| self.voices[d].as_ref().unwrap().mixer.settings.eq[0]);
@@ -1200,7 +1197,9 @@ impl Decks {
         } else {
             (auto.mixed_beats / auto.beats).min(1.)
         };
-        self.master_bpm = auto.initial_bpm + (auto.target_bpm - auto.initial_bpm) * progress;
+        if !auto.manual_tempo {
+            self.master_bpm = auto.initial_bpm + (auto.target_bpm - auto.initial_bpm) * progress;
+        }
         for voice in self.voices.iter_mut().flatten() {
             voice.continuous_tempo(self.master_bpm);
         }
@@ -1217,6 +1216,12 @@ impl Decks {
         );
         self.voices[outgoing].as_mut().unwrap().gain = auto.starting_gains[outgoing] * fades[0];
         self.voices[incoming].as_mut().unwrap().gain = auto.starting_gains[outgoing] * fades[1];
+        if auto.bass_swap && !auto.manual_high {
+            self.voices[outgoing]
+                .as_mut()
+                .unwrap()
+                .set_eq(2, auto.starting_high * (1. - fades[1]));
+        }
         // Scheduled EQ changes fire once so later manual edits remain effective.
         if auto.bass_swap
             && !auto.bass_swapped
@@ -1243,6 +1248,9 @@ impl Decks {
             voice.playing = false;
             if auto.bass_swap {
                 voice.set_bass(auto.starting_bass[auto.from]);
+                if !auto.manual_high {
+                    voice.set_eq(2, auto.starting_high);
+                }
             }
             self.auto = None;
             self.crossfader_target = crossfader_gains(self.crossfader, self.crossfader_enabled);
@@ -1445,13 +1453,10 @@ impl Decks {
                 self.auto.is_some_and(|a| a.started || *d != a.from)
                     && self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
             }
-            Command::Tempo(_, generations, _)
-            | Command::Sync(_, generations, _)
-            | Command::Drift(_, generations) => self.matches(*generations),
-            Command::MasterTempo(_)
-            | Command::MasterTarget(_)
-            | Command::Crossfader(_)
-            | Command::CrossfaderEnabled(_) => true,
+            Command::Tempo(_, generations, _) | Command::Sync(_, generations, _) => {
+                self.matches(*generations)
+            }
+            Command::Crossfader(_) | Command::CrossfaderEnabled(_) => true,
             _ => false,
         };
         if cancels_auto {
@@ -1545,6 +1550,7 @@ impl Decks {
                             voice.overlap_start = usize::MAX;
                             voice.mixed_beats = 0.;
                             voice.voice.set_bass(0.5);
+                            voice.voice.set_eq(2, 0.5);
                             if let Some(grid) = voice.voice.grid {
                                 voice.set_tempo(grid.bpm);
                             }
@@ -1612,7 +1618,9 @@ impl Decks {
                     voice.slip_enabled = old.slip_enabled;
                     if !reset_mixer {
                         voice.gain = old.gain;
-                        voice.mixer.set(old.mixer.settings);
+                        let mut settings = old.mixer.settings;
+                        settings.trim = voice.mixer.settings.trim;
+                        voice.mixer.set(settings);
                     }
                     if preserve_lock && old.synced {
                         if voice
@@ -1974,6 +1982,13 @@ impl Decks {
                             _ => return None,
                         }
                         v.mixer.set(settings);
+                        if parameter == 3 {
+                            if let Some(auto) = &mut self.auto {
+                                if auto.started && auto.from == d {
+                                    auto.manual_high = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1983,6 +1998,35 @@ impl Decks {
                 }) {
                     self.clear_sync(d);
                     self.voices[d].as_mut().unwrap().apply_grid(grid);
+                }
+            }
+            Command::ShiftBarGrid(d, g, grid) => {
+                // Check again at the render boundary: another deck may have
+                // started since the UI requested the correction.
+                let other_playing = self.voices[1 - d].as_ref().is_some_and(|v| v.playing);
+                if let Some(v) = self.voices[d].as_mut().filter(|v| {
+                    !other_playing
+                        && v.generation == g
+                        && v.playing
+                        && v.launch_beat.is_none()
+                        && v.grid.is_some_and(|old| old.bpm == grid.bpm)
+                        && grid.validate(v.source.len() as f64 / 48000.).is_ok()
+                }) {
+                    let beat = grid.beat(v.seconds());
+                    let delta = beat - self.global_beat;
+                    v.grid = Some(grid);
+                    if let Some(offset) = &mut v.loop_phase_offset {
+                        *offset = 0.;
+                    }
+                    if let Some(release) = &mut v.loop_release_beat {
+                        *release += delta;
+                    }
+                    self.global_beat = beat;
+                    self.master_bpm = v.target_bpm;
+                    self.master_bpm_set = true;
+                    self.tempo_target = None;
+                    self.drift_target = None;
+                    self.cancel_auto();
                 }
             }
             Command::ReinterpretGrid(d, g, grid) => {
@@ -2035,6 +2079,9 @@ impl Decks {
             }
             Command::MasterTempo(bpm) => {
                 if bpm.is_finite() && (15.0..=600.0).contains(&bpm) {
+                    if let Some(auto) = &mut self.auto {
+                        auto.manual_tempo = true;
+                    }
                     self.tempo_target = None;
                     self.master_bpm = bpm;
                     self.master_bpm_set = true;
@@ -2043,6 +2090,9 @@ impl Decks {
             }
             Command::MasterTarget(bpm) => {
                 if bpm.is_finite() && (15.0..=600.0).contains(&bpm) {
+                    if let Some(auto) = &mut self.auto {
+                        auto.manual_tempo = true;
+                    }
                     self.tempo_target = Some(bpm);
                     self.drift_target = None;
                     self.master_bpm_set = true;
@@ -2052,6 +2102,9 @@ impl Decks {
                 if self.matches(generations)
                     && self.voices[d].as_ref().is_some_and(|v| v.grid.is_some())
                 {
+                    if let Some(auto) = &mut self.auto {
+                        auto.manual_tempo = true;
+                    }
                     if !self.master_bpm_set {
                         self.master_bpm = self.voices[d].as_ref().unwrap().grid.unwrap().bpm;
                         self.master_bpm_set = true;
@@ -2531,6 +2584,84 @@ mod tests {
                     assert_eq!(a.positions[0], b.positions[0]);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn solo_bar_shift_follows_grid_without_changing_audio_speed_or_lock() {
+        for deck in 0..2 {
+            for locked in [false, true] {
+                for direction in [-1., 1.] {
+                    let setup = || {
+                        let mut decks = auto_decks(deck, 8, false);
+                        decks.auto = None;
+                        let voice = decks.voices[deck].as_mut().unwrap();
+                        voice.grid.as_mut().unwrap().downbeat_seconds = 1.;
+                        voice.synced = locked;
+                        voice.tempo(126.).unwrap();
+                        decks.master_bpm = 126.;
+                        for _ in 0..1024 {
+                            decks.next().unwrap();
+                        }
+                        decks
+                    };
+                    let mut original = setup();
+                    let mut corrected = setup();
+                    let before = corrected.voices[deck].as_ref().unwrap();
+                    let mut grid = before.grid.unwrap();
+                    grid.downbeat_seconds = 1. + direction * 60. / grid.bpm;
+                    let position = before.seconds();
+                    let epoch = before.position_epoch;
+                    let speed = before.clock.speed;
+                    corrected.command(Command::ShiftBarGrid(deck, 1, grid), [1, 1]);
+                    let voice = corrected.voices[deck].as_ref().unwrap();
+                    assert_eq!(voice.grid.unwrap().downbeat_seconds, grid.downbeat_seconds);
+                    assert_eq!(voice.seconds(), position);
+                    assert_eq!(voice.position_epoch, epoch);
+                    assert_eq!(voice.clock.speed, speed);
+                    assert_eq!(voice.synced, locked);
+                    assert_eq!(corrected.global_beat, grid.beat(position));
+                    assert_eq!(corrected.master_bpm, voice.target_bpm);
+                    for _ in 0..1024 {
+                        let a = original.next().unwrap();
+                        let b = corrected.next().unwrap();
+                        assert_eq!(a.deck_samples, b.deck_samples);
+                        assert_eq!(a.positions, b.positions);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bar_shift_rejects_two_playing_decks_and_stale_generations() {
+        for stale in [false, true] {
+            let mut decks = auto_decks(0, 8, false);
+            decks.auto = None;
+            decks.voices[1].as_mut().unwrap().playing = !stale;
+            let before = decks.voices[0].as_ref().unwrap().grid.unwrap();
+            let beat = decks.global_beat;
+            decks.command(
+                Command::ShiftBarGrid(
+                    0,
+                    if stale { 99 } else { 1 },
+                    Grid {
+                        downbeat_seconds: before.downbeat_seconds + 60. / before.bpm,
+                        ..before
+                    },
+                ),
+                [1, 1],
+            );
+            assert_eq!(
+                decks.voices[0]
+                    .as_ref()
+                    .unwrap()
+                    .grid
+                    .unwrap()
+                    .downbeat_seconds,
+                before.downbeat_seconds
+            );
+            assert_eq!(decks.global_beat, beat);
         }
     }
 
@@ -3268,6 +3399,87 @@ mod tests {
         }
     }
     #[test]
+    fn outgoing_high_follows_incoming_fade_and_restores_after_handoff() {
+        for from in 0..2 {
+            for style in 0..=2 {
+                let mut decks = auto_decks(from, 2, false);
+                decks.command(Command::AutoStyle(style), [1, 1]);
+                decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
+                // Capture edits made while waiting, rather than the armed value.
+                decks.command(Command::Mixer(from, 1, 3, 0.8), [1, 1]);
+                decks.command(Command::Mixer(1 - from, 1, 3, 0.6), [1, 1]);
+                decks.advance_auto();
+                assert_eq!(
+                    decks.voices[from].as_ref().unwrap().mixer.settings.eq[2],
+                    0.8
+                );
+                let start = decks.auto.unwrap().start_seconds;
+                decks.global_beat = decks.voices[from]
+                    .as_ref()
+                    .unwrap()
+                    .grid
+                    .unwrap()
+                    .beat(start);
+                decks.advance_auto();
+                assert!(decks.auto.unwrap().started);
+                // Exercise an off-midpoint Smart pivot as well as Bass swap.
+                let pivot = if style == 2 { 3. } else { 4. };
+                decks.auto.as_mut().unwrap().swap_beat = pivot;
+                for (beat, fraction) in [(0., 1.), (pivot / 2., 0.5), (pivot, 0.), (7., 0.)] {
+                    decks.auto.as_mut().unwrap().mixed_beats = beat;
+                    decks.advance_auto();
+                    let expected = if style == 0 { 0.8 } else { 0.8 * fraction };
+                    assert_eq!(
+                        decks.voices[from].as_ref().unwrap().mixer.settings.eq[2],
+                        expected
+                    );
+                    assert_eq!(
+                        decks.voices[1 - from].as_ref().unwrap().mixer.settings.eq[2],
+                        0.6
+                    );
+                }
+                decks.auto.as_mut().unwrap().mixed_beats = 8.;
+                decks.advance_auto();
+                assert!(decks.auto.is_none());
+                assert_eq!(
+                    decks.voices[from].as_ref().unwrap().mixer.settings.eq[2],
+                    0.8
+                );
+            }
+        }
+    }
+    #[test]
+    fn outgoing_high_preserves_cancelled_level_and_respects_manual_takeover() {
+        for style in [1, 2] {
+            for manual in [false, true] {
+                let mut decks = auto_decks(0, 2, false);
+                decks.command(Command::AutoStyle(style), [1, 1]);
+                decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
+                let start = decks.auto.unwrap().start_seconds;
+                decks.global_beat = decks.voices[0].as_ref().unwrap().grid.unwrap().beat(start);
+                decks.advance_auto();
+                decks.auto.as_mut().unwrap().mixed_beats = 2.;
+                decks.advance_auto();
+                assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[2], 0.25);
+                if manual {
+                    decks.command(Command::Mixer(0, 1, 3, 0.7), [1, 1]);
+                    decks.auto.as_mut().unwrap().mixed_beats = 3.;
+                    decks.advance_auto();
+                    assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[2], 0.7);
+                    decks.auto.as_mut().unwrap().mixed_beats = 8.;
+                    decks.advance_auto();
+                    assert!(decks.auto.is_none());
+                    assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[2], 0.7);
+                } else {
+                    decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
+                    assert!(decks.auto.is_none());
+                    decks.advance_auto();
+                    assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[2], 0.25);
+                }
+            }
+        }
+    }
+    #[test]
     fn bass_swap_holds_outgoing_volume_then_exchanges_bass_before_the_midpoint() {
         for from in 0..2 {
             for ramp in [false, true] {
@@ -3400,7 +3612,7 @@ mod tests {
         }
     }
     #[test]
-    fn cancelling_bass_swap_restores_bass() {
+    fn cancelling_bass_swap_preserves_bass_and_playback() {
         let mut decks = auto_decks(0, 1, false);
         decks.command(Command::Mixer(0, 1, 1, 0.7), [1, 1]);
         decks.command(Command::Mixer(1, 1, 1, 0.8), [1, 1]);
@@ -3412,9 +3624,9 @@ mod tests {
         assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.);
         decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
         assert!(decks.auto.is_none());
-        assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.7);
-        assert_eq!(decks.voices[1].as_ref().unwrap().mixer.settings.eq[0], 0.8);
-        assert!(!decks.voices[1].as_ref().unwrap().playing);
+        assert_eq!(decks.voices[0].as_ref().unwrap().mixer.settings.eq[0], 0.);
+        assert_eq!(decks.voices[1].as_ref().unwrap().mixer.settings.eq[0], 0.5);
+        assert!(decks.voices.iter().flatten().all(|v| v.playing));
     }
     #[test]
     fn bass_swap_handles_sub_bar_midpoints_and_zero_overlap_without_leaving_eq_cut() {
@@ -3444,7 +3656,7 @@ mod tests {
             .all(|v| v.mixer.settings.eq[0] == 0.5));
     }
     #[test]
-    fn arming_either_mode_lowers_incoming_fader_and_cancelling_restores_it() {
+    fn arming_either_mode_lowers_incoming_fader_and_cancelling_preserves_it() {
         for from in 0..2 {
             for bass_swap in [false, true] {
                 let mut decks = auto_decks(from, 1, false);
@@ -3458,7 +3670,7 @@ mod tests {
                 assert!(decks.auto.is_some());
                 decks.command(Command::AutoTransition(from, [1, 1], false), [1, 1]);
                 assert!(decks.auto.is_none());
-                assert_eq!(decks.voices[1 - from].as_ref().unwrap().gain, 1.);
+                assert_eq!(decks.voices[1 - from].as_ref().unwrap().gain, 0.);
                 assert_eq!(decks.voices[from].as_ref().unwrap().gain, 0.55);
                 assert!(!decks.voices[1 - from].as_ref().unwrap().playing);
                 // Adjusting the muted incoming fader manually takes over immediately.
@@ -3885,12 +4097,14 @@ mod tests {
             decks.next().unwrap();
         }
         assert!(decks.auto.unwrap().started);
+        let incoming_gain = decks.voices[1].as_ref().unwrap().gain;
         decks.command(Command::Gain(0, 0, 0.2), [1, 1]);
         assert!(decks.auto.is_some());
         decks.command(Command::Gain(0, 1, 0.35), [1, 1]);
         assert!(decks.auto.is_none());
         assert_eq!(decks.voices[0].as_ref().unwrap().gain, 0.35);
-        assert!(!decks.voices[1].as_ref().unwrap().playing);
+        assert_eq!(decks.voices[1].as_ref().unwrap().gain, incoming_gain);
+        assert!(decks.voices.iter().flatten().all(|v| v.playing));
     }
     #[test]
     fn automatic_end_uses_the_last_complete_phrase_and_zero_overlap_uses_eof() {
@@ -3987,27 +4201,144 @@ mod tests {
         }
     }
     #[test]
-    fn automatic_transition_cancel_during_crossfade_restores_mixer_and_stops_incoming() {
-        let mut decks = auto_decks(0, 1, true);
-        decks.command(Command::Crossfader(0.65), [1, 1]);
-        decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
-        for _ in 0..48000 * 3 {
-            decks.next().unwrap();
+    fn cancelling_automatic_transition_preserves_the_current_mix_and_sound() {
+        for from in 0..2 {
+            for style in 0..3 {
+                for end in [false, true] {
+                    for progress in [0.1, 0.6, 0.9] {
+                        let mut decks = auto_decks(from, 1, true);
+                        decks.command(Command::Crossfader(0.65), [1, 1]);
+                        decks.command(Command::AutoStyle(style), [1, 1]);
+                        decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                        let auto = decks.auto.unwrap();
+                        decks.global_beat = decks.voices[from]
+                            .as_ref()
+                            .unwrap()
+                            .grid
+                            .unwrap()
+                            .beat(auto.start_seconds);
+                        decks.next().unwrap();
+                        decks.auto.as_mut().unwrap().mixed_beats = auto.beats * progress;
+                        let before = decks.next().unwrap();
+                        decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                        assert!(decks.auto.is_none());
+                        for i in 0..1000 {
+                            let after = decks.next().unwrap();
+                            assert_eq!(after.playing, [true, true]);
+                            assert_eq!(after.gains, before.gains);
+                            assert_eq!(after.mixer, before.mixer);
+                            assert_eq!(after.crossfader, before.crossfader);
+                            assert_eq!(after.master_bpm, before.master_bpm);
+                            assert_eq!(after.cue_positions, before.cue_positions);
+                            assert_eq!(after.position_epochs, before.position_epochs);
+                            assert_eq!(after.synced, before.synced);
+                            if i > 240 {
+                                assert!(after
+                                    .positions
+                                    .iter()
+                                    .zip(before.positions)
+                                    .all(|(a, b)| *a > b));
+                                assert!(after.samples.iter().any(|s| s.abs() > 0.001));
+                            }
+                        }
+                    }
+                }
+            }
         }
-        assert!(decks.auto.unwrap().started);
-        let bpm = decks.master_bpm;
-        let gains = decks.auto.unwrap().starting_gains;
-        decks.command(Command::AutoTransition(0, [1, 1], false), [1, 1]);
-        assert!(decks.auto.is_none());
-        assert!(!decks.voices[1].as_ref().unwrap().playing);
-        assert_eq!(decks.crossfader, 0.65);
-        for (deck, gain) in gains.into_iter().enumerate() {
-            assert_eq!(decks.voices[deck].as_ref().unwrap().gain, gain);
+    }
+    #[test]
+    fn master_tempo_controls_keep_armed_and_active_transitions_running() {
+        for from in 0..2 {
+            for style in 0..3 {
+                for end in [false, true] {
+                    for active in [false, true] {
+                        for control in 0..3 {
+                            let mut decks = auto_decks(from, 1, true);
+                            // Render the outgoing deck past its initial playback ramp.
+                            // Check continuity of established audio, not startup silence.
+                            for _ in 0..4800 {
+                                decks.next().unwrap();
+                            }
+                            decks.command(Command::AutoStyle(style), [1, 1]);
+                            decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
+                            let planned = decks.auto.unwrap();
+                            if active {
+                                decks.global_beat = decks.voices[from]
+                                    .as_ref()
+                                    .unwrap()
+                                    .grid
+                                    .unwrap()
+                                    .beat(planned.start_seconds);
+                                decks.next().unwrap();
+                                decks.auto.as_mut().unwrap().mixed_beats = planned.beats * 0.4;
+                                decks.next().unwrap();
+                            }
+                            let before = decks.auto.unwrap();
+                            let bpm = decks.master_bpm;
+                            // The small target also exercises reaching the target while
+                            // AUTO is still running, without resuming its old tempo ramp.
+                            let command = match control {
+                                0 => Command::MasterTempo(132.),
+                                1 => Command::MasterTarget(bpm + 0.001),
+                                _ => Command::Drift(1 - from, [1, 1]),
+                            };
+                            decks.command(command, [1, 1]);
+                            let after = decks.auto.unwrap();
+                            assert!(after.manual_tempo);
+                            assert_eq!(after.started, before.started);
+                            assert_eq!(after.mixed_beats, before.mixed_beats);
+                            assert_eq!(after.guide_start, before.guide_start);
+                            assert_eq!(after.beats, before.beats);
+                            assert_eq!(after.bass_swapped, before.bass_swapped);
+                            if !active {
+                                let waiting = decks.next().unwrap();
+                                assert_eq!(waiting.playing[from], true);
+                                assert_eq!(waiting.playing[1 - from], false);
+                                decks.global_beat = decks.voices[from]
+                                    .as_ref()
+                                    .unwrap()
+                                    .grid
+                                    .unwrap()
+                                    .beat(planned.start_seconds);
+                            }
+                            let progress = decks.auto.unwrap().mixed_beats;
+                            for _ in 0..480 {
+                                let frame = decks.next().unwrap();
+                                assert_eq!(frame.playing, [true, true]);
+                                assert_eq!(frame.synced, [true, true]);
+                                assert!(decks.auto.unwrap().started);
+                                assert!(frame.samples.iter().any(|s| s.abs() > 0.001));
+                            }
+                            assert!(decks.auto.unwrap().mixed_beats > progress);
+                            match control {
+                                0 => assert_eq!(decks.master_bpm, 132.),
+                                1 => {
+                                    assert_eq!(decks.master_bpm, bpm + 0.001);
+                                    assert!(decks.tempo_target.is_none());
+                                }
+                                _ => assert!(decks.master_bpm > bpm && decks.master_bpm < 140.),
+                            }
+                            // Finish on the beat timeline and ensure the old automatic
+                            // incoming BPM cannot overwrite the user's tempo at handoff.
+                            decks.auto.as_mut().unwrap().mixed_beats = planned.beats - 0.001;
+                            let mut completed = false;
+                            for _ in 0..1000 {
+                                let frame = decks.next().unwrap();
+                                assert!(frame.playing[1 - from]);
+                                if decks.auto.is_none() {
+                                    assert!(!frame.playing[from]);
+                                    assert_eq!(frame.gains[from], 0.);
+                                    assert_ne!(frame.master_bpm, 140.);
+                                    completed = true;
+                                    break;
+                                }
+                            }
+                            assert!(completed);
+                        }
+                    }
+                }
+            }
         }
-        for _ in 0..1000 {
-            decks.next().unwrap();
-        }
-        assert_eq!(decks.master_bpm, bpm);
     }
     #[test]
     fn automatic_end_reaches_original_incoming_tempo_at_the_source_end() {
@@ -4074,7 +4405,7 @@ mod tests {
                 assert_eq!(first.cue_positions[incoming], cue as u64);
                 assert!((first.positions[incoming] as i64 - cue as i64).abs() <= 2);
                 decks.command(Command::AutoTransition(from, [1, 1], end), [1, 1]);
-                assert!(!decks.voices[incoming].as_ref().unwrap().playing);
+                assert!(decks.voices[incoming].as_ref().unwrap().playing);
                 assert_eq!(decks.voices[incoming].as_ref().unwrap().cue_position, cue);
             }
         }
@@ -5359,6 +5690,68 @@ mod timing_tests {
         assert!(audible(&mut decks));
     }
     #[test]
+    fn lock_accepts_large_bpm_changes_and_renders_audio() {
+        for (source_bpm, target) in [(30., 600.), (300., 15.), (100., 300.), (120., 30.)] {
+            let mut decks = decks();
+            decks.voices[1].as_mut().unwrap().apply_grid(Grid {
+                bpm: source_bpm,
+                downbeat_seconds: 0.1,
+                reviewed: true,
+            });
+            decks.command(Command::MasterTempo(target), [1, 1]);
+            decks.command(Command::Sync(1, [1, 1], true), [1, 1]);
+            let voice = decks.voices[1].as_ref().unwrap();
+            assert!(voice.synced, "{source_bpm} BPM should lock to {target}");
+            assert_eq!(voice.target_bpm, target);
+            assert_eq!(voice.clock.speed, target / source_bpm);
+            assert_eq!(voice.timing_error, 0);
+            decks.command(Command::Play(1, 1), [1, 1]);
+            let mut peak = 0_f32;
+            for _ in 0..12000 {
+                let frame = decks.next().unwrap();
+                assert!(frame.samples.iter().all(|sample| sample.is_finite()));
+                peak = peak.max(frame.samples[0].abs());
+            }
+            assert!(peak > 0.001, "Silent at {source_bpm} -> {target} BPM");
+            assert!(decks.voices[1].as_ref().unwrap().synced);
+            // Changing the master while locked must retain the lock as well.
+            let next_target = if target == 600. { 15. } else { 600. };
+            decks.command(Command::MasterTempo(next_target), [1, 1]);
+            decks.next().unwrap();
+            let voice = decks.voices[1].as_ref().unwrap();
+            assert!(voice.synced);
+            assert_eq!(voice.target_bpm, next_target);
+            assert_eq!(voice.timing_error, 0);
+        }
+    }
+    #[test]
+    fn drift_crosses_large_bpm_differences_in_both_directions_without_unlocking() {
+        for (source_bpm, target) in [(30., 300.), (300., 30.)] {
+            let mut decks = decks();
+            for (deck, bpm) in [(0, source_bpm), (1, target)] {
+                decks.voices[deck].as_mut().unwrap().apply_grid(Grid {
+                    bpm,
+                    downbeat_seconds: 0.1,
+                    reviewed: true,
+                });
+            }
+            decks.command(Command::MasterTempo(source_bpm), [1, 1]);
+            decks.command(Command::Sync(0, [1, 1], true), [1, 1]);
+            decks.command(Command::DriftRate(100.), [1, 1]);
+            decks.command(Command::Drift(1, [1, 1]), [1, 1]);
+            for _ in 0..(3 * 48000) {
+                let frame = decks.next().unwrap();
+                assert!(frame.synced[0]);
+            }
+            assert_eq!(decks.master_bpm, target);
+            assert_eq!(decks.drift_target, None);
+            let follower = decks.voices[0].as_ref().unwrap();
+            assert_eq!(follower.target_bpm, target);
+            assert_eq!(follower.clock.speed, target / source_bpm);
+            assert_eq!(follower.timing_error, 0);
+        }
+    }
+    #[test]
     fn drift_is_rate_limited_and_keeps_lock_states() {
         let mut decks = decks();
         decks.command(Command::MasterTempo(120.), [1, 1]);
@@ -5421,6 +5814,9 @@ mod timing_tests {
         decks.command(Command::Mixer(0, 1, 4, -0.5), [1, 1]);
         let source = decks.voices[0].as_ref().unwrap().source.clone();
         let mut next = Voice::new(source.clone(), 2);
+        let mut settings = next.mixer.settings;
+        settings.trim = -4.;
+        next.mixer.set(settings);
         next.apply_grid(Grid {
             bpm: 100.,
             downbeat_seconds: 0.1,
@@ -5440,11 +5836,16 @@ mod timing_tests {
         assert!(voice.synced);
         assert_eq!(voice.target_bpm, decks.master_bpm);
         assert_eq!(voice.gain, 0.8);
-        assert_eq!(voice.mixer.settings, crate::mixer::Settings::default());
+        assert_eq!(voice.mixer.settings.trim, -4.);
+        assert_eq!(voice.mixer.settings.eq, crate::mixer::Settings::default().eq);
+        assert_eq!(voice.mixer.settings.filter, 0.);
 
         decks.command(Command::Gain(0, 2, 0.3), [2, 1]);
         decks.command(Command::Mixer(0, 2, 4, 0.7), [2, 1]);
         let mut third = Voice::new(source, 3);
+        let mut settings = third.mixer.settings;
+        settings.trim = 2.;
+        third.mixer.set(settings);
         third.apply_grid(Grid {
             bpm: 110.,
             downbeat_seconds: 0.1,
@@ -5463,6 +5864,7 @@ mod timing_tests {
         let voice = decks.voices[0].as_ref().unwrap();
         assert!(!voice.synced);
         assert_eq!(voice.gain, 0.3);
+        assert_eq!(voice.mixer.settings.trim, 2.);
         assert_eq!(voice.mixer.settings.filter, 0.7);
     }
     #[test]
@@ -5647,6 +6049,12 @@ mod audition_sequence_tests {
             let voice = decks.audition.as_ref().unwrap();
             if voice.mixed_beats > 0.5 && voice.mixed_beats < 1. {
                 saw_first_half = true;
+                assert!(voice.voice.mixer.settings.eq[2] > 0.25);
+                assert!(voice.voice.mixer.settings.eq[2] < 0.5);
+                assert_eq!(
+                    voice.queued.as_ref().unwrap().voice.mixer.settings.eq[2],
+                    0.5
+                );
                 assert_eq!(voice.voice.mixer.settings.eq[0], 0.5);
                 assert_eq!(
                     voice.queued.as_ref().unwrap().voice.mixer.settings.eq[0],
@@ -5655,6 +6063,7 @@ mod audition_sequence_tests {
             }
             if voice.mixed_beats > 2.1 {
                 saw_swap = true;
+                assert_eq!(voice.voice.mixer.settings.eq[2], 0.);
                 assert_eq!(voice.voice.mixer.settings.eq[0], 0.);
                 assert_eq!(
                     voice.queued.as_ref().unwrap().voice.mixer.settings.eq[0],
@@ -5667,6 +6076,10 @@ mod audition_sequence_tests {
         decks.command(Command::AuditionSequence(7, false, 0), [0, 0]);
         assert_eq!(
             decks.audition.as_ref().unwrap().voice.mixer.settings.eq[0],
+            0.5
+        );
+        assert_eq!(
+            decks.audition.as_ref().unwrap().voice.mixer.settings.eq[2],
             0.5
         );
     }

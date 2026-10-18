@@ -148,7 +148,9 @@ export function useDecks() {
           const state = currentAudio.current.decks[deck];
           if (!state.track) throw new Error('Load a track first');
           if ((!state.grid && action !== 'detected_bpm') || (value === undefined && action !== 'original_bpm')) throw new Error('Load a track with a timing grid first');
-          const preserveSpeed = action === 'detected_bpm' || action === 'original_bpm';
+          const followClock = action === 'shift_bar_start' && state.playing;
+          if (followClock && currentAudio.current.decks.some(d => d.deck !== deck && d.playing)) throw new Error('Only one deck can be playing to shift its bar start');
+          const preserveSpeed = action === 'detected_bpm' || action === 'original_bpm' || action === 'shift_bar_start';
           if (state.playing && !preserveSpeed) throw new Error('Stop the deck before changing its timing');
           await loadReferences(state);
           const stored = references.current[deck];
@@ -168,7 +170,7 @@ export function useDecks() {
               : { ...source, bpm: bpm!, reviewed: false };
           if (!validGrid(grid, state.track.duration_seconds)) throw new Error('Enter a track BPM between 30 and 300');
           await invoke<TimingRecord>('track_timing', { trackId: state.track.track_id, grid, referenceBeats: beats });
-          await invoke('apply_timing', { deck, generation: state.generation, grid, ...(preserveSpeed ? { preserveSpeed: true } : {}) });
+          await invoke('apply_timing', { deck, generation: state.generation, grid, ...(preserveSpeed ? { preserveSpeed: true } : {}), ...(followClock ? { followClock: true } : {}) });
           stored.beats = beats;
           stored.grid = grid;
           setAudio(previous => {
@@ -177,7 +179,7 @@ export function useDecks() {
             const speed = preserveSpeed ? current.speed ?? 1 : 1;
             const synced = preserveSpeed && !!current.synced;
             const target = grid.bpm * speed;
-            return { ...previous, master_bpm: synced && current.playing && !current.launch_pending ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
+            return { ...previous, master_bpm: (followClock || synced && current.playing && !current.launch_pending) ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
           });
         });
         referenceQueue.current[deck] = task.catch(() => {});
@@ -201,7 +203,16 @@ export function useDecks() {
     }
     catch (e) { setErrors(previous => previous.map((v, d) => d === deck ? String(e) : v)); }
   }
-  return { audio, load, control, refreshTiming, errors, loading, loadingTrackIds, pollError };
+  function clearReferenceBeats(trackId: string) {
+    for (const state of currentAudio.current.decks) {
+      if (state.track?.track_id !== trackId) continue;
+      const stored = references.current[state.deck];
+      stored.beats = [];
+      stored.loaded = true;
+    }
+    setAudio(previous => ({ ...previous, decks: previous.decks.map(state => state.track?.track_id === trackId ? { ...state, reference_beats: [] } : state) }));
+  }
+  return { audio, load, control, refreshTiming, clearReferenceBeats, errors, loading, loadingTrackIds, pollError };
 }
 
 export function time(seconds: number) {
@@ -209,7 +220,7 @@ export function time(seconds: number) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}.${Math.floor((seconds - whole) * 10)}`;
 }
 
-export function Deck({ state, running, loading, loadingTitle, error, load, control, transition, autoAvailable = false, autoMode = 0, autoFast = false, autoFastBars = 4, showVolume = true, syncQuantum = 4, alignLoops = true, snapLoopPoints = true, onTimingOpenChange, onInteract, registerPosition, active = false, analysisState, analyse, analysing = false, approveAnalysis, approving = false, approvalError, trackKey, otherKey }: { transition?: TransitionPlan | null; autoAvailable?: boolean; autoMode?: number; autoFast?: boolean; autoFastBars?: number; showVolume?: boolean; syncQuantum?: number; alignLoops?: boolean; snapLoopPoints?: boolean; onTimingOpenChange?: (deck: number, open: boolean) => void; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; analyse?: () => void; analysing?: boolean; approveAnalysis?: () => void; approving?: boolean; approvalError?: string; trackKey?: string | null; otherKey?: string | null; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function Deck({ state, running, loading, loadingTitle, error, load, control, transition, autoAvailable = false, otherPlaying = true, autoMode = 0, autoFast = false, autoFastBars = 4, showVolume = true, syncQuantum = 4, alignLoops = true, snapLoopPoints = true, onInteract, registerPosition, active = false, analysisState, analyse, analysing = false, approveAnalysis, approving = false, approvalError, trackKey, otherKey }: { transition?: TransitionPlan | null; autoAvailable?: boolean; otherPlaying?: boolean; autoMode?: number; autoFast?: boolean; autoFastBars?: number; showVolume?: boolean; syncQuantum?: number; alignLoops?: boolean; snapLoopPoints?: boolean; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; analyse?: () => void; analysing?: boolean; approveAnalysis?: () => void; approving?: boolean; approvalError?: string; trackKey?: string | null; otherKey?: string | null; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
   const name = state.deck === 0 ? 'A' : 'B';
   const autoClick = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (autoClick.current) clearTimeout(autoClick.current); }, [state.generation, running]);
@@ -230,7 +241,6 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
   const total = state.track?.duration_seconds ?? 0;
   const start = state.track?.start_seconds ?? 0;
   const duration = Math.max(0, total - start);
-  const [timingOpen, setTimingOpen] = useState(false);
   const [trackBpm, setTrackBpm] = useState(state.grid ? String(state.grid.bpm) : '');
   const [gain,setGain]=useState(state.gain);
   const [clickGain,setClickGain]=useState(state.click_gain ?? 0);
@@ -243,10 +253,10 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
   },[state]);
   useEffect(() => setTrackBpm(state.grid ? String(state.grid.bpm) : ''), [state.grid?.bpm, state.generation]);
   useEffect(() => {
-    if (!timingOpen || !running || !state.track) return;
+    if (!running || !state.track) return;
     void control(state.deck, 'click_panel', 1);
     return () => { void control(state.deck, 'click_panel', 0); };
-  }, [timingOpen, state.generation, running, state.track?.track_id]);
+  }, [state.generation, running, state.track?.track_id]);
   const clock = useRef(new DisplayPosition());
   registerPosition?.(state.deck, () => clock.current.at(performance.now()));
   const playhead = useRef<SVGPathElement>(null);
@@ -305,7 +315,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
   const loopOut = state.loop_out_seconds;
   const cue = useCue(state.deck, state.generation, ready, control);
   const preparing = loading || state.loading;
-  const dragTempo = useTempoDrag(state.target_bpm ?? state.grid?.bpm ?? 120, (state.grid?.bpm ?? 120) * .5, (state.grid?.bpm ?? 120) * 2, !ready || loading || state.loading || !state.grid || !!state.synced, value => control(state.deck, 'tempo', value), state.generation);
+  const dragTempo = useTempoDrag(state.target_bpm ?? state.grid?.bpm ?? 120, 15, 600, !ready || loading || state.loading || !state.grid || !!state.synced, value => control(state.deck, 'tempo', value), state.generation);
   return <article className={`deck deck-${state.deck}${preparing ? ' is-loading' : ''}`} aria-label={`Deck ${name}`} aria-busy={preparing} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)} onDragOver={event => { if (event.dataTransfer.types.includes(TRACK_MIME)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }}
     onDrop={event => { const id = event.dataTransfer.getData(TRACK_MIME); if (/^[a-f0-9]{64}$/.test(id)) { event.preventDefault(); void load(state.deck, id); } }}>
     <div className="deck-header"><h2 className={`deck-badge${active ? " active" : ""}`} title={`Deck ${name}${active ? " · active" : ""}`}>{name}</h2>{state.track ? <TrackArtwork trackId={state.track.track_id} className="track-art" fallback="♫" alt={`${state.track.title} cover`} /> : <span className="track-art" aria-hidden="true">♫</span>}<div className="track-meta"><div className="deck-title">{state.track?.title ?? 'No track loaded'}</div><p>{state.track?.artist ?? 'Drop a track to load'}</p></div><div className={`deck-tempo${state.synced ? ' locked' : ''}`}><div className="deck-tempo-value">{state.track && analysisState && ['not_analysed', 'stale', 'failed', 'queued', 'analysing'].includes(analysisState) && <button className="deck-analyse" aria-label={`Analyse deck ${name}`} disabled={loading || state.loading || analysing || ['queued', 'analysing'].includes(analysisState)} onClick={analyse}>{analysing || ['queued', 'analysing'].includes(analysisState) ? 'Analysing…' : 'Analyse'}</button>}<span className="tempo-drag" aria-disabled={!ready || loading || state.loading || !state.grid || !!state.synced} aria-label={`BPM deck ${name}`} onPointerDown={dragTempo} title="Double-click to unlock and restore original tempo" onDoubleClick={() => { if (!ready || !state.grid) return; void (async () => { if (state.synced) await control(state.deck, 'sync', 0); await control(state.deck, 'tempo', state.grid!.bpm); })(); }}>{state.target_bpm ? state.target_bpm.toFixed(1) : '—'}</span><button className={state.synced ? 'tempo-lock active' : 'tempo-lock'} aria-label={`${state.synced ? 'Unlock' : 'Lock'} deck ${name} to master tempo`} aria-pressed={!!state.synced} title={state.synced ? 'Unlock from master BPM' : 'Lock to master BPM'} disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'sync', state.synced ? 0 : 1)}><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path className="lock-shackle" d={state.synced ? 'M5.5 9V6.5a4.5 4.5 0 0 1 9 0V9' : 'M5.5 9V6.5a4.5 4.5 0 0 1 8.5-2'} /><rect x="3.5" y="8.5" width="13" height="9" rx="1.5" /><path className="lock-slot" d="M10 11.5v3" /></svg></button></div><small>{state.launch_pending ? syncQuantum === 1 ? 'WAITING FOR BEAT' : 'WAITING FOR BAR 1' : state.synced ? 'LOCKED TO MASTER' : 'BPM'}</small></div><KeySelector deck={state.deck} generation={state.generation} original={trackKey} other={otherKey} semitones={state.pitch_semitones ?? 0} disabled={!ready || loading || state.loading} select={value => control(state.deck, 'pitch', value)} /></div>
@@ -321,7 +331,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       }}>
       {overviewBars}
       {total > 0 && loopIn != null && loopOut != null && <rect className="loop-region" x={loopIn / total * 1024} y="0" width={(loopOut - loopIn) / total * 1024} height="120" />}
-      {timingOpen && state.reference_beats?.map((seconds, index) => <path key={`${index}-${seconds}`} className="reference-beat" d={`M${seconds / total * 1024},0V120`} />)}
+      {state.reference_beats?.map((seconds, index) => <path key={`${index}-${seconds}`} className="reference-beat" d={`M${seconds / total * 1024},0V120`} />)}
       <path d="M0,60H1024" stroke="#303943" />{wave}
       {total > 0 && loopIn != null && <path className="loop-marker loop-in" aria-label={`Loop in deck ${name}`} d={`M${loopIn / total * 1024},0V120`}><title>{`Loop in ${time(Math.max(0, loopIn - start))}`}</title></path>}
       {total > 0 && loopOut != null && <path className="loop-marker loop-out" aria-label={`Loop out deck ${name}`} d={`M${loopOut / total * 1024},0V120`}><title>{`Loop out ${time(Math.max(0, loopOut - start))}`}</title></path>}
@@ -345,22 +355,6 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       <button className={`cue-button${cue.pressed || state.cue_preview ? ' pressed' : !state.playing && Math.abs(state.position_seconds - (state.cue_seconds ?? 0)) < 1 / 48000 ? ' at-cue' : ''}`} disabled={!ready} aria-label={`Cue deck ${name}`} title={`Paused: set Cue${state.synced ? ` at nearest ${syncQuantum === 1 ? 'beat' : 'bar'}` : ''}. Playing: return to Cue. Hold at Cue to preview; press Play to continue.`} {...cue.handlers}>CUE</button>
       <button className="play-button" aria-label={`${state.playing && !state.cue_preview ? 'Pause' : 'Play'} deck ${name}`} disabled={!ready} onClick={() => void control(state.deck, 'play_pause')}><svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">{state.playing ? <><rect x="5" y="3" width="3" height="14" /><rect x="12" y="3" width="3" height="14" /></> : <path d="M6 3.5 17 10 6 16.5Z" />}</svg></button>
     </div>
-    <details className="deck-settings" onToggle={event => { const open = event.currentTarget.open; setTimingOpen(open); onTimingOpenChange?.(state.deck, open); if (open) { const deck = event.currentTarget.closest<HTMLElement>('.deck'); requestAnimationFrame(() => { if (deck) deck.scrollTop = deck.scrollHeight; }); } }}><summary aria-label={`Timing & tempo deck ${name}`} title="Timing & tempo">•••<span className="sr-only">Timing & tempo</span></summary><div className="timing-controls">
-      {showVolume && <label>Volume <input type="range" min="0" max="1" step="0.01" value={gain} disabled={!ready} aria-label={`Volume deck ${name}`} onChange={event => {gainInput.current=performance.now();setGain(Number(event.target.value));void control(state.deck,'gain',Number(event.target.value));}} /></label>}
-      <button disabled={!ready || state.playing || !state.grid} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / 48000)))}>Set reference beat</button>
-      <div className="shift-bar-row"><span>Shift bar start</span><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', -1)}>Back</button><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', 1)}>Forward</button></div>
-      <button disabled={!ready || !analysisState || !['analysed', 'needs_review', 'stale'].includes(analysisState) || approving} onClick={approveAnalysis}>Approve analysis</button>
-      {analysisState && <span>Analysis: {analysisState === 'approved' ? 'Approved' : analysisState === 'analysed' ? 'Analysed · draft' : analysisState === 'needs_review' ? 'Needs review' : analysisState}</span>}
-      {approvalError && <span role="alert" className="row-error">{approvalError}</span>}
-      <span>Source {state.grid ? `${state.grid.bpm.toFixed(2)} BPM · ${state.grid.reviewed ? 'reviewed' : 'draft'}` : 'timing unavailable'}</span>
-      <label>Track BPM <input type="number" step=".01" min="30" max="300" disabled={!ready} value={trackBpm} onChange={e => setTrackBpm(e.target.value)} /></label>
-      <button disabled={!ready || !trackBpm.trim() || !Number.isFinite(Number(trackBpm)) || Number(trackBpm) < 30 || Number(trackBpm) > 300} onClick={() => void control(state.deck, 'detected_bpm', Number(trackBpm))}>Set BPM</button>
-      <button disabled={!ready || !state.grid || state.grid.bpm / 2 < 30} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm / 2)}>Half BPM</button>
-      <button disabled={!ready || !state.grid || state.grid.bpm * 2 > 300} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm * 2)}>Double BPM</button>
-      <button disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'original_bpm')}>Original BPM</button>
-      <span>Speed {(state.speed ?? 1).toFixed(3)}× · supported 0.5–2.0× · pitch {state.pitch_semitones ? `${state.pitch_semitones > 0 ? '+' : ''}${state.pitch_semitones} st` : 'preserved'}</span>
-      <label>Click volume (0 = off) <input type="range" min="0" max="1" step=".01" value={clickGain} disabled={!ready || !state.grid} onChange={e => {clickInput.current=performance.now();setClickGain(Number(e.target.value));void control(state.deck,'click',Number(e.target.value));}} /></label>
-    </div></details>
     <div className="deck-loop-bank"><div className="auto-controls" aria-label={`Automatic transitions deck ${name}`}>
       {(['NOW', 'END'] as const).map((mode, index) => <button key={mode} aria-label={`AUTO ${mode} deck ${name}`} aria-pressed={autoMode === index + 1} className={autoMode === index + 1 ? `auto-engaged${autoFast ? ' auto-fast' : ''}` : undefined} disabled={autoMode !== index + 1 && (!ready || !autoAvailable)} title={autoMode === index + 1 ? 'Cancel automatic transition' : mode === 'NOW' ? 'Transition at the next phrase boundary; double-click for fast overlap' : 'Transition at the end of the track; double-click for fast overlap'} onClick={event => clickAuto(mode, event.detail)} onDoubleClick={() => fastAuto(mode)}>AUTO {mode}</button>)}
     </div>
@@ -373,6 +367,22 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       return <button key={label} disabled={!ready || (beats != null && !state.grid) || (label === 'OUT' && loopIn == null)} className={active ? 'active' : undefined} aria-pressed={active} aria-label={`Loop ${label} deck ${name}`} title={beats != null ? `${lengthName} loop · press again to release` : label === 'IN' ? `Set loop start ${snapLoopPoints && state.grid ? 'at nearest beat' : 'at playhead'}` : loopOut != null ? 'Release loop' : `Set loop end ${snapLoopPoints && state.grid ? 'at nearest beat' : 'at playhead'}`} onClick={() => void control(state.deck, beats != null ? alignLoops ? 'loop_length_aligned' : 'loop_length' : label === 'IN' ? snapLoopPoints ? 'loop_in_snapped' : 'loop_in' : snapLoopPoints ? 'loop_out_snapped' : 'loop_out', beats ?? undefined)}>{label}</button>;
     })}</div></div>
     <output ref={timeLabel} className="numeric deck-time" aria-label={`Time deck ${name}`}>{time(Math.max(0, state.position_seconds - start))} / {time(duration)}</output></div>
+    <section className="deck-settings" aria-label={`Timing & tempo deck ${name}`}><div className="timing-controls">
+      {showVolume && <label>Volume <input type="range" min="0" max="1" step="0.01" value={gain} disabled={!ready} aria-label={`Volume deck ${name}`} onChange={event => {gainInput.current=performance.now();setGain(Number(event.target.value));void control(state.deck,'gain',Number(event.target.value));}} /></label>}
+      <button disabled={!ready || state.playing || !state.grid} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / 48000)))}>Set reference beat</button>
+      <div className="shift-bar-row"><span>Shift bar start</span><button disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', -1)}>Back</button><button disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', 1)}>Forward</button></div>
+      <button disabled={!ready || !analysisState || !['analysed', 'needs_review', 'stale'].includes(analysisState) || approving} onClick={approveAnalysis}>Approve analysis</button>
+      {analysisState && <span>Analysis: {analysisState === 'approved' ? 'Approved' : analysisState === 'analysed' ? 'Analysed · draft' : analysisState === 'needs_review' ? 'Needs review' : analysisState}</span>}
+      {approvalError && <span role="alert" className="row-error">{approvalError}</span>}
+      <span>Source {state.grid ? `${state.grid.bpm.toFixed(2)} BPM · ${state.grid.reviewed ? 'reviewed' : 'draft'}` : 'timing unavailable'}</span>
+      <label>Track BPM <input type="number" step=".01" min="30" max="300" disabled={!ready} value={trackBpm} onChange={e => setTrackBpm(e.target.value)} /></label>
+      <button disabled={!ready || !trackBpm.trim() || !Number.isFinite(Number(trackBpm)) || Number(trackBpm) < 30 || Number(trackBpm) > 300} onClick={() => void control(state.deck, 'detected_bpm', Number(trackBpm))}>Set BPM</button>
+      <button disabled={!ready || !state.grid || state.grid.bpm / 2 < 30} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm / 2)}>Half BPM</button>
+      <button disabled={!ready || !state.grid || state.grid.bpm * 2 > 300} onClick={() => void control(state.deck, 'detected_bpm', state.grid!.bpm * 2)}>Double BPM</button>
+      <button disabled={!ready || !state.grid} onClick={() => void control(state.deck, 'original_bpm')}>Original BPM</button>
+      <span>Speed {(state.speed ?? 1).toFixed(3)}× · supported 15–600 BPM · pitch {state.pitch_semitones ? `${state.pitch_semitones > 0 ? '+' : ''}${state.pitch_semitones} st` : 'preserved'}</span>
+      <label>Click volume (0 = off) <input type="range" min="0" max="1" step=".01" value={clickGain} disabled={!ready || !state.grid} onChange={e => {clickInput.current=performance.now();setClickGain(Number(e.target.value));void control(state.deck,'click',Number(e.target.value));}} /></label>
+    </div></section>
     {state.loop_release_pending && <p role="status">Loop release queued · waiting for locked deck start boundary</p>}
     {!!state.reposition_seconds && <p>Last master alignment: {state.reposition_seconds > 0 ? '+' : ''}{state.reposition_seconds.toFixed(3)} s</p>}
     {state.timing_error && <p role="alert" className="row-error">{state.timing_error}</p>}
@@ -381,7 +391,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
   </article>;
 }
 
-export function RollingWaveforms({ audio, beats = 32, control, onZoomChange, timingOpen = [false, false], onInteract, activeDeck = 0 }: { audio: AudioState; beats?: number; timingOpen?: boolean[]; onZoomChange?: (beats: number) => void; onInteract?: (deck: number) => void; activeDeck?: number; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function RollingWaveforms({ audio, beats = 32, control, onZoomChange, timingOpen = [true, true], onInteract, activeDeck = 0 }: { audio: AudioState; beats?: number; timingOpen?: boolean[]; onZoomChange?: (beats: number) => void; onInteract?: (deck: number) => void; activeDeck?: number; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const zoomRef = useWaveformZoom(beats, onZoomChange);
   const reference = audio.master_bpm;
   const window = reference && reference > 0 ? beats * 60 / reference : beats / 2;

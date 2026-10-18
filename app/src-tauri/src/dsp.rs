@@ -28,7 +28,8 @@ unsafe impl Send for Dsp {}
 impl Dsp {
     pub fn new(engine: u32, speed: f64, semitones: f64) -> Self {
         assert!([2, 3].contains(&engine));
-        assert!(speed.is_finite() && (0.5..=2.0).contains(&speed));
+        // Full 15–600 target BPM range for every supported 30–300 source grid.
+        assert!(speed.is_finite() && (0.05..=20.0).contains(&speed));
         assert!(semitones.is_finite() && (-12.0..=12.0).contains(&semitones));
         // Real-time, no native threading, linked stereo, consistent pitch mode.
         let options =

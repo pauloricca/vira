@@ -457,6 +457,7 @@ pub struct EngineHandle {
     commands: Mutex<rtrb::Producer<Command>>,
     wake: Option<Arc<Wake>>,
     metadata: Mutex<[Metadata; 2]>,
+    trim_control: Mutex<()>,
     sources: Mutex<HashMap<String, Weak<Source>>>,
     download: Mutex<()>,
     audition_request: Mutex<u64>,
@@ -514,6 +515,7 @@ impl EngineHandle {
             commands: Mutex::new(tx),
             wake: wake.as_ref().ok().cloned(),
             metadata: Mutex::new(std::array::from_fn(|_| Metadata::default())),
+            trim_control: Mutex::new(()),
             sources: Mutex::new(HashMap::new()),
             download: Mutex::new(()),
             audition_request: Mutex::new(0),
@@ -861,6 +863,9 @@ impl EngineHandle {
             }
         };
         let mut voice = Box::new(Voice::new(source, generation));
+        let mut mixer = voice.mixer.settings;
+        mixer.trim = crate::track_meta::gain(&prepared.source_hash)?;
+        voice.mixer.set(mixer);
         let timing =
             crate::service_response("/v1/timing/get", Some(json!({"track_id":track_id})), true)
                 .map_err(anyhow::Error::msg)?
@@ -917,6 +922,8 @@ impl EngineHandle {
         expected: Option<u64>,
     ) -> Result<()> {
         ensure!(deck < 2, "Deck must be A or B");
+        // Keep command and persistence ordering identical during rapid gain drags.
+        let _trim = (action == "trim").then(|| self.trim_control.lock().unwrap());
         let snapshot = self.shared.audible();
         ensure!(
             matches!(
@@ -1209,7 +1216,16 @@ impl EngineHandle {
             }
             _ => anyhow::bail!("Unknown deck transport action"),
         };
-        self.send(command)
+        self.send(command)?;
+        if action == "trim" {
+            let metadata = self.metadata.lock().unwrap();
+            let track = metadata[deck]
+                .records
+                .get(&generations[deck])
+                .ok_or_else(|| anyhow::anyhow!("Load a source first"))?;
+            crate::track_meta::save_gain(&track.source_hash, value.unwrap() as f32)?;
+        }
+        Ok(())
     }
     pub fn apply_grid(
         &self,
@@ -1217,6 +1233,7 @@ impl EngineHandle {
         generation: u64,
         grid: crate::timing::Grid,
         preserve_speed: bool,
+        follow_clock: bool,
     ) -> Result<()> {
         ensure!(deck < 2, "Deck must be A or B");
         let snapshot = self.shared.audible();
@@ -1230,7 +1247,15 @@ impl EngineHandle {
             .get(&generation)
             .ok_or_else(|| anyhow::anyhow!("Load a source first"))?;
         grid.validate(track.duration_seconds)?;
-        self.send(if preserve_speed {
+        if follow_clock {
+            ensure!(
+                snapshot.playing[deck] && !snapshot.playing[1 - deck],
+                "Only the playing solo deck can move the master clock"
+            );
+        }
+        self.send(if follow_clock {
+            Command::ShiftBarGrid(deck, generation, grid)
+        } else if preserve_speed {
             Command::ReinterpretGrid(deck, generation, grid)
         } else {
             Command::Grid(deck, generation, grid)

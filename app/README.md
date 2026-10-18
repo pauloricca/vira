@@ -112,9 +112,13 @@ to zero, and the incoming fader rises from zero to the outgoing deck's starting
 level. Arming either mode first lowers the stopped incoming deck's fader, so it
 starts silently. The outgoing fader stays unchanged while AUTO is waiting. An off-center
 crossfader moves gradually to center over the first bar (or a shorter overlap).
-Cancellation stops the incoming deck and restores the starting faders and crossfader,
-leaving master BPM at its current value and both decks locked. Manual transport,
-timing, tempo, crossfader or active-transition fader changes also cancel the transition.
+Cancellation releases automation and leaves playback, playheads, faders, EQ,
+crossfader and master BPM at their current values so the DJ can take over mid-mix.
+Manual transport, timing, deck tempo/lock, crossfader or active-transition fader
+changes also cancel the transition, then apply only the requested control.
+Master BPM changes and A → / B → drift keep the transition running. They take
+over its tempo ramp; the remaining launch, fades and bass swap follow the new
+master tempo in beats.
 While AUTO is planned and waiting, drag its start, end or bass-swap marker on either
 waveform to move that point on both decks by the same number of beats. Drag inside
 the shaded transition away from a marker to move the whole region on that deck only.
@@ -132,7 +136,8 @@ Seeking the outgoing deck while AUTO is waiting replans its launch boundary.
 EQ adjustments also leave AUTO running; scheduled bass changes still occur once,
 and later manual EQ adjustments remain effective.
 Moving the incoming fader while armed cancels AUTO and applies the manual position.
-Cancelling before playback restores its previous fader position.
+Cancelling before playback leaves its fader at the current position and the
+incoming deck stopped.
 Loop IN/OUT, loop lengths and loop release remain performance controls during AUTO.
 They do not cancel either transition mode or stop the incoming deck. The master
 beat clock keeps the planned launch, fader, tempo and bass-swap timing advancing
@@ -155,9 +160,13 @@ Bass swap holds the outgoing fader during the first half while
 raising the incoming fader from zero to match it, with the incoming bass killed. A quick
 10 ms EQ swap just before the halfway beat kills the outgoing bass and restores
 the incoming bass to unity. The outgoing fader then falls to zero over the second
-half. The stopped deck's previous bass setting is restored at the end; cancelling
-restores both starting bass settings. Moving LO during a bass swap cancels it and
-applies the manual setting. Mid/high EQ, trim and filter stay under manual control.
+half. As the incoming fader rises, the outgoing high EQ gradually falls from its
+current setting to a full cut, reaching the cut when the incoming fader reaches
+full level. The stopped deck's previous bass and high settings are restored at
+the end; cancelling leaves the EQ at its current levels. A manual outgoing high-EQ
+edit takes over that band for the rest of the transition. Manual EQ changes keep the transition
+running; scheduled bass changes still fire once. EQ, trim and filter remain
+available throughout the transition.
 The selected mode also applies to library Play All; changes affect the next transition.
 
 **Smart** uses the Bass swap method with a conservative bass-return detector. It
@@ -193,8 +202,10 @@ tempo presets and click volume. Future controls are disabled;
 in the library. The timing grid's reviewed flag remains a separate assertion.
 The last deck touched, including its top rolling waveform, receives ⌘B to set a
 reference beat, ⌘⇧← / ⌘⇧→ to shift the bar start by one beat, and ⌘⇧A to
-approve analysis. These shortcuts work with the timing panel closed. Beat and bar
-edits require a stopped deck; analysis approval also works during playback. The
+approve analysis. These shortcuts work with the timing panel closed. Reference beat edits require a stopped deck. Bar shifts also work when the target
+is the only playing deck: the master clock follows the corrected grid while
+audio position, playback speed and tempo lock stay unchanged. Analysis approval
+also works during playback. The
 active deck's A/B squares are filled in the deck and rolling
 waveform; the other deck's squares are outlined.
 the deck meters show post-fader peaks, and the stereo master meters show the
@@ -224,7 +235,7 @@ The next track preloads while the current track plays. With an overlap, their
 beat grids share the same bar phase and BPM, with a gradual tempo ramp from the
 outgoing track's original BPM to the incoming track's original BPM using the
 selected transition mode. Pitch stays unchanged. The incoming track continues at its original
-BPM after the transition. Missing/stale grids, BPM ratios outside 0.5–2×, tracks
+BPM after the transition. Missing/stale grids, tracks
 too short for the chosen overlap, or loading past the overlap boundary use
 consecutive playback instead. Starting either deck stops Play All. Turning Play
 All off keeps the current track playing at its original BPM. Changing overlap
@@ -411,6 +422,12 @@ validates the descriptor and streamed PCM checksum, rejecting same-size corrupti
 through webview commands/events.
 
 Each successful load installs only the selected deck, paused at the beginning.
+The mixer **Gain** knob is saved automatically as `gain_db` in per-track metadata
+under `~/Library/Application Support/uk.ricca.vira/track-metadata/`, keyed by the
+source content hash. Loading the same audio on either deck restores that gain,
+including after restarting the app or moving the file. New content starts at 0 dB.
+The loading preference resets volume, EQ and filter; saved track gain is always
+restored. Double-clicking Gain saves its 0 dB reset. Source music files stay read-only.
 For tracks with a timing grid, the first beat is playable zero: load, Stop,
 Cue and Home start there, and the deck clock reads 0:00. Seeking, scrubbing,
 master alignment and loops stay between that boundary and the source end.
@@ -590,7 +607,7 @@ that deck generation. Other loaded decks keep their applied grid until Apply or
 reload. Applying a grid retains source position, returns to its source tempo,
 clears that deck’s master tempo lock.
 
-Each deck's target BPM is bounded to 0.5–2.0 times its applied source BPM.
+Each deck supports the full 15–600 target BPM range, regardless of its source BPM.
 Rubber Band R3 uses duration ratio = source BPM / target BPM, with independent pitch scale
 `2^(semitones / 12)`. Unreviewed grids can be auditioned. Tempo changes reset/re-prime R3 at the
 producer boundary using the current precise source anchor, discard old prepared
@@ -598,8 +615,9 @@ DSP output and crossfade from the last output over 5 ms. This is a short transit
 not a guarantee that stretched song attacks remain sample-exact.
 
 The master BPM is independent of either deck and is unset until the first deck plays at its current tempo. The lock icon beside
-an applied deck's BPM locks it to the master if it has a timing grid and
-the master fits its supported speed range. Draft grids can be locked, so review
+an applied deck's BPM locks it to the master if it has a timing grid.
+Large BPM differences are allowed, including when drifting the master to another
+deck's original tempo while keeping followers locked. Draft grids can be locked, so review
 their musical timing before relying on alignment. Both decks can lock at once. A locked
 deck's BPM and manual tempo controls are greyed out. Unlocking preserves its
 current target BPM. Manual deck tempo changes unlock that deck;
@@ -693,10 +711,9 @@ speaker timing. Retain `--native-check` for milestone-1 lifecycle regression che
 
 ## Rendering/tempo optimisation follow-up
 
-The playback tempo range is **0.5–2.0×**, controlled from the deck header.
-This is 15–600 target BPM across the supported source-grid range,
-bounded to half/double each track's actual source BPM. Source timing remains
-30–300 BPM; sync rejects targets outside the follower range.
+The playback tempo range is **15–600 BPM** for every track, controlled from the deck header.
+Source timing remains 30–300 BPM, giving playback speeds of 0.05–20× at the
+extremes. Locking follows the master across this entire range, preserving pitch.
 
 Rolling rows use cached Retina canvas tiles and a max-peak pyramid. A shared
 visual loop updates canvases and overview playheads directly, without React

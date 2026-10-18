@@ -408,6 +408,10 @@ class LibraryJobs:
             previous = row["analysis"]
             row["analysis"] = {**previous, "state": "approved", "error": None}
             try:
+                timing = self.content.read("timing", row["source_hash"])
+                if timing and timing.get("reference_beats"):
+                    self.content.write("timing", row["source_hash"],
+                                       {**timing, "reference_beats": [], "saved_ns": time.time_ns()})
                 self.persist(row, shared=True)
             except OSError:
                 row["analysis"] = previous

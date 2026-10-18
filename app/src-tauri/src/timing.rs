@@ -30,8 +30,8 @@ impl Grid {
     pub fn speed(self, target: f64) -> Result<f64> {
         let speed = target / self.bpm;
         ensure!(
-            target.is_finite() && (0.5..=2.0).contains(&speed),
-            "Target BPM exceeds the 0.5–2.0 source speed range"
+            target.is_finite() && (15.0..=600.0).contains(&target),
+            "Target BPM must be 15–600"
         );
         Ok(speed)
     }
@@ -102,7 +102,16 @@ mod tests {
             assert!((grid.speed(120. * speed).unwrap() - speed).abs() < 1e-12);
             assert!((grid.seconds(grid.beat(23.456)) - 23.456).abs() < 1e-12);
         }
-        assert!(grid.speed(241.).is_err());
+        assert!(grid.speed(241.).is_ok());
+        for target in [0., 14.99, 600.01, f64::NAN, f64::INFINITY] {
+            assert!(grid.speed(target).is_err());
+        }
+        for bpm in [30., 120., 300.] {
+            for target in [15., 60., 300., 600.] {
+                let source = Grid { bpm, ..grid };
+                assert_eq!(source.speed(target).unwrap(), target / bpm);
+            }
+        }
         assert!(Grid {
             bpm: f64::NAN,
             ..grid

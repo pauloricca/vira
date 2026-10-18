@@ -412,6 +412,7 @@ fn timing_session(engine: Arc<EngineHandle>, seconds: u64, a: &str, b: &str) -> 
                 reviewed: true,
             },
             false,
+            false,
         )?;
         engine.control(d, "gain", Some(0.08))?;
     }

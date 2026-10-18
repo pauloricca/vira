@@ -20,6 +20,7 @@ mod scheduling;
 mod smart;
 pub mod source;
 mod tags;
+mod track_meta;
 pub mod teia;
 pub mod teia_audio;
 mod teia_bridge;
@@ -576,10 +577,17 @@ pub fn run() {
         generation: u64,
         grid: timing::Grid,
         preserve_speed: Option<bool>,
+        follow_clock: Option<bool>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         state
-            .apply_grid(deck, generation, grid, preserve_speed.unwrap_or(false))
+            .apply_grid(
+                deck,
+                generation,
+                grid,
+                preserve_speed.unwrap_or(false),
+                follow_clock.unwrap_or(false),
+            )
             .map_err(|e| format!("{e:#}"))
     }
     #[tauri::command]
