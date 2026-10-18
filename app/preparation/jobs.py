@@ -400,13 +400,13 @@ class LibraryJobs:
                 raise ValueError("Track is unavailable or has changed. Refresh the library.")
             if row["analysis"]["state"] == "approved":
                 return self.state()
-            if row["analysis"]["state"] not in ("analysed", "needs_review") or row["analysis"]["result"] is None:
+            if row["analysis"]["state"] not in ("analysed", "needs_review", "stale") or row["analysis"]["result"] is None:
                 raise ValueError("Analyse this track before approving its analysis.")
             digest, stat = source_hash(self.music / row["filename"])
             if digest != row["source_hash"] or (stat.st_size, str(stat.st_mtime_ns)) != (row["size_bytes"], row["modified_ns"]):
                 raise ValueError("Source changed. Refresh and reanalyse before approving.")
             previous = row["analysis"]
-            row["analysis"] = {**previous, "state": "approved"}
+            row["analysis"] = {**previous, "state": "approved", "error": None}
             try:
                 self.persist(row, shared=True)
             except OSError:

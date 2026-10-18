@@ -502,8 +502,8 @@ test('timing shortcuts use the last touched rolling waveform with the panel clos
   await screen.findAllByText('Approved');
   expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(0);
 });
-test('command shift A approves the playing deck without enabling beat edits', async () => {
-  const track = { ...library.tracks[0], id: 'playing-track', analysis: { state: 'needs_review' as const, result: estimate, error: null } };
+test.each(['needs_review', 'stale'] as const)('command shift A approves the playing %s deck without enabling beat edits', async state => {
+  const track = { ...library.tracks[0], id: 'playing-track', analysis: { state, result: estimate, error: null } };
   const current = { ...library, tracks: [track] };
   invoke.mockImplementation((command: string, args?: { trackId?: string }) => {
     if (command === 'timing_waveform') return Promise.resolve({ artifact_id: 'playing-artifact', fine_peaks: [], fine_peak_frames: 0 });

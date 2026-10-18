@@ -28,7 +28,7 @@ const shortcutCategories = [
   { title: 'Track timing & analysis', shortcuts: [
     ['Cmd + B', 'Set reference beat at the playhead', 'Decks page; active loaded deck, or first loaded deck; stopped with a timing grid'],
     ['Cmd + Shift + ← / →', 'Shift bar start one beat earlier / later', 'Decks page; active loaded deck, or first loaded deck; stopped with a timing grid'],
-    ['Cmd + Shift + A', 'Approve track analysis', 'Decks page; active loaded deck, or first loaded deck; also available while playing'],
+    ['Cmd + Shift + A', 'Approve track analysis', 'Decks page; active loaded deck, or first loaded deck; analysed, needs review, or stale with saved analysis; also available while playing'],
     ['← / →', 'Move timing cursor backward / forward 10 ms', 'Timing editor waveform receives keyboard input'],
     ['Shift + ← / →', 'Move timing cursor backward / forward 1 second', 'Timing editor waveform receives keyboard input'],
     ['Home / End', 'Move timing cursor to track beginning / end', 'Timing editor waveform receives keyboard input'],

@@ -44,9 +44,9 @@ export function RollingRow({ state, running, window, control, transition, master
       ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
       ctx.fillStyle=ctx.strokeStyle; ctx.font='bold 10px sans-serif'; ctx.fillText(label,Math.min(x+4,width-28),12);
     }
-    ctx.strokeStyle='#c8f3ff';
     const grid=gridGeometry(state.grid,position,window,speed,width,state.track?.duration_seconds ?? 0,state.track?.start_seconds ?? 0);
     for (const m of grid) {
+      ctx.strokeStyle=m.beat===1 && (m.bar-1)%4===0 ? '#f6d477' : '#c8f3ff';
       ctx.globalAlpha=(m.beat===1 ? 1 : .5)*(state.grid?.reviewed ? 1 : .7);
       ctx.lineWidth=m.beat===1 ? 2 : 1;
       ctx.beginPath(); ctx.moveTo(m.x,0); ctx.lineTo(m.x,height); ctx.stroke();

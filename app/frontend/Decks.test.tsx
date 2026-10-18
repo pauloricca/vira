@@ -250,11 +250,11 @@ test('reference button uses the playhead and removes the clear deck button', () 
   fireEvent.click(screen.getByRole('button', { name: 'Set reference beat' }));
   expect(control).toHaveBeenCalledWith(0, 'reference_beat', 23.75);
 });
-test('analysis approval works while playing; beat and bar controls require a stopped deck', () => {
+test.each(['needs_review', 'stale'])('%s analysis approval works while playing; beat and bar controls require a stopped deck', analysisState => {
   const control = vi.fn().mockResolvedValue(undefined);
   const approveAnalysis = vi.fn();
   const grid = { bpm: 120, downbeat_seconds: 0, reviewed: false };
-  const { rerender } = render(<Deck state={{ ...state, playing: true, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState="needs_review" approveAnalysis={approveAnalysis} />);
+  const { rerender } = render(<Deck state={{ ...state, playing: true, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState={analysisState} approveAnalysis={approveAnalysis} />);
   for (const name of ['Set reference beat', 'Shift bar start back one beat on deck A', 'Shift bar start forward one beat on deck A']) {
     expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
   }
@@ -264,7 +264,7 @@ test('analysis approval works while playing; beat and bar controls require a sto
   expect((screen.getByRole('button', { name: 'Approve analysis' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
   expect(approveAnalysis).toHaveBeenCalledOnce();
-  rerender(<Deck state={{ ...state, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState="needs_review" approveAnalysis={approveAnalysis} />);
+  rerender(<Deck state={{ ...state, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState={analysisState} approveAnalysis={approveAnalysis} />);
   fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
   expect(approveAnalysis).toHaveBeenCalledTimes(2);
 });

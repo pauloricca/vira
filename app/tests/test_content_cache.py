@@ -169,6 +169,26 @@ class ContentCacheTests(unittest.TestCase):
         self.assertEqual(self.calls, ["first", "second"])
         self.assertEqual(self.second.state()["tracks"][0]["analysis"]["state"], "analysed")
 
+    def test_stale_analysis_can_be_approved_and_persisted_without_reanalysis(self):
+        original, _ = self.analysed()
+        path = self.content.root / "analysis" / (original["source_hash"] + ".json")
+        value = json.loads(path.read_text())
+        value["analyzer_version"] = "old-analyzer"
+        value["analysis"]["state"] = "analysed"
+        atomic_json(path, value)
+        moved = self.move()
+        self.second.identify(moved["id"])
+        approved = self.second.approve(moved["id"])["tracks"][0]["analysis"]
+        self.assertEqual(approved["state"], "approved")
+        self.assertEqual(approved["result"], original["analysis"]["result"])
+        self.assertIsNone(approved["error"])
+        self.assertEqual(self.second.cached(self.second.state()["tracks"][0]), approved)
+        self.assertEqual(self.content.read("analysis", original["source_hash"])["analysis"], approved)
+        self.assertEqual(self.calls, ["first"])
+        self.second.rows[moved["id"]]["analysis"] = {"state": "stale", "result": None, "error": None}
+        with self.assertRaisesRegex(ValueError, "Analyse this track"):
+            self.second.approve(moved["id"])
+
     def test_recognising_an_existing_legacy_row_keeps_its_approval_and_save_time(self):
         original, _ = self.analysed()
         saved = self.content.read("analysis", original["source_hash"])["saved_ns"]

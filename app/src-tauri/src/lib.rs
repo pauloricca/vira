@@ -55,6 +55,8 @@ pub struct Track {
     pub status: FileStatus,
     pub error: Option<String>,
     pub source_hash: Option<String>,
+    #[serde(default)]
+    pub timing_bpm: Option<f64>,
     pub analysis: Analysis,
     #[serde(default)]
     pub artwork_available: bool,
@@ -127,7 +129,10 @@ impl Library {
                 ) && track.analysis.result.is_none())
                 || (!matches!(
                     track.analysis.state,
-                    AnalysisState::Analysed | AnalysisState::NeedsReview | AnalysisState::Approved | AnalysisState::Stale
+                    AnalysisState::Analysed
+                        | AnalysisState::NeedsReview
+                        | AnalysisState::Approved
+                        | AnalysisState::Stale
                 ) && track.analysis.result.is_some())
             {
                 return Err("Preparation service returned invalid track metadata.".into());
@@ -763,6 +768,20 @@ mod tests {
             "source_hash": "b".repeat(64), "analysis": {"state":"not_analysed", "result":null,"error":null} }]
         }))
         .unwrap()
+    }
+    #[test]
+    fn library_round_trip_preserves_saved_timing_bpm() {
+        let legacy = library("test.wav");
+        assert_eq!(legacy.tracks[0].timing_bpm, None);
+        let mut payload = serde_json::to_value(legacy).unwrap();
+        payload["tracks"][0]["timing_bpm"] = serde_json::json!(171.93946);
+        let decoded = serde_json::from_value::<Library>(payload)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(decoded.tracks[0].timing_bpm, Some(171.93946));
+        let frontend_payload = serde_json::to_value(decoded).unwrap();
+        assert_eq!(frontend_payload["tracks"][0]["timing_bpm"], 171.93946);
     }
     #[test]
     fn validates_identity_and_configured_bin() {

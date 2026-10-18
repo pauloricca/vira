@@ -637,8 +637,9 @@ oldest. Flags appear on the rolling and full-track waveforms while the panel is
 open. The adjusted source grid, BPM, and flags are saved with the track and
 restored after restarting VIRA. The panel's **Track BPM**, **Set BPM**, **Half BPM**,
 **Double BPM**, and **Original BPM** controls save and apply source-grid corrections
-during playback without changing the deck’s speed or tempo lock. A locked deck
+during playback without changing the deck’s speed or tempo lock. A playing, locked deck
 updates the master BPM by the same ratio (Half/Double BPM halves/doubles it).
+Corrections on stopped decks or decks waiting to launch leave the master BPM unchanged.
 Original BPM restores the analysis suggestion's BPM, preserving
 the downbeat and reference flags. BPM corrections clear timing review. Reference and bar-start edits require a
 stopped deck and clear deck sync.

@@ -313,7 +313,7 @@ export function App() {
   }
   async function approve(trackId: string) {
     const track = library?.tracks.find(candidate => candidate.id === trackId);
-    if (!track || !['analysed', 'needs_review'].includes(track.analysis.state) || approving.has(trackId)) return;
+    if (!track || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state) || approving.has(trackId)) return;
     const current = generation.current;
     setApproving(previous => new Set(previous).add(trackId));
     setRowErrors(previous => ({ ...previous, [trackId]: '' }));

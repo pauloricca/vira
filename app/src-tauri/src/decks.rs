@@ -1324,6 +1324,30 @@ impl Decks {
         let grid = voice
             .grid
             .ok_or_else(|| anyhow::anyhow!("Apply a timing grid before locking"))?;
+        if !voice.synced
+            && voice.playing
+            && voice.launch_beat.is_none()
+            && !self
+                .voices
+                .iter()
+                .enumerate()
+                .any(|(other, v)| other != deck && v.as_ref().is_some_and(|v| v.playing))
+            && !crate::patterns::clock_running()
+        {
+            // The only running source owns the phase. Lock without seeking or
+            // resetting its stretcher, even when an idle deck is already locked.
+            self.global_beat = grid.beat(voice.seconds());
+            self.master_bpm = voice.target_bpm;
+            self.master_bpm_set = true;
+            self.tempo_target = None;
+            self.drift_target = None;
+            let voice = self.voices[deck].as_mut().unwrap();
+            if voice.loop_end.is_some() {
+                voice.loop_phase_offset = Some(0.);
+            }
+            voice.timing_error = 0;
+            return Ok(());
+        }
         grid.speed(self.master_bpm)?;
         let position = if voice.playing {
             Some(grid.align_quantum_from(
@@ -1973,7 +1997,7 @@ impl Decks {
                     v.loop_length = v.loop_length.map(|beats| beats * ratio);
                     v.loop_phase_offset = None;
                     v.loop_release_beat = None;
-                    if v.synced {
+                    if v.synced && v.playing && v.launch_beat.is_none() {
                         self.master_bpm = v.target_bpm;
                         self.tempo_target = None;
                         self.drift_target = None;
@@ -2505,6 +2529,47 @@ mod tests {
                     let b = corrected.next().unwrap();
                     assert_eq!(a.deck_samples, b.deck_samples);
                     assert_eq!(a.positions[0], b.positions[0]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_source_bpm_corrections_leave_master_and_other_audio_unchanged() {
+        for waiting in [false, true] {
+            for bpm in [60., 240.] {
+                let setup = || {
+                    let mut decks = auto_decks(1, 8, false);
+                    decks.master_bpm = 140.;
+                    decks.master_bpm_set = true;
+                    let voice = decks.voices[0].as_mut().unwrap();
+                    voice.synced = true;
+                    voice.playing = waiting;
+                    voice.launch_beat = waiting.then_some(100.);
+                    decks
+                };
+                let mut original = setup();
+                let mut corrected = setup();
+                corrected.command(
+                    Command::ReinterpretGrid(
+                        0,
+                        1,
+                        Grid {
+                            bpm,
+                            downbeat_seconds: 0.,
+                            reviewed: false,
+                        },
+                    ),
+                    [1, 1],
+                );
+                assert_eq!(corrected.master_bpm, 140.);
+                assert_eq!(corrected.voices[0].as_ref().unwrap().grid.unwrap().bpm, bpm);
+                for _ in 0..256 {
+                    let a = original.next().unwrap();
+                    let b = corrected.next().unwrap();
+                    assert_eq!(a.master_bpm, b.master_bpm);
+                    assert_eq!(a.deck_samples[1], b.deck_samples[1]);
+                    assert_eq!(a.positions[1], b.positions[1]);
                 }
             }
         }
@@ -4894,6 +4959,55 @@ mod timing_tests {
             );
         }
         decks
+    }
+    #[test]
+    fn locking_the_only_playing_deck_adopts_its_clock_without_changing_audio() {
+        for deck in 0..2 {
+            for quantum in [1, 4] {
+                for master_bpm in [100., 120.] {
+                    for looping in [false, true] {
+                        let setup = || {
+                            let mut decks = decks();
+                            decks.command(Command::SyncQuantum(quantum), [1, 1]);
+                            // A loaded, locked, paused deck does not own the clock.
+                            decks.command(Command::Sync(1 - deck, [1, 1], true), [1, 1]);
+                            decks.command(Command::Play(deck, 1), [1, 1]);
+                            decks.command(Command::Seek(deck, 1, 72000), [1, 1]);
+                            if looping {
+                                decks.command(Command::LoopLength(deck, 1, 0.5, false), [1, 1]);
+                            }
+                            decks.command(Command::MasterTempo(master_bpm), [1, 1]);
+                            for _ in 0..1234 {
+                                decks.next().unwrap();
+                            }
+                            decks
+                        };
+                        let mut original = setup();
+                        let mut locked = setup();
+                        let before = locked.voices[deck].as_ref().unwrap();
+                        let seconds = before.seconds();
+                        let epoch = before.position_epoch;
+                        let bpm = before.target_bpm;
+                        let beat = before.grid.unwrap().beat(seconds);
+                        assert!((locked.global_beat - beat).abs() > 0.1);
+                        locked.command(Command::Sync(deck, [1, 1], true), [1, 1]);
+                        let voice = locked.voices[deck].as_ref().unwrap();
+                        assert!(voice.synced);
+                        assert_eq!(voice.seconds(), seconds);
+                        assert_eq!(voice.position_epoch, epoch);
+                        assert_eq!(locked.master_bpm, bpm);
+                        assert!(locked.master_bpm_set);
+                        assert_eq!(locked.global_beat, beat);
+                        for _ in 0..512 {
+                            let a = original.next().unwrap();
+                            let b = locked.next().unwrap();
+                            assert_eq!(a.deck_samples[deck], b.deck_samples[deck]);
+                            assert_eq!(a.positions[deck], b.positions[deck]);
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn independent_master_and_deck_locks() {

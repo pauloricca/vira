@@ -177,7 +177,7 @@ export function useDecks() {
             const speed = preserveSpeed ? current.speed ?? 1 : 1;
             const synced = preserveSpeed && !!current.synced;
             const target = grid.bpm * speed;
-            return { ...previous, master_bpm: synced ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
+            return { ...previous, master_bpm: synced && current.playing && !current.launch_pending ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
           });
         });
         referenceQueue.current[deck] = task.catch(() => {});
@@ -349,7 +349,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       {showVolume && <label>Volume <input type="range" min="0" max="1" step="0.01" value={gain} disabled={!ready} aria-label={`Volume deck ${name}`} onChange={event => {gainInput.current=performance.now();setGain(Number(event.target.value));void control(state.deck,'gain',Number(event.target.value));}} /></label>}
       <button disabled={!ready || state.playing || !state.grid} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / 48000)))}>Set reference beat</button>
       <div className="shift-bar-row"><span>Shift bar start</span><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', -1)}>Back</button><button disabled={!ready || state.playing || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} onClick={() => void control(state.deck, 'shift_bar_start', 1)}>Forward</button></div>
-      <button disabled={!ready || !analysisState || !['analysed', 'needs_review'].includes(analysisState) || approving} onClick={approveAnalysis}>Approve analysis</button>
+      <button disabled={!ready || !analysisState || !['analysed', 'needs_review', 'stale'].includes(analysisState) || approving} onClick={approveAnalysis}>Approve analysis</button>
       {analysisState && <span>Analysis: {analysisState === 'approved' ? 'Approved' : analysisState === 'analysed' ? 'Analysed · draft' : analysisState === 'needs_review' ? 'Needs review' : analysisState}</span>}
       {approvalError && <span role="alert" className="row-error">{approvalError}</span>}
       <span>Source {state.grid ? `${state.grid.bpm.toFixed(2)} BPM · ${state.grid.reviewed ? 'reviewed' : 'draft'}` : 'timing unavailable'}</span>
