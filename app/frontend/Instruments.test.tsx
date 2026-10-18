@@ -23,9 +23,10 @@ test('saves a named instrument with independent audio and MIDI devices and chann
   fireEvent.change(screen.getByLabelText('MIDI input device'), {target:{value:'41'}});
   fireEvent.change(screen.getByLabelText('MIDI input channel'), {target:{value:'2'}});
   fireEvent.change(screen.getByLabelText('MIDI output device'), {target:{value:'42'}});
+  fireEvent.change(screen.getByLabelText('Instrument timing advance'), {target:{value:'1250'}});
   fireEvent.click(screen.getByText('Save instruments'));
   await screen.findByText('All changes saved');
-  expect(invoke).toHaveBeenCalledWith('save_instruments', {items:[expect.objectContaining({name:'My synth', audio_input:{device:'Interface',channels:[3,4]}, audio_output:{device:'Interface',channels:[8]}, midi_input:{device:41,channel:2}, midi_output:{device:42,channel:null}})]});
+  expect(invoke).toHaveBeenCalledWith('save_instruments', {items:[expect.objectContaining({name:'My synth', advance_ms:1250, audio_input:{device:'Interface',channels:[3,4]}, audio_output:{device:'Interface',channels:[8]}, midi_input:{device:41,channel:2}, midi_output:{device:42,channel:null}})]});
 });
 test('retains disconnected selections, reports save failures, and can revert deletion', async () => {
   const item: Instrument = {id:'synth',name:'Synth',audio_input:{device:'Missing',channels:[7,8]},audio_output:null,midi_input:null,midi_output:{device:99,channel:7}};

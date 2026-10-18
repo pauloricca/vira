@@ -268,6 +268,15 @@ matches it. The old expandable estimate row has been removed.
 The **Settings** tab beside the workspace tabs shows the shared waveform zoom,
 music folder and refresh control, native audio status, master BPM, and the persisted master tempo drift rate (default 1 BPM/sec). Returning to Decks keeps the selected zoom and deck playback state. Pinch over either top rolling waveform to zoom both rows together, snapping to the existing 1, 2, 4, and 8-bar intervals around the fixed playheads.
 
+The **Sources** dropdown beside the rolling-waveform zoom selects which rows are
+visible and remembers the selection. Deck A and Deck B are enabled initially.
+Other options are the non-deck routing nodes with an unmuted path to Master,
+including patches, input devices, generators and effects; cue-only paths are
+excluded. Their rows show captured audio to the left of the shared output-time
+playhead, with the master beat grid across the row and no seeking. Capture retains about 82 seconds at
+5 ms peak resolution, including while a row is hidden; applying an audio-routing
+change starts a fresh history. Extra rows scroll within the waveform area.
+
 The application window itself stays fixed. The deck row keeps a constant height,
 the library and performance panels fill the remaining space, and only the library
 track list scrolls when it has more rows than fit. Expanded deck timing controls
@@ -912,24 +921,28 @@ Mixolydian scale and base octave remap the melody without changing its stored
 degrees or octave offsets. Rename inline; duplicate and delete are in the editor
 header. Shortening a loop removes notes beyond its end and clips crossing notes.
 
-Output compensation sends MIDI **0–100 ms early**, with an optional override per
-pattern. The output setting is shared by every pattern using that destination.
-Compensation is manual: measure the external instrument/audio path and enter the
-required advance. It does not change Vira's audio routing. Pattern output currently
-supports CoreMIDI destinations; Teia instrument destinations are reserved for a
-later extension.
+Instrument timing advance sends feeding patterns early, with **no upper limit**
+on the non-negative millisecond value. Set it in
+Instruments and save; each destination supplies its own timing through filters
+and other transformations. Timing edits preserve running pattern phase and held
+notes; events already handed to CoreMIDI retain their existing timestamps.
+Legacy pattern/output compensation fields remain readable but routed playback
+uses the destination instrument’s timing instead.
+
+Snap to grid starts enabled. Disable it to move and resize notes freely in time;
+new notes always start in the clicked grid cell. Pitch stays scale relative.
 
 Scheduling runs on a native worker from the Core Audio playback timestamp and
 master beat anchor; webview polling only displays the playhead. Events use exact
 CoreMIDI host timestamps and a 5 ms scheduling horizon, plus the configured early
 advance. Active note ownership is counted across patterns sharing a channel/pitch.
 Loop ends release notes before retriggering them. Stop is quantised; edits to a
-running pattern release its old notes and relaunch on its next selected boundary.
+running pattern preserve its scheduling cursor unless its destination changes.
 Master phase jumps release and requeue patterns. Missing audio clock, MIDI device
 disconnection and application exit release owned notes. A stalled worker skips
 stale events instead of emitting a burst of old note-ons.
 
-Pattern definitions and output compensation are atomically saved to
+Pattern definitions are atomically saved to
 `~/Library/Application Support/uk.ricca.vira/patterns.json`. Play state is ephemeral;
 reopening the app never starts external instruments automatically. The version's
 `kind: melodic` and `mode: relative` fields separate the current editor from future
@@ -1024,12 +1037,13 @@ old route's owned notes and cancel pending internal notes.
 
 
 The **Transformations** palette contains **Octave shift** and **Filter**. Each
-accepts one Note or MIDI cable and exposes both output types; transformations can
+accepts multiple cables on its Note and MIDI inputs and exposes both output types; transformations can
 be chained and their outputs can feed multiple destinations. Set Octaves inside
 the shift node (−10 to +10). Filter passes pitches strictly Above or Below its
 selected note; the threshold itself is excluded. Both transform note-on/off and
 polyphonic pressure consistently, preserve channels and other MIDI messages,
 and drop pitches outside 0–127. Note outputs retain their latched-value behavior.
+Each source-to-destination path retains independent note ownership (up to 256 paths).
 Changing settings or removing a route releases notes owned by the old route.
 
 Routing and the Patterns canvas share `frontend/Patching.tsx` and
@@ -1050,8 +1064,9 @@ mono sends average left and right. MIDI input and output have independent
 channel selectors: **All** receives every input channel and preserves source
 channels on output. Definitions persist in the app support `instruments.json`.
 
-In **Routing → Instruments**, add **From [name]** to receive audio or **To [name]**
-to send it, then cable these endpoints to decks, effects, or patch audio ports
+In **Routing → Instruments**, add the named instrument once. Its left audio port
+sends to the instrument and its right audio port receives from it, when those
+connections are configured. Cable these ports to decks, effects, or patch audio ports
 and **Apply routing**. In **Patterns → Instruments**, add a named instrument and
 connect its MIDI/note ports to patterns, patches, or other destinations. Saved
 cables refer to the instrument identity, so renaming or changing its connections

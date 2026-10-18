@@ -1,3 +1,4 @@
+import { instrumentGraph, engineGraph } from './routingInstruments';
 import { useInstruments } from './instrumentModel';
 import { PatchingPage, PatchingHeading, PatchingNodeHeader, patchPortTop, patchPortPoint, NodePalette, nodePlacement, paletteDrop, paletteDragOver, withoutPatchNode, usePatchingKeys, type PatchPoint } from './Patching';
 import { canvasPosition, cablePath as path } from './routingGeometry';
@@ -6,13 +7,13 @@ import { addSessionPatch, usePatchLibrary, patchAudioInputs } from './patchLibra
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
-type Kind = 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
-export type RoutingNode = { id: string; kind: Kind; deck: number | null; label: string; x: number; y: number; value: number; patch_inputs?: { id: string; label: string }[] };
+type Kind = 'instrument' | 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
+export type RoutingNode = { id: string; kind: Kind; deck: number | null; label: string; custom_label?: string; x: number; y: number; value: number; instrument_input?: boolean; instrument_output?: boolean; patch_inputs?: { id: string; label: string }[] };
 export type Wire = { from: string; output: string; to: string; input: string; gain: number };
 export type Graph = { nodes: RoutingNode[]; wires: Wire[] };
-export const inputs = (node: RoutingNode) => node.kind === 'patch' && node.patch_inputs ? node.patch_inputs.map(p => p.id) : node.kind === 'input' || node.kind === 'player' || node.kind === 'oscillator' ? [] : node.kind === 'crossfader' || node.kind === 'cue' ? ['A', 'B'] : node.kind === 'compressor' ? ['audio', 'sidechain'] : node.kind === 'ring_modulation' ? ['audio', 'carrier'] : ['audio'];
-const outputs = (node: RoutingNode) => node.kind === 'output' ? [] : node.kind === 'compressor' || node.kind === 'ring_modulation' ? ['audio', 'dry'] : node.kind === 'oscillator' ? ['audio', 'cosine'] : ['audio'];
-const removable = (node: RoutingNode) => node.kind === 'input' || node.kind === 'patch' || node.id.startsWith('instrument-out-') || isProcessor(node);
+export const inputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_input ? ['audio'] : [] : node.kind === 'patch' && node.patch_inputs ? node.patch_inputs.map(p => p.id) : node.kind === 'input' || node.kind === 'player' || node.kind === 'oscillator' ? [] : node.kind === 'crossfader' || node.kind === 'cue' ? ['A', 'B'] : node.kind === 'compressor' ? ['audio', 'sidechain'] : node.kind === 'ring_modulation' ? ['audio', 'carrier'] : ['audio'];
+const outputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_output ? ['audio'] : [] : node.kind === 'output' ? [] : node.kind === 'compressor' || node.kind === 'ring_modulation' ? ['audio', 'dry'] : node.kind === 'oscillator' ? ['audio', 'cosine'] : ['audio'];
+const removable = (node: RoutingNode) => node.kind === 'input' || node.kind === 'patch' || node.kind === 'instrument' || isProcessor(node);
 const isProcessor = (node: RoutingNode) => ['gain', 'compressor', 'oscillator', 'ring_modulation'].includes(node.kind);
 const point = (node: RoutingNode, port: string, output: boolean) => patchPortPoint(node, (output ? outputs(node) : inputs(node)).indexOf(port), output);
 const equal = (a: Graph | null, b: Graph | null) => JSON.stringify(a) === JSON.stringify(b);
@@ -31,6 +32,9 @@ export function Routing({ active = true }: { active?: boolean }) {
   acceptedRef.current = accepted;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [liveRouting, setLiveRouting] = useState(false);
+  const [liveApplying, setLiveApplying] = useState(false);
+  const lastLiveAttempt = useRef<Graph | null>(null);
   const {files} = usePatchLibrary(active);
   const [zoom, setZoom] = useState(.8);
   const [selected, setSelected] = useState<Selection>(null);
@@ -60,16 +64,18 @@ export function Routing({ active = true }: { active?: boolean }) {
     if (moving.current) { showGraph(moving.current.before); moving.current = null; }
     endGesture();
   };
-  const receiveGraph = (value: Graph) => {
+  const receiveGraph = (raw: Graph) => {
+    const value = instrumentGraph(raw, instruments);
     const previous = acceptedRef.current;
     const added = value.nodes.filter(n => n.kind === 'patch' && !previous?.nodes.some(old => old.id === n.id));
     const removed = previous?.nodes.filter(n => (n.kind === 'patch' || n.id.startsWith('instrument-')) && !value.nodes.some(next => next.id === n.id)).map(n => n.id) ?? [];
     const merge = (draft: Graph): Graph => {
+      draft = instrumentGraph(draft, instruments);
       const nodes = [...draft.nodes.filter(n => !removed.includes(n.id)).map(n => {
-        const live = value.nodes.find(next => (next.kind === 'patch' || next.kind === 'input' || next.id.startsWith('instrument-out-') || next.id === 'headphones') && next.id === n.id);
-        return live ? { ...n, label: live.label, patch_inputs: live.patch_inputs } : n;
+        const live = value.nodes.find(next => (next.kind === 'patch' || next.kind === 'input' || next.kind === 'instrument' || next.id === 'headphones') && next.id === n.id);
+        return live ? { ...n, label: live.label, patch_inputs: live.patch_inputs, instrument_input: live.instrument_input, instrument_output: live.instrument_output } : n;
       }), ...added.filter(n => !draft.nodes.some(old => old.id === n.id))];
-      const valid = (w: Wire) => { const target = nodes.find(n => n.id === w.to); return nodes.some(n => n.id === w.from) && target && inputs(target).includes(w.input); };
+      const valid = (w: Wire) => { const target = nodes.find(n => n.id === w.to); const source = nodes.find(n => n.id === w.from); return source && outputs(source).includes(w.output) && target && inputs(target).includes(w.input); };
       const wires = draft.wires.filter(valid);
       for (const wire of value.wires) {
         const old = previous?.nodes.find(n => n.id === wire.to);
@@ -95,7 +101,7 @@ export function Routing({ active = true }: { active?: boolean }) {
     const timer = window.setInterval(refresh, 3000);
     void listen<Graph>('patch-routing-changed', event => { if (!stopped) receiveGraph(event.payload); }).then(stop => { if (stopped) stop(); else unlisten = stop; }).catch(() => undefined);
     return () => { stopped = true; window.clearInterval(timer); unlisten?.(); };
-  }, [active]);
+  }, [active, instruments]);
   useEffect(() => {
     if (!active) {
       cancelInteraction();
@@ -166,21 +172,32 @@ export function Routing({ active = true }: { active?: boolean }) {
   const apply = async () => {
     if (!graph) return;
     endGesture(); setBusy(true); setError(null);
-    try { await invoke('set_routing_graph', { graph }); setAccepted(graph); }
+    try { await invoke('set_routing_graph', { graph: engineGraph(graph) }); acceptedRef.current = graph; setAccepted(graph); }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   };
+  // Serialize live writes while keeping editing responsive. Changes made during
+  // a write are sent next; a rejected draft waits for another edit or toggle.
+  useEffect(() => {
+    if (!active || !liveRouting || busy || liveApplying || !graph || equal(graph, accepted) || equal(graph, lastLiveAttempt.current)) return;
+    const value = graph;
+    lastLiveAttempt.current = value;
+    setLiveApplying(true); setError(null);
+    void invoke('set_routing_graph', { graph: engineGraph(value) }).then(() => {
+      lastLiveAttempt.current = null;
+      acceptedRef.current = value; setAccepted(value);
+    }).catch(e => setError(String(e))).finally(() => setLiveApplying(false));
+  }, [active, liveRouting, busy, liveApplying, graph, accepted]);
   const add = async (id: string, point = nodePlacement(canvas.current!, 1600, zoom)) => {
     if (!current.current || busy) return;
     setBusy(true);
     try {
-      if (id.startsWith('instrument-in-') || id.startsWith('instrument-out-')) {
-        const input = id.startsWith('instrument-in-');
-        const instrument = instruments.find(i => id === `instrument-${input ? 'in' : 'out'}-${i.id}`);
-        if (!instrument || !(input ? instrument.audio_input : instrument.audio_output)) throw new Error('Instrument connection is unavailable');
+      if (id.startsWith('instrument-')) {
+        const instrument = instruments.find(i => id === `instrument-${i.id}`);
+        if (!instrument || !(instrument.audio_input || instrument.audio_output)) throw new Error('Instrument connection is unavailable');
         const g = current.current!;
         if (!g.nodes.some(n => n.id === id) && g.nodes.length >= 128) throw new Error('Routing node limit reached (128)');
-        const node: RoutingNode = {id, kind:input ? 'input' : 'output', deck:null, label:`${instrument.name} · audio ${input ? 'from' : 'to'}`, ...point, value:1};
+        const node: RoutingNode = {id, kind:'instrument', deck:null, label:instrument.name, ...point, value:1, instrument_input:!!instrument.audio_output, instrument_output:!!instrument.audio_input};
         edit({...g, nodes:[...g.nodes.filter(n => n.id !== id), node]}); setSelected({node:id});
       } else if (id.startsWith('input-')) {
         const source = audioInputs.find(n => n.id === id);
@@ -213,11 +230,12 @@ export function Routing({ active = true }: { active?: boolean }) {
       <button disabled={busy || !past.current.length} onClick={undo}>Undo</button><button disabled={busy || !future.current.length} onClick={redo}>Redo</button>
       <button disabled={busy || !dirty} onClick={() => { if (accepted) edit(accepted); setSelected(null); }}>Revert edits</button>
       <button disabled={busy} onClick={() => { setBusy(true); void invoke<Graph>('default_routing_graph').then(value => { edit(value); setSelected(null); }).catch(e => setError(String(e))).finally(() => setBusy(false)); }}>Default chain</button>
-      <button className="routing-apply" disabled={busy || !graph || (!dirty && !graph.nodes.some(n => n.kind === 'input' && graph.wires.some(w => w.from === n.id)))} onClick={() => void apply()}>{busy ? 'Applying…' : 'Apply routing'}</button>
+      <label className="routing-live"><input type="checkbox" checked={liveRouting} onChange={e => { lastLiveAttempt.current = null; setLiveRouting(e.target.checked); }} /> Live routing</label>
+      {!liveRouting && <button className="routing-apply" disabled={busy || liveApplying || !graph || (!dirty && !graph.nodes.some(n => n.kind === 'input' && graph.wires.some(w => w.from === n.id)))} onClick={() => void apply()}>{busy || liveApplying ? 'Applying…' : 'Apply routing'}</button>}
     </PatchingHeading>
 
     {error && <p className="routing-error" role="alert">{error}</p>}
-    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label}))}, {label:'Instruments',items:instruments.flatMap(i => [...(i.audio_input ? [{id:`instrument-in-${i.id}`,label:`From ${i.name}`}] : []), ...(i.audio_output ? [{id:`instrument-out-${i.id}`,label:`To ${i.name}`}] : [])]).filter(i => !graph?.nodes.some(n => n.id === i.id))}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<button disabled={busy} onClick={() => void add('new-patch')}>+ New patch</button>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, 1600, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: 1600 * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:1600, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
+    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label}))}, {label:'Instruments',items:instruments.filter(i => i.audio_input || i.audio_output).map(i => ({id:`instrument-${i.id}`,label:i.name})).filter(i => !graph?.nodes.some(n => n.id === i.id))}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<button disabled={busy} onClick={() => void add('new-patch')}>+ New patch</button>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, 1600, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: 1600 * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:1600, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
       onPointerDownCapture={e => { const field = document.activeElement; if (field instanceof HTMLElement && field.matches('input, textarea, select') && field !== e.target && !field.contains(e.target as Node)) field.blur(); }}
       onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}
       onPointerMove={e => {
@@ -237,9 +255,9 @@ export function Routing({ active = true }: { active?: boolean }) {
         return from && (!source || to) && <path className="routing-wire preview" data-testid="wire-preview" d={source ? path(patch, point(to!, patch.reconnect!.wire.input, false)) : path(point(from, patch.output, true), patch)} />;
       })()}</svg>
       {graph?.nodes.map(node => <div key={node.id} data-node-id={node.id} className={`routing-node ${node.deck === null ? '' : `deck-${node.deck}`} ${selected && 'node' in selected && selected.node === node.id ? 'selected' : ''}`} style={{ left: node.x, top: node.y, minHeight: Math.max(115, 70 + Math.max(inputs(node).length, outputs(node).length) * 26) }} onDoubleClick={e => { if (node.kind !== 'patch') return; e.stopPropagation(); void invoke('teia_open_editor', { slot: Number(node.id.replace('patch-', '')) }).catch(e => setError(String(e))); }} onPointerDown={e => { e.stopPropagation(); setSelected({ node: node.id }); }}>
-        <PatchingNodeHeader title={node.label} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { if (busy || e.button !== 0 || !graph) return; e.preventDefault(); const p = position(e); canvas.current?.setPointerCapture(e.pointerId); moving.current = { id: node.id, x: node.x, y: node.y, startX: p.x, startY: p.y, before: graph, pointer: e.pointerId }; }} />
+        <PatchingNodeHeader title={node.custom_label ?? node.label} nameLabel={`${node.id} name`} disabled={busy} onRename={name => { const value = current.current; if (value) edit({ ...value, nodes: value.nodes.map(n => n.id === node.id ? { ...n, custom_label: name } : n) }); }} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { if (busy || e.button !== 0 || !graph) return; e.preventDefault(); const p = position(e); canvas.current?.setPointerCapture(e.pointerId); moving.current = { id: node.id, x: node.x, y: node.y, startX: p.x, startY: p.y, before: graph, pointer: e.pointerId }; }} />
         <div className="routing-ports" style={{ height: Math.max(72, Math.max(inputs(node).length, outputs(node).length) * 26 + 16) }}>{inputs(node).map((port, i) => <button key={port} className="routing-port input" style={{ top: patchPortTop(i) }} data-routing-input={port} data-node={node.id} aria-label={`${node.id} input ${port}`}><i /><span title={node.patch_inputs?.find(p => p.id === port)?.label ?? port}>{node.patch_inputs?.find(p => p.id === port)?.label ?? port}</span></button>)}{outputs(node).map((port, i) => <button key={port} className="routing-port output" style={{ top: patchPortTop(i) }} data-routing-output={port} data-node={node.id} aria-label={`${node.id} output ${port}`} disabled={busy} onPointerDown={e => { if (busy || e.button !== 0) return; e.preventDefault(); e.stopPropagation(); canvas.current?.setPointerCapture(e.pointerId); const wire = { from: node.id, output: port, ...position(e), pointer: e.pointerId }; patchRef.current = wire; setPatch(wire); }}><span>{port}</span><i /></button>)}</div>
-        {isProcessor(node) && <div className="routing-parameter">{node.kind !== 'ring_modulation' && <label>{node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}<input aria-label={`${node.id} value`} disabled={busy} type="number" min={node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0} max={node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : 2} step={node.kind === 'oscillator' ? 1 : .01} value={node.value} onFocus={() => { gesture.current = current.current; }} onBlur={endGesture} onChange={e => edit({ ...graph, nodes: graph.nodes.map(n => n.id === node.id ? { ...n, value: Number(e.target.value) } : n) })} /></label>}</div>}
+        {isProcessor(node) && <div className="routing-parameter">{node.kind !== 'ring_modulation' && <label>{node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}<input aria-label={`${node.id} value`} disabled={busy} type="number" min={node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0} max={node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : undefined} step={node.kind === 'oscillator' ? 1 : .01} value={node.value} onFocus={() => { gesture.current = current.current; }} onBlur={endGesture} onChange={e => edit({ ...graph, nodes: graph.nodes.map(n => n.id === node.id ? { ...n, value: Number(e.target.value) } : n) })} /></label>}</div>}
       </div>)}
       {selectedWire && selected && 'wire' in selected && (['source', 'target'] as const).map(end => {
         const source = end === 'source';

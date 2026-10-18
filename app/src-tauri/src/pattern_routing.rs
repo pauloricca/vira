@@ -40,48 +40,116 @@ impl Transformation {
 pub fn transform(note: u8, steps: &[Transformation]) -> Option<u8> {
     steps.iter().try_fold(note, |note, step| step.apply(note))
 }
-/// Expand single-input transformation chains into independently owned terminal routes.
-/// The last cable owns the route; all upstream settings participate in reconciliation.
+/// Expand every source-to-destination path through transformations.
+/// Path IDs keep sources independent; each expanded path owns a distinct route.
 pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
-    let mut result = Vec::new();
-    for end in &graph.wires {
-        if !["midi", "notes"].contains(&end.kind.as_str())
-            || graph
-                .nodes
-                .iter()
-                .any(|n| n.id == end.to && n.kind == "transformation")
-        {
-            continue;
+    fn expand(
+        graph: &Graph,
+        wire: Wire,
+        steps: Vec<Transformation>,
+        seen: &mut HashSet<String>,
+        productive: &HashSet<&str>,
+        result: &mut Vec<(Wire, Vec<Transformation>)>,
+    ) {
+        // Validation rejects oversized expansions. Bound work even on invalid graphs.
+        if result.len() > 256 || !productive.contains(wire.from.as_str()) {
+            return;
         }
-        let mut wire = end.clone();
-        let mut steps = Vec::new();
-        let mut seen = HashSet::new();
-        let mut valid = true;
-        while let Some(node) = graph
+        let Some(node) = graph
             .nodes
             .iter()
             .find(|n| n.id == wire.from && n.kind == "transformation")
-        {
-            if !seen.insert(&node.id) {
-                valid = false;
-                break;
-            }
-            if let Some(step) = &node.transformation {
-                steps.push(step.clone());
-            }
-            let Some(input) = graph.wires.iter().find(|w| w.to == node.id) else {
-                valid = false;
-                break;
-            };
-            wire.id = format!("{}>{}", input.id, wire.id);
-            wire.from = input.from.clone();
-            if input.kind == "notes" {
-                wire.kind = "notes".into();
-            }
-        }
-        if valid {
+        else {
+            let mut steps = steps;
             steps.reverse();
             result.push((wire, steps));
+            return;
+        };
+        if !seen.insert(node.id.clone()) {
+            return;
+        }
+        let mut steps = steps;
+        if let Some(step) = &node.transformation {
+            steps.push(step.clone());
+        }
+        for input in graph
+            .wires
+            .iter()
+            .filter(|w| w.to == node.id && ["midi", "notes"].contains(&w.kind.as_str()))
+        {
+            let mut upstream = wire.clone();
+            upstream.id = format!("{}>{}", input.id, wire.id);
+            upstream.from = input.from.clone();
+            if input.kind == "notes" {
+                upstream.kind = "notes".into();
+            }
+            expand(graph, upstream, steps.clone(), seen, productive, result);
+            if result.len() > 256 {
+                break;
+            }
+        }
+        seen.remove(&node.id);
+    }
+    // Skip disconnected upstream branches before enumerating paths through a DAG.
+    let mut productive: HashSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind != "transformation")
+        .map(|n| n.id.as_str())
+        .collect();
+    loop {
+        let before = productive.len();
+        for wire in &graph.wires {
+            if ["midi", "notes"].contains(&wire.kind.as_str())
+                && productive.contains(wire.from.as_str())
+            {
+                productive.insert(wire.to.as_str());
+            }
+        }
+        if productive.len() == before {
+            break;
+        }
+    }
+    let mut result = Vec::new();
+    let terminals: Vec<_> = graph
+        .wires
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| {
+            ["midi", "notes"].contains(&w.kind.as_str())
+                && productive.contains(w.from.as_str())
+                && !graph
+                    .nodes
+                    .iter()
+                    .any(|n| n.id == w.to && n.kind == "transformation")
+        })
+        .collect();
+    // Reserve terminal cable owners so existing single-source routes keep their slots.
+    let mut used: HashSet<_> = terminals
+        .iter()
+        .map(|(i, w)| w.route.unwrap_or(*i as u16))
+        .collect();
+    for (index, end) in terminals {
+        let start = result.len();
+        expand(
+            graph,
+            end.clone(),
+            Vec::new(),
+            &mut HashSet::new(),
+            &productive,
+            &mut result,
+        );
+        for (offset, (wire, _)) in result[start..].iter_mut().enumerate() {
+            let owner = if offset == 0 {
+                end.route.unwrap_or(index as u16)
+            } else {
+                (0..256).find(|slot| !used.contains(slot)).unwrap_or(256)
+            };
+            used.insert(owner);
+            wire.route = Some(owner);
+        }
+        if result.len() > 256 {
+            break;
         }
     }
     result
@@ -107,6 +175,8 @@ pub struct Node {
     pub channel: Option<u8>,
     #[serde(default)]
     pub transformation: Option<Transformation>,
+    #[serde(default)]
+    pub advance_ms: f64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Wire {
@@ -196,24 +266,24 @@ impl Graph {
                         },
                         "Invalid transformation settings"
                     );
-                    ensure!(
-                        self.wires.iter().filter(|w| w.to == n.id).count() <= 1,
-                        "A transformation accepts one input"
-                    );
                     let mut seen = HashSet::new();
-                    let mut at = n;
-                    while at.kind == "transformation" {
-                        ensure!(
-                            seen.insert(&at.id),
-                            "Transformation feedback is not supported"
-                        );
-                        let Some(input) = self.wires.iter().find(|w| w.to == at.id) else {
-                            break;
-                        };
-                        let Some(parent) = self.nodes.iter().find(|n| n.id == input.from) else {
-                            break;
-                        };
-                        at = parent;
+                    let mut pending: Vec<_> = self
+                        .wires
+                        .iter()
+                        .filter(|w| w.to == n.id)
+                        .map(|w| &w.from)
+                        .collect();
+                    while let Some(id) = pending.pop() {
+                        ensure!(id != &n.id, "Transformation feedback is not supported");
+                        if seen.insert(id)
+                            && self
+                                .nodes
+                                .iter()
+                                .any(|node| &node.id == id && node.kind == "transformation")
+                        {
+                            pending
+                                .extend(self.wires.iter().filter(|w| &w.to == id).map(|w| &w.from));
+                        }
                     }
                 }
                 _ => anyhow::bail!("Unsupported musical node"),
@@ -268,6 +338,14 @@ impl Graph {
             );
         }
         let paths = signal_paths(self);
+        let mut owners = HashSet::new();
+        ensure!(
+            paths.len() <= 256
+                && paths
+                    .iter()
+                    .all(|(w, _)| w.route.is_some_and(|r| r < 256 && owners.insert(r))),
+            "Maximum expanded MIDI route count reached"
+        );
         let flattened = paths
             .iter()
             .map(|(w, _)| w.clone())
@@ -347,6 +425,7 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
             continue;
         };
         let mut p = p.clone();
+        p.compensation = Some(target.advance_ms);
         p.transformations = steps.clone();
         p.note_source = w.kind == "notes";
         p.owner = Some(p.id.clone());
@@ -466,6 +545,7 @@ pub fn migrate(bank: &mut Bank) {
             input: None,
             channel: None,
             transformation: None,
+            advance_ms: 0.0,
         });
     }
     let mut outputs = HashMap::new();
@@ -484,6 +564,7 @@ pub fn migrate(bank: &mut Bank) {
             input: None,
             channel: None,
             transformation: None,
+            advance_ms: 0.0,
         });
         if p.output != 0 {
             let index = outputs.len();
@@ -505,6 +586,7 @@ pub fn migrate(bank: &mut Bank) {
                     input: None,
                     channel: None,
                     transformation: None,
+                    advance_ms: 0.0,
                 });
             }
             graph.wires.push(Wire {
@@ -600,6 +682,157 @@ mod tests {
         assert_eq!(p.transformations, paths[0].1);
         b.graph.as_mut().unwrap().wires[0].from = "filter".into();
         assert!(b.graph.as_ref().unwrap().validate(&b).is_err());
+    }
+    #[test]
+    fn transformations_merge_sources_with_independent_owners_and_ordered_steps() {
+        let mut b = bank();
+        migrate(&mut b);
+        add_transform(&mut b, "shift", Transformation::OctaveShift { octaves: 1 });
+        add_transform(
+            &mut b,
+            "filter",
+            Transformation::Filter {
+                direction: "above".into(),
+                note: 72,
+            },
+        );
+        let mut second = b.patterns[0].clone();
+        second.id = "q".into();
+        b.patterns.push(second);
+        let g = b.graph.as_mut().unwrap();
+        let mut source = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "pattern-p")
+            .unwrap()
+            .clone();
+        source.id = "pattern-q".into();
+        source.pattern = Some("q".into());
+        g.nodes.push(source);
+        g.wires[0].to = "shift".into();
+        for (id, from, to, route) in [
+            ("second", "pattern-q", "shift", 1),
+            ("middle", "shift", "filter", 2),
+            ("end", "filter", "midi-42", 3),
+        ] {
+            g.wires.push(Wire {
+                id: id.into(),
+                from: from.into(),
+                to: to.into(),
+                kind: "midi".into(),
+                route: Some(route),
+            });
+        }
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
+        let paths = signal_paths(b.graph.as_ref().unwrap());
+        assert_eq!(paths.len(), 2);
+        assert_ne!(paths[0].0.id, paths[1].0.id);
+        assert_ne!(paths[0].0.route, paths[1].0.route);
+        assert_eq!(paths[0].1, paths[1].1);
+        for (_, steps) in &paths {
+            assert_eq!(transform(64, steps), Some(76));
+            assert_eq!(transform(60, steps), None);
+        }
+        let plan = resolve(&b, [None, None]);
+        assert_eq!(plan.patterns.iter().filter(|p| !p.note_source).count(), 2);
+        b.graph.as_mut().unwrap().wires.retain(|w| w.id != "second");
+        assert_eq!(signal_paths(b.graph.as_ref().unwrap()).len(), 1);
+        // A cycle on the second incoming edge must also be rejected.
+        b.graph.as_mut().unwrap().wires.push(Wire {
+            id: "cycle".into(),
+            from: "filter".into(),
+            to: "shift".into(),
+            kind: "midi".into(),
+            route: Some(4),
+        });
+        assert!(b
+            .graph
+            .as_ref()
+            .unwrap()
+            .validate(&b)
+            .unwrap_err()
+            .to_string()
+            .contains("feedback"));
+    }
+    #[test]
+    fn merged_note_and_midi_paths_fan_out_without_sharing_owners() {
+        let mut b = bank();
+        migrate(&mut b);
+        add_transform(&mut b, "shift", Transformation::OctaveShift { octaves: -1 });
+        let g = b.graph.as_mut().unwrap();
+        g.wires[0].to = "shift".into();
+        for (id, from, to, kind, route) in [
+            ("note-in", "deck-0", "shift", "notes", 1),
+            ("out", "shift", "midi-42", "midi", 2),
+            ("deck-out", "shift", "deck-1", "midi", 3),
+        ] {
+            g.wires.push(Wire {
+                id: id.into(),
+                from: from.into(),
+                to: to.into(),
+                kind: kind.into(),
+                route: Some(route),
+            });
+        }
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
+        let paths = signal_paths(b.graph.as_ref().unwrap());
+        assert_eq!(paths.len(), 4);
+        assert_eq!(paths.iter().filter(|(w, _)| w.kind == "notes").count(), 2);
+        assert_eq!(
+            paths
+                .iter()
+                .map(|(w, _)| w.route)
+                .collect::<HashSet<_>>()
+                .len(),
+            4
+        );
+        assert!(paths
+            .iter()
+            .all(|(_, steps)| transform(60, steps) == Some(48)));
+    }
+    #[test]
+    fn rejects_expanded_paths_over_the_owner_limit() {
+        let mut b = bank();
+        migrate(&mut b);
+        let mut previous = "pattern-p".to_string();
+        b.graph.as_mut().unwrap().wires.clear();
+        for i in 0..9 {
+            let a = format!("a{i}");
+            let c = format!("c{i}");
+            let join = format!("join{i}");
+            for id in [&a, &c, &join] {
+                add_transform(&mut b, id, Transformation::OctaveShift { octaves: 0 });
+            }
+            let g = b.graph.as_mut().unwrap();
+            for (from, to) in [(&previous, &a), (&previous, &c), (&a, &join), (&c, &join)] {
+                let route = g.wires.len() as u16;
+                g.wires.push(Wire {
+                    id: format!("wire{route}"),
+                    from: from.clone(),
+                    to: to.clone(),
+                    kind: "midi".into(),
+                    route: Some(route),
+                });
+            }
+            previous = join;
+        }
+        let g = b.graph.as_mut().unwrap();
+        g.wires.push(Wire {
+            id: "end".into(),
+            from: previous,
+            to: "midi-42".into(),
+            kind: "midi".into(),
+            route: Some(100),
+        });
+        assert_eq!(signal_paths(g).len(), 257);
+        assert!(b
+            .graph
+            .as_ref()
+            .unwrap()
+            .validate(&b)
+            .unwrap_err()
+            .to_string()
+            .contains("expanded MIDI route"));
     }
     #[test]
     fn active_deck_maps_harmony_and_destination_without_changing_cable_owner() {

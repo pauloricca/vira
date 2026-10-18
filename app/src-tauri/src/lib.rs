@@ -17,6 +17,7 @@ pub mod native_check;
 pub mod paths;
 mod pattern_routing;
 pub mod patterns;
+mod rolling;
 pub mod routing;
 pub mod runtime;
 mod scheduling;
@@ -434,6 +435,14 @@ pub fn run() {
         state.routing_graph()
     }
     #[tauri::command]
+    fn get_rolling_waveforms(
+        selected: Vec<String>,
+        after: u64,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> serde_json::Value {
+        state.rolling_waveforms(&selected, after)
+    }
+    #[tauri::command]
     async fn set_routing_graph(
         graph: routing::Graph,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
@@ -772,6 +781,7 @@ pub fn run() {
             get_track_artwork,
             get_audio_state,
             get_routing_graph,
+            get_rolling_waveforms,
             get_audio_inputs,
             default_routing_graph,
             get_instruments,

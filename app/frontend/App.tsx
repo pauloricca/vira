@@ -85,7 +85,7 @@ function CompatibilityCell({ trackKey, deckKey, deck }: { trackKey: CamelotKey |
 }
 
 function isKeySelector(target: EventTarget | null) {
-  return target instanceof Element && !!target.closest('.deck-key, .key-menu, .rolling-zoom, .collection-dropdown, .tags-sidebar, .track-tags');
+  return target instanceof Element && !!target.closest('.deck-key, .key-menu, .rolling-zoom, .rolling-sources, .collection-dropdown, .tags-sidebar, .track-tags');
 }
 
 function isTextInput(target: EventTarget | null) {

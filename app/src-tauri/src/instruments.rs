@@ -17,6 +17,8 @@ pub struct MidiPort {
 pub struct Instrument {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub advance_ms: f64,
     pub audio_input: Option<AudioPort>,
     pub audio_output: Option<AudioPort>,
     pub midi_input: Option<MidiPort>,
@@ -80,6 +82,10 @@ pub fn audio(node: &str, input: bool) -> Result<AudioPort> {
 pub fn validate(items: &[Instrument]) -> Result<()> {
     ensure!(items.len() <= 64, "Maximum 64 instruments");
     for (index, item) in items.iter().enumerate() {
+        ensure!(
+            item.advance_ms.is_finite() && item.advance_ms >= 0.0,
+            "Timing advance must be a finite, non-negative number of milliseconds"
+        );
         ensure!(
             !item.id.is_empty()
                 && item.id.len() <= 40
@@ -145,6 +151,7 @@ fn resolve_with(bank: &crate::patterns::Bank, items: &[Instrument]) -> crate::pa
                 .iter()
                 .find(|i| node.id == format!("instrument-{}", i.id))
                 .cloned();
+            node.advance_ms = item.as_ref().map_or(0.0, |i| i.advance_ms);
             node.label = item
                 .as_ref()
                 .map_or_else(|| "Missing instrument".into(), |i| i.name.clone());
@@ -168,13 +175,9 @@ fn resolve_with(bank: &crate::patterns::Bank, items: &[Instrument]) -> crate::pa
 pub fn devices() -> Result<serde_json::Value> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
-    let inputs: Vec<_> = host
-        .input_devices()?
-        .filter_map(|d| {
-            let name = d.name().ok()?;
-            let config = d.default_input_config().ok()?;
-            Some(serde_json::json!({"id":name,"name":name,"channels":config.channels()}))
-        })
+    let inputs: Vec<_> = crate::audio_inputs::devices()?
+        .into_iter()
+        .map(|(name, channels)| serde_json::json!({"id":name,"name":name,"channels":channels}))
         .collect();
     let outputs: Vec<_> = host
         .output_devices()?
@@ -202,6 +205,61 @@ mod tests {
     use serde_json::json;
     fn synth() -> Instrument {
         serde_json::from_value(json!({"id":"synth","name":"My synth","audio_input":{"device":"Interface","channels":[3,4]},"audio_output":null,"midi_input":{"device":41,"channel":2},"midi_output":{"device":42,"channel":9}})).unwrap()
+    }
+    #[test]
+    fn timing_flows_back_through_transformations_per_instrument_route() {
+        let bank: crate::patterns::Bank = serde_json::from_value(json!({
+            "patterns":[{"id":"p","name":"Pattern","kind":"melodic","mode":"relative","output":0,"channel":1,"bars":1,"grid":4,"key":0,"scale":0,"octave":4,"quantum":4,"compensation":90,"notes":[]}],
+            "outputCompensation":{"42":80},
+            "graph":{"nodes":[
+                {"id":"p","kind":"pattern","label":"Pattern","x":0,"y":0,"pattern":"p"},
+                {"id":"filter","kind":"transformation","label":"Filter","x":0,"y":0,"transformation":{"kind":"filter","direction":"above","note":40}},
+                {"id":"instrument-synth","kind":"instrument","label":"Synth","x":0,"y":0},
+                {"id":"instrument-second","kind":"instrument","label":"Second","x":0,"y":0}
+            ],"wires":[
+                {"id":"in","from":"p","to":"filter","kind":"midi"},
+                {"id":"first","from":"filter","to":"instrument-synth","kind":"midi"},
+                {"id":"second","from":"p","to":"instrument-second","kind":"midi"}
+            ]}
+        })).unwrap();
+        let mut first = synth();
+        first.advance_ms = 1250.0;
+        let mut second = synth();
+        second.id = "second".into();
+        second.advance_ms = 61.0;
+        let resolved = resolve_with(&bank, &[first, second]);
+        let playback = crate::pattern_routing::resolve_active(&resolved, [None, None], 0);
+        assert_eq!(
+            playback
+                .patterns
+                .iter()
+                .find(|p| p.id == "in>first")
+                .unwrap()
+                .compensation,
+            Some(1250.0)
+        );
+        assert_eq!(
+            playback
+                .patterns
+                .iter()
+                .find(|p| p.id == "second")
+                .unwrap()
+                .compensation,
+            Some(61.0)
+        );
+        assert_eq!(bank.patterns[0].compensation, Some(90.0));
+    }
+    #[test]
+    fn timing_advance_has_no_upper_limit() {
+        let mut item = synth();
+        for advance in [0.0, 100.0, 1250.0, 1_000_000.0] {
+            item.advance_ms = advance;
+            assert!(validate(&[item.clone()]).is_ok());
+        }
+        for advance in [-1.0, f64::INFINITY, f64::NAN] {
+            item.advance_ms = advance;
+            assert!(validate(&[item.clone()]).is_err());
+        }
     }
     #[test]
     fn validates_optional_ports_channels_and_stable_unique_identities() {

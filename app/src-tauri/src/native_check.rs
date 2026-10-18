@@ -86,6 +86,7 @@ fn run_mode(seconds: u64, report: &Path, timing: bool, routing: bool) -> Result<
         use crate::routing::{Graph, Kind, Node, Wire};
         let mut graph = Graph::default();
         graph.nodes.push(Node {
+            custom_label: None,
             patch_inputs: None,
             id: "compressor".into(),
             kind: Kind::Compressor,

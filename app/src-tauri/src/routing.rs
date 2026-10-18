@@ -35,6 +35,8 @@ pub struct Node {
     pub kind: Kind,
     pub deck: Option<usize>,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label: Option<String>,
     pub x: f32,
     pub y: f32,
     pub value: f32,
@@ -42,6 +44,9 @@ pub struct Node {
     pub patch_inputs: Option<Vec<PatchInput>>,
 }
 impl Node {
+    pub fn display_label(&self) -> &str {
+        self.custom_label.as_deref().unwrap_or(&self.label)
+    }
     pub fn inputs(&self) -> Vec<&str> {
         if self.kind == Kind::Patch {
             if let Some(ports) = &self.patch_inputs {
@@ -103,6 +108,7 @@ impl Default for Graph {
             ];
             for (i, (name, kind)) in stages.iter().enumerate() {
                 nodes.push(Node {
+                    custom_label: None,
                     patch_inputs: None,
                     id: format!("{prefix}-{name}"),
                     kind: *kind,
@@ -138,6 +144,7 @@ impl Default for Graph {
             ("headphones", Kind::Output, "Cue output", 1160., 350.),
         ] {
             nodes.push(Node {
+                custom_label: None,
                 patch_inputs: None,
                 id: id.into(),
                 kind,
@@ -171,6 +178,8 @@ struct Step {
     send: Option<crate::instrument_output::Output>,
 }
 pub struct Plan {
+    pub history: std::sync::Arc<crate::rolling::History>,
+    waveform_peaks: [f32; NODE_LIMIT],
     pub conventional: bool,
     steps: Vec<Step>,
     master: usize,
@@ -181,6 +190,28 @@ pub struct Plan {
     patch_frames: Box<[crate::decks::Frame; crate::decks::PRODUCER_FRAMES]>,
 }
 impl Graph {
+    // Only routes reaching an output justify opening a live source. An input
+    // wired to an abandoned processor chain must stay closed as well.
+    fn live_nodes(&self) -> Vec<bool> {
+        let mut live: Vec<bool> = self.nodes.iter().map(|n| n.kind == Kind::Output).collect();
+        loop {
+            let mut changed = false;
+            for wire in self.wires.iter().filter(|w| w.gain > 0.) {
+                let source = self.nodes.iter().position(|n| n.id == wire.from);
+                let target = self.nodes.iter().position(|n| n.id == wire.to);
+                if let (Some(source), Some(target)) = (source, target) {
+                    if live[target] && !live[source] {
+                        live[source] = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                return live;
+            }
+        }
+    }
+
     pub fn from_saved(bytes: &[u8]) -> Result<Self> {
         let value: serde_json::Value = serde_json::from_slice(bytes)?;
         let mut graph: Self = serde_json::from_value(value.clone())?;
@@ -228,6 +259,10 @@ impl Graph {
                         } else {
                             80
                         }
+                    && n.custom_label
+                        .as_ref()
+                        .map_or(true, |name| !name.trim().is_empty()
+                            && name.chars().count() <= 80)
                     && n.x.is_finite()
                     && n.y.is_finite()
                     && n.value.is_finite(),
@@ -272,7 +307,7 @@ impl Graph {
                         n.id.starts_with("instrument-out-")
                             || default.nodes.iter().any(|b| b.id == n.id),
                     Kind::Patch => patch_slot(&n.id).is_some(),
-                    Kind::Gain => (0. ..=2.).contains(&n.value),
+                    Kind::Gain => n.value >= 0.,
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
                     Kind::Oscillator => (20. ..=2000.).contains(&n.value),
                     _ => true,
@@ -357,6 +392,8 @@ impl Graph {
             })
             .collect();
         Ok(Box::new(Plan {
+            history: std::sync::Arc::new(crate::rolling::History::new(self)),
+            waveform_peaks: [0.; NODE_LIMIT],
             conventional,
             steps,
             routed_inputs: vec![[[0.; crate::decks::PRODUCER_FRAMES]; 2]; 32].into_boxed_slice(),
@@ -384,6 +421,7 @@ impl Plan {
         sources: &crate::audio_inputs::Inputs,
     ) -> Result<()> {
         let mut error = None;
+        let live = graph.live_nodes();
         for step in &mut self.steps {
             if step.node.kind == Kind::Output
                 && step.node.id.starts_with("instrument-out-")
@@ -396,7 +434,7 @@ impl Plan {
                     Err(e) => error = Some(e),
                 }
             }
-            if step.node.kind == Kind::Input && graph.wires.iter().any(|w| w.from == step.node.id) {
+            if step.node.kind == Kind::Input && live[step.index] {
                 match sources.open(&step.node.id) {
                     Ok(capture) => step.capture = Some(capture),
                     Err(e) => {
@@ -454,6 +492,25 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_sources_require_a_nonzero_route_to_an_output() {
+        let mut graph = super::Graph::default();
+        let source = graph.nodes.iter().position(|n| n.id == "a-player").unwrap();
+        assert!(graph.live_nodes()[source]);
+        graph.wires.retain(|w| w.from != "a-filter");
+        assert!(!graph.live_nodes()[source]);
+        graph.wires.push(super::Wire {
+            from: "a-filter".into(),
+            output: "audio".into(),
+            to: "master".into(),
+            input: "audio".into(),
+            gain: 0.,
+        });
+        assert!(!graph.live_nodes()[source]);
+        graph.wires.last_mut().unwrap().gain = 1.;
+        assert!(graph.live_nodes()[source]);
+    }
+
     use super::*;
     #[test]
     fn live_input_routes_through_gain_to_cue_without_leaking_to_master() {
@@ -467,6 +524,7 @@ mod tests {
             x: 0.,
             y: 0.,
             value: 1.,
+            custom_label: None,
             patch_inputs: None,
         });
         graph.nodes.push(Node {
@@ -477,6 +535,7 @@ mod tests {
             x: 0.,
             y: 0.,
             value: 0.5,
+            custom_label: None,
             patch_inputs: None,
         });
         for (from, to) in [("input-test", "input-gain"), ("input-gain", "headphones")] {
@@ -530,6 +589,7 @@ mod tests {
                 x: 40.,
                 y: 650.,
                 value: 1.,
+                custom_label: None,
                 patch_inputs: None,
             });
         }
@@ -567,6 +627,7 @@ mod tests {
     fn branching_sends_and_sidechain() {
         let mut g = Graph::default();
         g.nodes.push(Node {
+            custom_label: None,
             patch_inputs: None,
             id: "comp".into(),
             kind: Kind::Compressor,
@@ -607,10 +668,35 @@ mod tests {
         }
     }
     #[test]
+    fn gain_nodes_accept_values_above_two_and_reject_invalid_values() {
+        let mut graph = Graph::default();
+        graph.nodes.push(Node {
+            custom_label: None,
+            patch_inputs: None,
+            id: "test-gain".into(),
+            kind: Kind::Gain,
+            deck: None,
+            label: "Gain".into(),
+            x: 0.,
+            y: 0.,
+            value: 10.,
+        });
+        for value in [0., 10., 1000., f32::MAX] {
+            graph.nodes.last_mut().unwrap().value = value;
+            assert!(graph.compile().is_ok(), "gain {value} should be accepted");
+        }
+        for value in [-1., f32::NAN, f32::INFINITY] {
+            graph.nodes.last_mut().unwrap().value = value;
+            assert!(graph.compile().is_err(), "gain {value} should be rejected");
+        }
+    }
+
+    #[test]
     fn compiled_stages_match_conventional_mixer_with_active_controls() {
         let mut graph = Graph::default();
         // An unused processor forces the general schedule without changing its signal chain.
         graph.nodes.push(Node {
+            custom_label: None,
             patch_inputs: None,
             id: "unused".into(),
             kind: Kind::Gain,
@@ -651,6 +737,7 @@ mod tests {
         let mut graph = Graph::default();
         graph.wires.clear();
         graph.nodes.push(Node {
+            custom_label: None,
             patch_inputs: None,
             id: "comp".into(),
             kind: Kind::Compressor,
@@ -855,6 +942,7 @@ impl Graph {
             return;
         }
         self.nodes.push(Node {
+            custom_label: None,
             patch_inputs: Some(Vec::new()),
             id: id.clone(),
             kind: Kind::Patch,
@@ -917,6 +1005,37 @@ impl Graph {
     }
 }
 impl Plan {
+    pub fn capture_waveforms(
+        &mut self,
+        block: &[crate::decks::Frame; crate::decks::PRODUCER_FRAMES],
+    ) {
+        let interval = crate::rolling::PEAK_FRAMES;
+        for index in self.history.indices() {
+            let output = self.history.output(index);
+            for (i, frame) in block.iter().enumerate() {
+                let sample = if self.conventional {
+                    std::array::from_fn(|c| {
+                        (frame.deck_samples[0][c] * frame.routing_cross[0]
+                            + frame.deck_samples[1][c] * frame.routing_cross[1])
+                            * crate::decks::MIX_GAIN
+                    })
+                } else {
+                    self.block_outputs[index][i][output]
+                };
+                self.waveform_peaks[index] = self.waveform_peaks[index]
+                    .max(sample[0].abs())
+                    .max(sample[1].abs());
+                if (frame.output_frame + 1) % interval == 0 {
+                    self.history.write(
+                        index,
+                        frame.output_frame + 1 - interval,
+                        self.waveform_peaks[index],
+                    );
+                    self.waveform_peaks[index] = 0.;
+                }
+            }
+        }
+    }
     pub fn has_patch(&self, slot: usize) -> bool {
         self.steps
             .iter()
@@ -1133,5 +1252,67 @@ mod patch_input_tests {
             assert!(graph.compile().is_ok());
         }
         assert!(!patch_has_audio_input(&json!({"nodes":[]})));
+    }
+}
+
+#[cfg(test)]
+mod rolling_tests {
+    use super::*;
+    #[test]
+    fn conventional_rolling_mix_uses_the_same_level_as_the_master_chain() {
+        let mut plan = Graph::default().compile().unwrap();
+        let mut block = [crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES];
+        for offset in [0, 128] {
+            for (i, frame) in block.iter_mut().enumerate() {
+                frame.output_frame = offset + i as u64;
+                frame.deck_samples = [[0.8, 0.2], [0.4, 0.1]];
+                frame.routing_cross = [1., 0.5];
+            }
+            plan.capture_waveforms(&block);
+        }
+        let snapshot = plan.history.snapshot(&["mix".into()], 0, 256);
+        let peak = snapshot["sources"][0]["peaks"][0][1].as_f64().unwrap();
+        assert!((peak - 0.45).abs() < 1e-6);
+    }
+    #[test]
+    fn rolling_capture_accumulates_across_producer_blocks_on_output_clock() {
+        let mut graph = Graph::default();
+        graph.nodes.push(Node {
+            id: "synth".into(),
+            kind: Kind::Oscillator,
+            deck: None,
+            label: "Synth".into(),
+            x: 0.,
+            y: 0.,
+            value: 440.,
+            custom_label: None,
+            patch_inputs: None,
+        });
+        graph.wires.push(Wire {
+            from: "synth".into(),
+            output: "audio".into(),
+            to: "master".into(),
+            input: "audio".into(),
+            gain: 1.,
+        });
+        let mut plan = graph.compile().unwrap();
+        let mut block = [crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES];
+        for offset in [0, 128] {
+            for (i, frame) in block.iter_mut().enumerate() {
+                frame.output_frame = offset + i as u64;
+            }
+            plan.render_block(&mut block, &mut []);
+            plan.capture_waveforms(&block);
+        }
+        let snapshot = plan.history.snapshot(&["synth".into()], 0, 256);
+        let synth = snapshot["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "synth")
+            .unwrap();
+        assert_eq!(synth["peaks"].as_array().unwrap().len(), 1);
+        assert_eq!(synth["peaks"][0][0], 0);
+        assert!(synth["peaks"][0][1].as_f64().unwrap() > 0.09);
     }
 }

@@ -76,3 +76,43 @@ void vira_worker_destroy(vira_worker *w) {
     os_release(w->group);
     free(w);
 }
+
+// Discovery must not instantiate input Audio Units: that can request mic access.
+#include <CoreAudio/CoreAudio.h>
+#include <CoreFoundation/CoreFoundation.h>
+int vira_input_devices(void (*visit)(const char *, unsigned int, void *), void *context) {
+    AudioObjectPropertyAddress address = {kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    OSStatus status = AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &address, 0, NULL, &size);
+    if (status) return status;
+    AudioDeviceID *devices = malloc(size);
+    if (!devices) return -1;
+    status = AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, NULL, &size, devices);
+    if (status) { free(devices); return status; }
+    for (UInt32 i = 0; i < size / sizeof(*devices); ++i) {
+        AudioObjectPropertyAddress config = {kAudioDevicePropertyStreamConfiguration,
+            kAudioObjectPropertyScopeInput, kAudioObjectPropertyElementMain};
+        UInt32 bytes = 0;
+        if (AudioObjectGetPropertyDataSize(devices[i], &config, 0, NULL, &bytes) || !bytes) continue;
+        AudioBufferList *buffers = malloc(bytes);
+        if (!buffers) continue;
+        unsigned int channels = 0;
+        if (!AudioObjectGetPropertyData(devices[i], &config, 0, NULL, &bytes, buffers))
+            for (UInt32 j = 0; j < buffers->mNumberBuffers; ++j) channels += buffers->mBuffers[j].mNumberChannels;
+        free(buffers);
+        if (!channels) continue;
+        AudioObjectPropertyAddress label = {kAudioObjectPropertyName,
+            kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+        CFStringRef name = NULL;
+        UInt32 length = sizeof(name);
+        if (AudioObjectGetPropertyData(devices[i], &label, 0, NULL, &length, &name) || !name) continue;
+        CFIndex capacity = CFStringGetMaximumSizeForEncoding(CFStringGetLength(name), kCFStringEncodingUTF8) + 1;
+        char *text = malloc(capacity);
+        if (text && CFStringGetCString(name, text, capacity, kCFStringEncodingUTF8)) visit(text, channels, context);
+        free(text);
+        CFRelease(name);
+    }
+    free(devices);
+    return 0;
+}

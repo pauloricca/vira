@@ -65,7 +65,6 @@ export function connectMusical(graph: MusicalGraph, wire: MusicalWire, replace?:
     if (route >= 256) throw new Error('Maximum MIDI route count reached.');
     wire = { ...wire, route };
   }
-  if (to.kind === 'transformation' && wires.some(w => w.to === to.id)) throw new Error('A transformation accepts one Note or MIDI input.');
   const next = [...wires, wire];
   const reaches = (id: string, target: string, seen = new Set<string>()): boolean => {
     if (id === target) return true;

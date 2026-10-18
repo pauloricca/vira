@@ -67,16 +67,36 @@ impl Inputs {
         let thread_stop = stop.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(cpal::Stream, u32)> {
-                let device = cpal::default_host()
-                    .input_devices()?
-                    .find(|d| {
+                let (device, supported) = cpal::default_host()
+                    .devices()?
+                    .filter(|d| {
                         d.name().ok().is_some_and(|name| {
                             port.as_ref()
                                 .map_or_else(|| device_id(&name) == id_owned, |p| p.device == name)
                         })
                     })
-                    .ok_or_else(|| anyhow::anyhow!("Input device disconnected"))?;
-                let supported = device.default_input_config()?;
+                    .find_map(|device| {
+                        // Query formats only for the requested device. Its current
+                        // hardware format can be float64 (unsupported by CPAL's
+                        // default_input_config) even though float32 capture works.
+                        let range = device.supported_input_configs().ok()?.find(|range| {
+                            range.channels() > 0
+                                && matches!(
+                                    range.sample_format(),
+                                    cpal::SampleFormat::F32
+                                        | cpal::SampleFormat::I16
+                                        | cpal::SampleFormat::U16
+                                )
+                        })?;
+                        let rate =
+                            48000u32.clamp(range.min_sample_rate().0, range.max_sample_rate().0);
+                        Some((device, range.with_sample_rate(cpal::SampleRate(rate))))
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Input device disconnected or has no supported capture format"
+                        )
+                    })?;
                 let rate = supported.sample_rate().0;
                 let channels = supported.channels() as usize;
                 anyhow::ensure!(channels > 0, "Input device has no channels");
@@ -154,12 +174,38 @@ impl Inputs {
 }
 
 #[cfg(target_os = "macos")]
+pub fn devices() -> Result<Vec<(String, u32)>> {
+    unsafe extern "C" fn visit(
+        name: *const std::ffi::c_char,
+        channels: u32,
+        context: *mut std::ffi::c_void,
+    ) {
+        let devices = &mut *(context as *mut Vec<(String, u32)>);
+        devices.push((
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned(),
+            channels,
+        ));
+    }
+    unsafe extern "C" {
+        fn vira_input_devices(
+            visit: unsafe extern "C" fn(*const std::ffi::c_char, u32, *mut std::ffi::c_void),
+            context: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    let mut devices = Vec::<(String, u32)>::new();
+    let status = unsafe { vira_input_devices(visit, &mut devices as *mut _ as *mut _) };
+    anyhow::ensure!(status == 0, "Could not enumerate audio inputs: {status}");
+    Ok(devices)
+}
+
+#[cfg(target_os = "macos")]
 pub fn nodes() -> Result<Vec<crate::routing::Node>> {
     use crate::routing::{Kind, Node};
-    use cpal::traits::{DeviceTrait, HostTrait};
-    Ok(cpal::default_host()
-        .input_devices()?
-        .filter_map(|d| d.name().ok())
+    Ok(devices()?
+        .into_iter()
+        .map(|(name, _)| name)
         .enumerate()
         .map(|(i, name)| Node {
             id: device_id(&name),
@@ -169,6 +215,7 @@ pub fn nodes() -> Result<Vec<crate::routing::Node>> {
             x: 40. + (i % 8) as f32 * 190.,
             y: 650. + (i / 8) as f32 * 150.,
             value: 1.,
+            custom_label: None,
             patch_inputs: None,
         })
         .collect())

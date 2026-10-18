@@ -12,6 +12,8 @@
 .routing-page .routing-apply { color:#09211c; background:#76d2b7; border-color:#76d2b7; }
 .routing-zoom { font-size:12px; }
 .routing-zoom label { display:flex; align-items:center; gap:8px; }
+.routing-live { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; cursor:pointer; }
+.routing-live input { margin:0; }
 .routing-error { color:#ffb496; margin:0; font-size:12px; }
 .routing-body { display:flex; flex:1; min-height:0; border:1px solid #2a353d; border-radius:0; overflow:hidden; }
 .routing-scroll { flex:1; overflow:auto; }
@@ -29,6 +31,9 @@
 .routing-node.deck-0 { border-color:#417798; } .routing-node.deck-1 { border-color:#b37c44; }
 .routing-node-title { height:40px; padding:6px 10px; cursor:grab; border-bottom:1px solid #3a4954; box-sizing:border-box; font-weight:600; }
 .routing-node-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.routing-page .routing-node-name-input { width:calc(100% + 8px); box-sizing:border-box; margin:-2px -4px; padding:1px 3px; border:1px solid transparent; border-radius:0; background:transparent; color:inherit; font:inherit; cursor:text; }
+.routing-page .routing-node-name-input:hover { border-color:#596d7b; background:#17222c; }
+.routing-page .routing-node-name-input:focus { outline:none; border-color:#93cbd5; background:#121a20; text-overflow:clip; }
 .routing-node-title small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; color:#9aabb8; font-size:9px; font-weight:400; margin-top:2px; }
 .routing-ports { height:72px; }
 .routing-page .routing-port { position:absolute; padding:0; height:24px; border:0; background:transparent; display:flex; align-items:center; gap:6px; font-size:10px; }

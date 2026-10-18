@@ -225,7 +225,15 @@ test('adds transformations with inline settings and connects Note and MIDI ports
   fireEvent.pointerUp(canvas(), {pointerId:2});
   await waitFor(() => expect(bank.graph!.wires.some(w => w.from === shift.id && w.to === filter.id)).toBe(true));
   expect(() => connectMusical(bank.graph!, {id:'cycle',from:filter.id,to:shift.id,kind:'midi'}, bank.graph!.wires.find(w => w.to === shift.id)!.id)).toThrow(/feedback/);
-  expect(() => connectMusical(bank.graph!, {id:'second-input',from:'midi-42',to:filter.id,kind:'midi'})).toThrow(/one.*input/);
+  for (const from of ['pattern-p', 'midi-42']) {
+    fireEvent.pointerDown(screen.getByLabelText(`${from} output midi`), {button:0,pointerId:3});
+    vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText(`${filter.id} input midi`));
+    fireEvent.pointerUp(canvas(), {pointerId:3});
+    await waitFor(() => expect(bank.graph!.wires.some(w => w.from === from && w.to === filter.id && w.kind === 'midi')).toBe(true));
+  }
+  expect(bank.graph!.wires.filter(w => w.to === filter.id)).toHaveLength(3);
+  expect(() => connectMusical(bank.graph!, {id:'duplicate',from:'midi-42',to:filter.id,kind:'midi'})).toThrow(/already exists/);
+  expect(() => connectMusical(bank.graph!, {id:'merged-cycle',from:filter.id,to:shift.id,kind:'midi'})).toThrow(/feedback/);
 });
 
 test('named instruments keep their identity and expose MIDI source and target ports', async () => {

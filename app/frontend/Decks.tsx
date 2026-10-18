@@ -6,6 +6,7 @@ import { useTransitionDrag } from './transitionDrag';
 import { useCue } from './cue';
 import { useTempoDrag } from './tempoDrag';
 import { RollingRow } from './RollingRow';
+import { LiveRollingRow, SourcePicker, useRollingSources } from './LiveWaveforms';
 import { TransitionOverview, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 import { useWaveformZoom, waveformZoomIntervals } from './zoom';
 import { DisplayPosition, animate } from './transport';
@@ -460,12 +461,14 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
 
 export function RollingWaveforms({ audio, beats = 32, control, onZoomChange, timingOpen = [true, true], onInteract, activeDeck = 0 }: { audio: AudioState; beats?: number; timingOpen?: boolean[]; onZoomChange?: (beats: number) => void; onInteract?: (deck: number) => void; activeDeck?: number; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const zoomRef = useWaveformZoom(beats, onZoomChange);
+  const { feed, selected, toggle } = useRollingSources();
   const reference = audio.master_bpm;
   const window = reference && reference > 0 ? beats * 60 / reference : beats / 2;
   return <section ref={zoomRef} className="rolling" aria-label="Rolling waveforms">
     <span className="sr-only">{reference ? 'Beat grid' : 'Time fallback'} · {window.toFixed(2)} seconds output window</span>
-    {onZoomChange && <label className="rolling-zoom"><select aria-label="Shared zoom" value={beats} onChange={event => onZoomChange(Number(event.target.value))}>{waveformZoomIntervals.map(value => <option key={value} value={value}>{value / 4} {value === 4 ? 'bar' : 'bars'}</option>)}</select><span aria-hidden="true">▾</span></label>}
-    <div className="rolling-rows">{audio.decks.map(state => <RollingRow transition={audio.auto_transition} masterBpm={audio.master_bpm ?? undefined} key={state.deck} state={state} running={audio.running} window={window} control={control} timingOpen={timingOpen[state.deck]} onInteract={onInteract} active={state.deck === activeDeck} />)}</div>
+    <div className="rolling-controls"><SourcePicker sources={feed.sources} selected={selected} toggle={toggle} />
+    {onZoomChange && <label className="rolling-zoom"><select aria-label="Shared zoom" value={beats} onChange={event => onZoomChange(Number(event.target.value))}>{waveformZoomIntervals.map(value => <option key={value} value={value}>{value / 4} {value === 4 ? 'bar' : 'bars'}</option>)}</select><span aria-hidden="true">▾</span></label>}</div>
+    <div className="rolling-rows">{audio.decks.filter(state => selected.includes(`deck-${state.deck}`)).map(state => <RollingRow transition={audio.auto_transition} masterBpm={audio.master_bpm ?? undefined} key={state.deck} state={state} running={audio.running} window={window} control={control} timingOpen={timingOpen[state.deck]} onInteract={onInteract} active={state.deck === activeDeck} />)}{feed.sources.filter(source => selected.includes(source.id)).map(source => <LiveRollingRow key={source.id} source={source} feed={feed} window={window} running={audio.running} />)}{!selected.some(id => id.startsWith('deck-') || feed.sources.some(source => source.id === id)) && <p className="rolling-empty">Choose waveform sources above</p>}</div>
   </section>;
 }
 

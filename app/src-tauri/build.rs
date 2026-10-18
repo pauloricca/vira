@@ -7,6 +7,7 @@ fn main() {
             .opt_level(3)
             .compile("vira_worker");
         println!("cargo:rustc-link-lib=framework=AudioToolbox");
+        println!("cargo:rustc-link-lib=framework=CoreAudio");
         println!("cargo:rustc-link-lib=framework=CoreMIDI");
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
         println!("cargo:rustc-link-lib=framework=Accelerate");

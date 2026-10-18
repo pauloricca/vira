@@ -2400,6 +2400,7 @@ impl Decks {
                 self.finish_routing(frame);
             }
         }
+        self.routing.capture_waveforms(block);
         // Inactive hosts must still acknowledge commands (including installation).
         for (slot, driver) in drivers.iter_mut().enumerate() {
             if !self.routing.has_patch(slot) && driver.needs_process() {
@@ -5837,7 +5838,10 @@ mod timing_tests {
         assert_eq!(voice.target_bpm, decks.master_bpm);
         assert_eq!(voice.gain, 0.8);
         assert_eq!(voice.mixer.settings.trim, -4.);
-        assert_eq!(voice.mixer.settings.eq, crate::mixer::Settings::default().eq);
+        assert_eq!(
+            voice.mixer.settings.eq,
+            crate::mixer::Settings::default().eq
+        );
         assert_eq!(voice.mixer.settings.filter, 0.);
 
         decks.command(Command::Gain(0, 2, 0.3), [2, 1]);

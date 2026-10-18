@@ -455,6 +455,7 @@ pub struct EngineHandle {
     pub patches: Vec<Arc<crate::teia::Host>>,
     pub patch_transaction: Mutex<()>,
     graph: Mutex<crate::routing::Graph>,
+    rolling: Mutex<Arc<crate::rolling::History>>,
     shared: Arc<Shared>,
     commands: Mutex<rtrb::Producer<Command>>,
     wake: Option<Arc<Wake>>,
@@ -512,6 +513,7 @@ impl EngineHandle {
             teia,
             patches,
             patch_transaction: Mutex::new(()),
+            rolling: Mutex::new(Arc::new(crate::rolling::History::new(&graph))),
             graph: Mutex::new(graph),
             shared: shared.clone(),
             commands: Mutex::new(tx),
@@ -524,18 +526,25 @@ impl EngineHandle {
             audition_cache: Mutex::new(Vec::new()),
         });
         crate::patterns::attach_instruments(&handle.patches);
+        let handle_history = handle.rolling.lock().unwrap().clone();
         match wake {
             Ok(wake) => {
                 #[cfg(target_os = "macos")]
                 std::thread::spawn(move || {
-                    if let Err(e) = native_output(shared.clone(), rx, wake, drivers, initial_graph)
-                    {
+                    if let Err(e) = native_output(
+                        shared.clone(),
+                        rx,
+                        wake,
+                        drivers,
+                        initial_graph,
+                        handle_history,
+                    ) {
                         shared.fail(format!("Native output failed: {e:#}"));
                     }
                 });
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let _ = (rx, wake, drivers, initial_graph);
+                    let _ = (rx, wake, drivers, initial_graph, handle_history);
                     shared.fail("Native output requires macOS".into());
                 }
             }
@@ -545,6 +554,36 @@ impl EngineHandle {
     }
     pub fn benchmark_gains(&self) -> [f32; 2] {
         self.shared.audible().gains
+    }
+    pub fn rolling_waveforms(&self, selected: &[String], after: u64) -> Value {
+        let audible = self.shared.audible();
+        let mut snapshot =
+            self.rolling
+                .lock()
+                .unwrap()
+                .snapshot(selected, after, audible.output_frame);
+        snapshot["global_beat"] = audible.global_beat.into();
+        snapshot["master_bpm"] = if audible.master_bpm_set {
+            audible.master_bpm.into()
+        } else {
+            Value::Null
+        };
+        snapshot["clock_running"] = (audible
+            .playing
+            .iter()
+            .enumerate()
+            .any(|(d, playing)| *playing && !audible.launch_pending[d])
+            || crate::patterns::clock_running())
+        .into();
+        let graph = self.graph.lock().unwrap();
+        if let Some(sources) = snapshot["sources"].as_array_mut() {
+            for source in sources {
+                if let Some(node) = graph.nodes.iter().find(|n| source["id"] == n.id) {
+                    source["label"] = node.display_label().into();
+                }
+            }
+        }
+        snapshot
     }
     pub fn routing_graph(&self) -> crate::routing::Graph {
         let mut graph = self.graph.lock().unwrap().clone();
@@ -665,7 +704,9 @@ impl EngineHandle {
                     && graph.wires.iter().any(|w| w.from == n.id || w.to == n.id)
             })
         {
+            let history = plan.history.clone();
             self.send(Command::Routing(plan))?;
+            *self.rolling.lock().unwrap() = history;
         }
         let root = crate::teia::Host::default_root();
         std::fs::create_dir_all(&root)?;
@@ -1453,6 +1494,7 @@ fn native_output(
     wake: Arc<Wake>,
     mut drivers: Vec<crate::teia_audio::Driver>,
     initial_graph: crate::routing::Graph,
+    history: Arc<crate::rolling::History>,
 ) -> Result<()> {
     use crate::scheduling::Realtime;
     use cpal::traits::{DeviceTrait, StreamTrait};
@@ -1516,6 +1558,7 @@ fn native_output(
         .chain(deck_midi)
         .collect();
     let mut initial_plan = initial_graph.compile()?;
+    initial_plan.history = history;
     // A disconnected saved input should not prevent deck playback on launch.
     let _ = initial_plan.bind_inputs(&initial_graph, &shared.inputs);
     let worker = thread::spawn(move || -> Result<()> {

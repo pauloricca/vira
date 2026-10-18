@@ -20,13 +20,14 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); invoke.mockReset(); });
 async function mount() { render(<Patterns active />); const button = await screen.findByLabelText('Expand Arp'); fireEvent.click(button); await screen.findByDisplayValue('Arp'); }
-test('edits preserve relative degrees across key and scale changes, and persist compensation', async () => {
+test('edits preserve relative degrees across key and scale changes, and keep the editor focused on patterns', async () => {
   bank.patterns[0].notes = [{ id: 'n', degree: 3, octave: 1, beat: 0, duration: 1, velocity: 100 }];
   await mount();
   fireEvent.change(screen.getByLabelText('Pattern key'), { target: { value: '7' } });
   fireEvent.change(screen.getByLabelText('Pattern scale'), { target: { value: '1' } });
-  fireEvent.change(screen.getByLabelText('Output MIDI compensation'), { target: { value: '24' } });
-  await waitFor(() => expect(bank.outputCompensation[42]).toBe(24));
+  expect(screen.queryByLabelText('Output MIDI compensation')).toBeNull();
+  expect((screen.getByLabelText('Snap to grid') as HTMLInputElement).checked).toBe(true);
+  await waitFor(() => expect(bank.patterns[0].scale).toBe(1));
   expect(bank.patterns[0].notes[0]).toMatchObject({ degree: 3, octave: 1 });
   expect(pitch(bank.patterns[0], 3, 1)).toBe(82);
 });
@@ -74,6 +75,15 @@ test('grid gestures create, move, resize, and delete the stored note', async () 
   fireEvent.pointerDown(end, { button: 0, clientX: 225, clientY: 423 });
   fireEvent.pointerMove(end, { clientX: 300, clientY: 423 }); fireEvent.pointerUp(end, { clientX: 300, clientY: 423 });
   await waitFor(() => expect(bank.patterns[0].notes[0].duration).toBe(1));
+  fireEvent.click(screen.getByLabelText('Snap to grid'));
+  note = screen.getByRole('button', { name: /Degree 2, D4/ });
+  fireEvent.pointerDown(note, { button: 0, clientX: 200, clientY: 423 });
+  fireEvent.pointerMove(note, { clientX: 213, clientY: 423 }); fireEvent.pointerUp(note, { clientX: 213, clientY: 423 });
+  await waitFor(() => expect(bank.patterns[0].notes[0].beat).toBeCloseTo(2.13));
+  const freeEnd = screen.getByLabelText('Resize note');
+  fireEvent.pointerDown(freeEnd, { button: 0, clientX: 300, clientY: 423 });
+  fireEvent.pointerMove(freeEnd, { clientX: 307, clientY: 423 }); fireEvent.pointerUp(freeEnd, { clientX: 307, clientY: 423 });
+  await waitFor(() => expect(bank.patterns[0].notes[0].duration).toBeCloseTo(1.07));
   note = screen.getByRole('button', { name: /Degree 2, D4/ });
   fireEvent.pointerDown(note, { button: 0, clientX: 210, clientY: 423 }); fireEvent.pointerUp(note, { clientX: 210, clientY: 423 });
   await waitFor(() => expect(bank.patterns[0].notes).toHaveLength(0));

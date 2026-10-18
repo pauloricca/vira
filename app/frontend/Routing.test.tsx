@@ -23,6 +23,59 @@ async function mount() {
   const view = render(<Routing />); await screen.findByRole('button', { name: 'a-eq output audio' }); return view;
 }
 const canvas = () => document.querySelector('.routing-canvas')!;
+test('live routing defaults off, applies pending edits when enabled, and returns to manual mode', async () => {
+  await mount();
+  const live = screen.getByRole('checkbox', { name: 'Live routing' }) as HTMLInputElement;
+  expect(live.checked).toBe(false);
+  create('Gain');
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(0);
+  fireEvent.click(live);
+  expect(screen.queryByRole('button', { name: 'Apply routing' })).toBeNull();
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1));
+  const field = screen.getByRole('spinbutton');
+  fireEvent.change(field, { target: { value: '2' } });
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').at(-1)![1].graph.nodes.at(-1).value).toBe(2));
+  fireEvent.click(live);
+  await screen.findByRole('button', { name: 'Apply routing' });
+  const writes = invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').length;
+  fireEvent.change(field, { target: { value: '3' } });
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(writes);
+});
+
+test('live routing serializes writes and sends the latest edit after an in-flight apply', async () => {
+  await mount(); create('Gain');
+  let finish!: () => void;
+  invoke.mockImplementation(command => command === 'set_routing_graph' ? new Promise<void>(resolve => { finish = resolve; }) : Promise.resolve(undefined));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Live routing' }));
+  const field = screen.getByRole('spinbutton');
+  fireEvent.change(field, { target: { value: '2' } });
+  fireEvent.change(field, { target: { value: '3' } });
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1);
+  await act(async () => finish());
+  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(2));
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').at(-1)![1].graph.nodes.at(-1).value).toBe(3);
+  await act(async () => finish());
+});
+
+test('live routing reports failed edits without retrying and applies a corrected draft', async () => {
+  await mount(); create('Gain');
+  invoke.mockRejectedValueOnce('Routing rejected');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Live routing' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Routing rejected');
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1);
+  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '2' } });
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(2);
+});
+
+test('gain nodes accept 10 without an upper input limit', async () => {
+  await mount(); create('Gain');
+  const input = screen.getByRole('spinbutton') as HTMLInputElement;
+  expect(input.hasAttribute('max')).toBe(false);
+  fireEvent.change(input, { target: { value: '10' } });
+  expect((await applied()).nodes.find(node => node.kind === 'gain')?.value).toBe(10);
+});
+
 function create(kind = 'Compressor', _wire = false) {
   fireEvent.doubleClick(screen.getByRole('button', {name:kind}));
 }
@@ -364,15 +417,92 @@ test('discovering an input updates only the palette and preserves draft undo his
   expect(screen.queryByRole('button', { name: 'input-interface output audio' })).toBeNull();
 });
 
-test('named instruments expose independent audio source and destination nodes', async () => {
+test('named instruments share one placement with both audio ports and preserve engine endpoints', async () => {
   invoke.mockImplementation(command => Promise.resolve(command === 'get_instruments' ? [{id:'synth',name:'Hardware synth',audio_input:{device:'Interface',channels:[3,4]},audio_output:{device:'Interface',channels:[7]},midi_input:null,midi_output:null}] : command === 'get_routing_graph' ? structuredClone(graph) : undefined));
   render(<Routing />);
-  fireEvent.doubleClick(await screen.findByRole('button', {name:'From Hardware synth'}));
-  await screen.findByLabelText('instrument-in-synth output audio');
-  fireEvent.doubleClick(screen.getByRole('button', {name:'To Hardware synth'}));
-  await screen.findByLabelText('instrument-out-synth input audio');
-  expect(screen.queryByLabelText('instrument-out-synth output audio')).toBeNull();
-  expect(screen.queryByLabelText('instrument-in-synth input audio')).toBeNull();
+  fireEvent.doubleClick(await screen.findByRole('button', {name:'Hardware synth'}));
+  await screen.findByLabelText('instrument-synth output audio');
+  expect(screen.getByLabelText('instrument-synth input audio')).toBeTruthy();
+  expect(document.querySelectorAll('[data-node-id^="instrument-"]')).toHaveLength(1);
+  expect(screen.queryByRole('button', {name:'Hardware synth'})).toBeNull();
+  fireEvent.pointerDown(screen.getByLabelText('instrument-synth output audio'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('a-eq input audio'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
+  fireEvent.pointerDown(screen.getByLabelText('a-fader output audio'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('instrument-synth input audio'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
   const value = await applied();
   expect(value.nodes.filter(n => n.id.startsWith('instrument-')).map(n => n.kind)).toEqual(['input', 'output']);
+  expect(value.wires).toContainEqual({from:'instrument-in-synth',output:'audio',to:'a-eq',input:'audio',gain:1});
+  expect(value.wires).toContainEqual({from:'a-fader',output:'audio',to:'instrument-out-synth',input:'audio',gain:1});
+  fireEvent.pointerDown(document.querySelector('[data-node-id="instrument-synth"]')!, {button:0});
+  fireEvent.click(screen.getByRole('button', {name:'Remove node'}));
+  expect(screen.queryByLabelText('instrument-synth output audio')).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name:'Undo'}));
+  expect(screen.getByLabelText('instrument-synth input audio')).toBeTruthy();
+});
+
+test.each([true, false])('instrument exposes only its configured audio direction (capture %s)', async capture => {
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_instruments' ? [{id:'synth',name:'Synth',audio_input:capture ? {} : null,audio_output:capture ? null : {}}] : command === 'get_routing_graph' ? structuredClone(graph) : undefined));
+  render(<Routing />);
+  fireEvent.doubleClick(await screen.findByRole('button', {name:'Synth'}));
+  await screen.findByLabelText(`instrument-synth ${capture ? 'output' : 'input'} audio`);
+  expect(screen.queryByLabelText(`instrument-synth ${capture ? 'input' : 'output'} audio`)).toBeNull();
+});
+
+test('saved instrument endpoints fold into one placement and retain both cables and gains', async () => {
+  const source = {id:'instrument-in-synth',kind:'input' as const,deck:null,label:'Synth · audio from',x:40,y:500,value:1};
+  const target = {...source,id:'instrument-out-synth',kind:'output' as const,label:'Synth · audio to',x:600};
+  const wires = [{from:source.id,output:'audio',to:'a-eq',input:'audio',gain:.4}, {from:'a-fader',output:'audio',to:target.id,input:'audio',gain:.8}];
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_routing_graph' ? {nodes:[...graph.nodes,source,target],wires} : undefined));
+  render(<Routing />);
+  await screen.findByLabelText('instrument-synth output audio');
+  expect(screen.getByLabelText('instrument-synth input audio')).toBeTruthy();
+  expect(document.querySelectorAll('[data-node-id^="instrument-"]')).toHaveLength(1);
+  create('Gain');
+  expect((await applied()).wires).toEqual(wires);
+});
+
+test('node names commit as one undoable edit, survive refresh, and reach the engine', async () => {
+  await mount();
+  const field = screen.getByRole('textbox', { name: 'a-eq name' });
+  field.focus();
+  fireEvent.pointerDown(field, { button: 0, pointerId: 1 });
+  fireEvent.change(field, { target: { value: '  Warm EQ  ' } });
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect((field as HTMLInputElement).value).toBe('Warm EQ');
+  expect(document.querySelector('[data-node-id="a-eq"]')?.getAttribute('style')).toContain('left: 20px');
+  await act(async () => routingEvents.callback?.({ payload: structuredClone(graph) }));
+  expect((field as HTMLInputElement).value).toBe('Warm EQ');
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+  expect((field as HTMLInputElement).value).toBe('EQ');
+  fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
+  const value = await applied();
+  expect(value.nodes[0]).toMatchObject({ id: 'a-eq', label: 'EQ', custom_label: 'Warm EQ' });
+  await act(async () => routingEvents.callback?.({ payload: value }));
+  expect((field as HTMLInputElement).value).toBe('Warm EQ');
+});
+
+test('Escape and empty node names preserve the existing name without editing routing', async () => {
+  await mount();
+  const field = screen.getByRole('textbox', { name: 'a-eq name' });
+  field.focus();
+  fireEvent.change(field, { target: { value: 'Cancelled' } });
+  fireEvent.keyDown(field, { key: 'Escape' });
+  expect((field as HTMLInputElement).value).toBe('EQ');
+  field.focus();
+  fireEvent.change(field, { target: { value: '   ' } });
+  fireEvent.blur(field);
+  expect((field as HTMLInputElement).value).toBe('EQ');
+  expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('custom hardware names survive canonical instrument name updates and endpoint folding', async () => {
+  const node = { id: 'instrument-in-synth', kind: 'input', deck: null, label: 'Hardware synth · audio from', custom_label: 'Bass synth', x: 40, y: 500, value: 1 };
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_instruments' ? [{ id: 'synth', name: 'Updated hardware', audio_input: {}, audio_output: null }] : command === 'get_routing_graph' ? { nodes: [...graph.nodes, node], wires: [] } : undefined));
+  render(<Routing />);
+  const field = await screen.findByRole('textbox', { name: 'instrument-synth name' });
+  expect((field as HTMLInputElement).value).toBe('Bass synth');
+  field.focus(); fireEvent.change(field, { target: { value: 'Lead synth' } }); fireEvent.blur(field);
+  expect((await applied()).nodes.find(n => n.id === node.id)?.custom_label).toBe('Lead synth');
 });

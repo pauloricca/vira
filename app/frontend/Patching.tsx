@@ -15,8 +15,18 @@ export function PatchingHeading({ title, description, children }: { title: strin
   return <div className="routing-heading"><div><h2>{title}</h2><p>{description}</p></div><div className="routing-actions">{children}</div></div>;
 }
 
-export function PatchingNodeHeader({ title, subtitle, onPointerDown }: { title: string; subtitle: string; onPointerDown: PointerEventHandler<HTMLDivElement> }) {
-  return <div className="routing-node-title" onPointerDown={onPointerDown}><span className="routing-node-name" title={title}>{title}</span><small title={subtitle}>{subtitle}</small></div>;
+export function PatchingNodeHeader({ title, subtitle, onPointerDown, onRename, nameLabel, disabled }: { title: string; subtitle: string; onPointerDown: PointerEventHandler<HTMLDivElement>; onRename?: (name: string) => void; nameLabel?: string; disabled?: boolean }) {
+  return <div className="routing-node-title" onPointerDown={onPointerDown}>{onRename ? <EditableNodeName title={title} onRename={onRename} nameLabel={nameLabel} disabled={disabled} /> : <span className="routing-node-name" title={title}>{title}</span>}<small title={subtitle}>{subtitle}</small></div>;
+}
+
+function EditableNodeName({ title, onRename, nameLabel, disabled }: { title: string; onRename: (name: string) => void; nameLabel?: string; disabled?: boolean }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  return <input className="routing-node-name routing-node-name-input" aria-label={nameLabel ?? 'Node name'} title={`${title} · Click to rename`} value={draft ?? title} maxLength={80} disabled={disabled}
+    onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+    onFocus={() => { cancelled.current = false; setDraft(title); }} onChange={event => setDraft(event.target.value)}
+    onBlur={() => { const name = draft?.trim(); if (!cancelled.current && name && name !== title) onRename(name); setDraft(null); }}
+    onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); cancelled.current = event.key === 'Escape'; event.currentTarget.blur(); } }} />;
 }
 
 export type PaletteItem = { id: string; label: string };

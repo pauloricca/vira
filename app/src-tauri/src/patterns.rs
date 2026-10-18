@@ -426,6 +426,37 @@ fn launch_boundary(bank: &Bank, p: &Pattern, beat: f64, bpm: f64) -> f64 {
 fn boundary(beat: f64, quantum: u8) -> f64 {
     ((beat + 1e-7) / quantum as f64).ceil() * quantum as f64
 }
+fn recovery_start(
+    bank: &Bank,
+    p: &Pattern,
+    v: &Voice,
+    last_beat: Option<f64>,
+    beat: f64,
+    bpm: f64,
+) -> f64 {
+    if !v
+        .start
+        .zip(last_beat)
+        .is_some_and(|(start, last)| start <= last)
+    {
+        return launch_boundary(bank, p, beat, bpm);
+    }
+    // A clock reset restarts an already playing pattern without launch quantization.
+    // Allow the old MIDI horizon to drain and its note-offs to precede new ons.
+    // Share the restart time across routes, including compensated outputs.
+    let owner = p.owner.as_ref().unwrap_or(&p.id);
+    let compensation = bank
+        .patterns
+        .iter()
+        .filter(|route| route.owner.as_ref().unwrap_or(&route.id) == owner)
+        .map(|route| {
+            route
+                .compensation
+                .unwrap_or(*bank.output_compensation.get(&route.output).unwrap_or(&0.))
+        })
+        .fold(0., f64::max);
+    beat + (compensation + 6.) / 1000. * bpm / 60.
+}
 #[derive(Debug)]
 struct Edge {
     beat: f64,
@@ -891,9 +922,6 @@ mod mac {
                             && old.output == new.output
                             && old.channel == new.channel
                             && old.target_generation == new.target_generation
-                            && old.compensation == new.compensation
-                            && previous.output_compensation.get(&old.output)
-                                == bank.output_compensation.get(&new.output)
                             && is_available(new, &available)
                         {
                             let v = s.voices.get_mut(&id).unwrap();
@@ -938,7 +966,11 @@ mod mac {
                     } else if new.is_some_and(|p| !is_available(p, &available)) {
                         s.error = Some("MIDI destination disconnected; pattern stopped.".into());
                     } else if let Some(p) = new {
-                        let start = launch_boundary(&bank, p, beat, bpm);
+                        let start = if discontinuity {
+                            recovery_start(&bank, p, &v, last_beat, beat, bpm)
+                        } else {
+                            launch_boundary(&bank, p, beat, bpm)
+                        };
                         s.voices.insert(
                             id,
                             Voice {
@@ -979,6 +1011,18 @@ mod mac {
                     }
                 }
             }
+            let timing_changes: std::collections::HashSet<_> = bank
+                .patterns
+                .iter()
+                .filter(|p| {
+                    previous
+                        .patterns
+                        .iter()
+                        .find(|old| old.id == p.id)
+                        .is_some_and(|old| old.compensation != p.compensation)
+                })
+                .map(|p| p.id.clone())
+                .collect();
             previous = bank.clone();
             let commands = std::mem::take(&mut s.commands);
             for (id, play) in commands {
@@ -1034,7 +1078,8 @@ mod mac {
                     continue;
                 }
                 // Late worker wakeups release notes instead of bursting stale note-ons.
-                if horizon - v.cursor > 0.5 && v.cursor >= start {
+                if horizon - v.cursor > 0.5 && v.cursor >= start && !timing_changes.contains(&p.id)
+                {
                     ports.release(p, v, now + 6_000_000);
                     v.cursor = horizon;
                 }
@@ -1204,5 +1249,58 @@ mod tests {
         };
         assert_eq!(launch_boundary(&bank, &p, 3.95, 120.), 8.);
         assert_eq!(launch_boundary(&bank, &teia, 3.95, 120.), 8.);
+    }
+    #[test]
+    fn clock_reset_restarts_running_pattern_without_waiting_for_quantum() {
+        let p = pattern();
+        let bank = Bank {
+            patterns: vec![p.clone()],
+            ..Bank::default()
+        };
+        let voice = Voice {
+            start: Some(4.),
+            cursor: 12.1,
+            ..Voice::default()
+        };
+        // Both backward resets and forward jumps restart from the first note.
+        for beat in [0.03, 25.03] {
+            let start = recovery_start(&bank, &p, &voice, Some(12.), beat, 120.);
+            assert!((start - beat - 0.012).abs() < 1e-9);
+            let events = edges(&p, start, start - 1e-8, start + 0.01, None);
+            assert_eq!(events.len(), 1);
+            assert!(events[0].on);
+            assert_eq!(events[0].beat, start);
+        }
+        let pending = Voice {
+            start: Some(16.),
+            ..Voice::default()
+        };
+        assert_eq!(
+            recovery_start(&bank, &p, &pending, Some(12.), 0.03, 120.),
+            4.
+        );
+    }
+    #[test]
+    fn clock_reset_keeps_compensated_destinations_together() {
+        let mut p = pattern();
+        p.owner = Some("owner".into());
+        let mut teia = p.clone();
+        teia.id = "teia-route".into();
+        teia.destination = Some(Destination::Teia { slot: 0 });
+        teia.compensation = Some(10.);
+        let bank = Bank {
+            patterns: vec![p.clone(), teia.clone()],
+            ..Bank::default()
+        };
+        let voice = Voice {
+            start: Some(4.),
+            ..Voice::default()
+        };
+        let start = recovery_start(&bank, &p, &voice, Some(12.), 0.03, 120.);
+        assert_eq!(
+            start,
+            recovery_start(&bank, &teia, &voice, Some(12.), 0.03, 120.)
+        );
+        assert!((start - 0.062).abs() < 1e-9);
     }
 }

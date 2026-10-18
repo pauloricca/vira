@@ -61,6 +61,7 @@ const shortcutCategories = [
     ['Escape', 'Cancel cable/node drag and clear canvas selection', 'Patterns canvas; outside text fields and selectors'],
   ] },
   { title: 'Audio routing', shortcuts: [
+    ['Enter / Escape', 'Finish / cancel node renaming; clicking elsewhere also finishes. Apply routing (or Live routing) publishes the name to waveforms', 'Routing page; node name text field is focused; no Apply in progress'],
     ['Delete / Backspace', 'Remove selected added node and its cables, or disconnect selected cable; default Routing nodes are protected; session patches stay in Decks', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
     ['Cmd + Z', 'Undo the last routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
     ['Cmd + Shift + Z', 'Redo the last undone routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
