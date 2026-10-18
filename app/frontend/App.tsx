@@ -208,6 +208,7 @@ export function App() {
   const revision = useRef(-1);
   const instance = useRef('');
   const scanning = useRef(true);
+  const needsLibraryOpen = useRef(false);
   const driftClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (driftClickTimer.current) clearTimeout(driftClickTimer.current); }, []);
   function driftOrSet(deck: number, detail: number) {
@@ -233,16 +234,16 @@ export function App() {
     scanning.current = true;
     setBusy(true);
     setError(null);
-    try { const value = await invoke<Library>('refresh_library'); if (generation.current === current) { apply(value, true); setRowErrors({}); setPollError(null); } }
-    catch (e) { setError(String(e)); }
-    finally { scanning.current = false; setBusy(false); }
+    try { const value = await invoke<Library>('refresh_library'); if (generation.current === current) { apply(value, true); needsLibraryOpen.current = false; setRowErrors({}); setPollError(value.scan_error ?? null); } }
+    catch (e) { if (generation.current === current) { needsLibraryOpen.current = String(e).startsWith('Preparation service unavailable or scan timed out.'); setError(String(e)); } }
+    finally { if (generation.current === current) { scanning.current = false; setBusy(false); } }
   }
   useEffect(() => {
     let active = true;
     const current = generation.current;
     void invoke<Library>('open_library').then(value => {
       if (active && generation.current === current) { apply(value, true); scanning.current = false; setBusy(false); setPollError(value.scan_error ?? null); }
-    }).catch(e => { if (active && generation.current === current) { scanning.current = false; setError(String(e)); setBusy(false); } });
+    }).catch(e => { if (active && generation.current === current) { needsLibraryOpen.current = true; scanning.current = false; setError(String(e)); setBusy(false); } });
     return () => { active = false; };
   }, []);
   const collections = library?.collections ?? (library ? [library.music_bin] : []);
@@ -262,9 +263,7 @@ export function App() {
     localStorage.setItem('vira.track-order', JSON.stringify(next));
   }
   useEffect(() => { if (activeCollection) localStorage.setItem('vira.collection', activeCollection); }, [activeCollection]);
-  const connected = library !== null;
   useEffect(() => {
-    if (!connected) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -273,11 +272,20 @@ export function App() {
       const current = generation.current;
       if (!scanning.current) {
         try {
-          const value = await invoke<Library>('get_library_state');
+          let reopening = needsLibraryOpen.current;
+          let value = await invoke<Library>(reopening ? 'open_library' : 'get_library_state');
+          if (!cancelled && current === generation.current && !scanning.current && !reopening && value.instance_id !== instance.current) {
+            // A restarted service must seed its saved rows and verify the files
+            // before its new instance can replace the displayed library.
+            needsLibraryOpen.current = true;
+            reopening = true;
+            value = await invoke<Library>('open_library');
+          }
           await waitForDeckLoads();
           if (!cancelled && current === generation.current && !scanning.current) {
-            if (value.instance_id !== instance.current) setPollError('Preparation service restarted. Click Refresh to restore the library.');
-            else { apply(value); setPollError(value.scan_error ?? null); }
+            apply(value, reopening);
+            if (reopening) { needsLibraryOpen.current = false; setError(null); }
+            setPollError(value.scan_error ?? null);
           }
         } catch (e) { if (!cancelled && current === generation.current) setPollError(String(e)); }
       }
@@ -285,7 +293,7 @@ export function App() {
     }
     timer = setTimeout(() => void poll(), 1000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [connected]);
+  }, []);
   const deckAnalysis = useRef<Array<{ key: string; result: string | null }>>([]);
   useEffect(() => {
     for (const deck of decks.audio.decks) {

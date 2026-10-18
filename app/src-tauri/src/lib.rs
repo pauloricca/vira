@@ -340,7 +340,9 @@ pub fn run() {
 
     #[tauri::command]
     async fn refresh_library() -> Result<Library, String> {
-        tauri::async_runtime::spawn_blocking(scan_library)
+        // Refresh verifies in the background, just like startup, so probing a
+        // large library or yielding to deck loads cannot time out the request.
+        tauri::async_runtime::spawn_blocking(crate::open_library)
             .await
             .map_err(|e| format!("Library scan worker failed: {e}"))?
     }

@@ -85,6 +85,56 @@ test('refresh stays disabled until the scan completes', async () => {
   finish(library);
   await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false));
 });
+test('startup reconnects automatically after the preparation service becomes available', async () => {
+  vi.useFakeTimers();
+  invoke.mockRejectedValueOnce('Service starting').mockResolvedValue(library);
+  await act(async () => { render(<App />); });
+  expect(screen.getByText('Service starting')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(invoke.mock.calls.filter(([command]) => command === 'open_library')).toHaveLength(2);
+  expect(screen.getByText('Unknown artist')).toBeTruthy();
+  expect(screen.queryByText('Library unavailable')).toBeNull();
+});
+test('a failed Refresh reconnects and clears its transport warning', async () => {
+  vi.useFakeTimers();
+  invoke.mockImplementation((command: string) => command === 'refresh_library'
+    ? Promise.reject('Preparation service unavailable or scan timed out. Start the preparation service.')
+    : Promise.resolve(library));
+  await act(async () => { render(<App />); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); });
+  expect(screen.getByText('Library unavailable')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(invoke.mock.calls.filter(([command]) => command === 'open_library')).toHaveLength(2);
+  expect(screen.queryByText('Library unavailable')).toBeNull();
+});
+test('a restarted preparation service is reopened before replacing the library', async () => {
+  vi.useFakeTimers();
+  let opens = 0;
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'open_library'
+    ? ++opens === 1 ? library : { ...library, instance_id: 'restarted', scan_pending: true }
+    : { ...library, instance_id: 'restarted', tracks: [] }));
+  await act(async () => { render(<App />); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(opens).toBe(2);
+  expect(screen.getByText('Unknown artist')).toBeTruthy();
+  expect(screen.getByText('Verifying files…')).toBeTruthy();
+  expect(screen.queryByText('Library unavailable')).toBeNull();
+});
+test('background Refresh reports scan errors and clears them after successful verification', async () => {
+  vi.useFakeTimers();
+  let current = library;
+  invoke.mockImplementation(() => Promise.resolve(current));
+  await act(async () => { render(<App />); });
+  current = { ...library, scan_pending: true };
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); });
+  expect(screen.getByText('Verifying files…')).toBeTruthy();
+  current = { ...library, scan_error: 'Music folder is unavailable' };
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.getByText('Music folder is unavailable')).toBeTruthy();
+  current = library;
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.queryByText('Library unavailable')).toBeNull();
+});
 test('unknown durations stay blank and long tracks are formatted', () => {
   expect(duration(null)).toBe('—');
   expect(duration(3723)).toBe('62:03');
