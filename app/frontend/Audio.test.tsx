@@ -13,11 +13,11 @@ test('restores output selections, prevents speaker sharing and applies separate 
   const cue = screen.getByRole('combobox', { name: 'Cue headphones device' });
   await waitFor(() => expect((cue as HTMLSelectElement).disabled).toBe(false));
   fireEvent.change(cue, { target: { value: 'Speakers' } });
-  expect(screen.getByRole('alert').textContent).toContain('different devices');
+  expect(screen.getByRole('alert').textContent).toContain('must not overlap');
   expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(cue, { target: { value: 'Headphones' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: 'Headphones' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: 'Headphones', masterChannels: [1,2], cueChannels: [1,2] }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(true));
 });
 test('keeps disconnected saved devices visible and allows switching cue off', async () => {
@@ -28,7 +28,7 @@ test('keeps disconnected saved devices visible and allows switching cue off', as
   expect(screen.getByRole('alert').textContent).toBe('Device disconnected');
   fireEvent.change(screen.getByRole('combobox', { name: 'Cue headphones device' }), { target: { value: '' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: null }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: null, masterChannels: [1,2], cueChannels: [1,2] }));
 });
 test('device errors are shown without reporting a successful selection', async () => {
   invoke.mockImplementation(command => command === 'get_audio_devices' ? Promise.resolve(inventory) : Promise.reject('Device disconnected'));
@@ -54,7 +54,7 @@ test('manual refresh updates connected devices without replacing pending output 
   expect(invoke).not.toHaveBeenCalledWith('set_audio_devices', expect.anything());
 });
 
-test('44.1 kHz selection explains restart and only permits cue devices at the same rate', async () => {
+test('44.1 kHz selection explains restart and keeps separate cue devices available', async () => {
   invoke.mockResolvedValue({ ...inventory, sample_rate: 48000, devices: [
     { id: 'Speakers', name: 'Speakers', supported: true, sample_rate: 48000, rate_ranges: [[2, 44100, 96000]] },
     { id: 'Starlight', name: 'DJControl Starlight', supported: true, sample_rate: 44100, rate_ranges: [[4, 44100, 44100]] },
@@ -65,7 +65,40 @@ test('44.1 kHz selection explains restart and only permits cue devices at the sa
   await screen.findAllByRole('option', { name: 'DJControl Starlight · 44.1 kHz' });
   fireEvent.change(master, { target: { value: 'Starlight' } });
   expect(screen.getByText(/Changing to 44.1 kHz restarts VIRA/)).toBeTruthy();
-  expect((screen.getByRole('option', { name: '48 only · unavailable at 44.1 kHz' }) as HTMLOptionElement).disabled).toBe(true);
+  expect(screen.queryByRole('option', { name: /unavailable at/ })).toBeNull();
+  expect(screen.getAllByRole('option', { name: '48 only · 48 kHz' }).every(option => !(option as HTMLOptionElement).disabled)).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: null }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: null, masterChannels: [1,2], cueChannels: [1,2] }));
+});
+
+const multichannel = { ...inventory, sample_rate: 96000, devices: [
+  { id: 'Speakers', name: 'Speakers', supported: true, sample_rate: 96000, rate_ranges: [[2,44100,96000]] },
+  { id: 'Starlight', name: 'Starlight', supported: true, sample_rate: 44100, rate_ranges: [[4,44100,44100]] },
+] };
+test('Starlight shares one stream with master 1–2 and cue 3–4, rejects overlap, and saves pairs', async () => {
+  invoke.mockResolvedValue(multichannel);
+  render(<Audio audio={{ ...audio, telemetry: { sample_rate: 96000 } }} />);
+  await screen.findAllByRole('option', { name: 'Starlight · 44.1 kHz' });
+  fireEvent.change(screen.getByLabelText('Master out device'), { target: { value: 'Starlight' } });
+  fireEvent.change(screen.getByLabelText('Cue headphones device'), { target: { value: 'Starlight' } });
+  expect((screen.getByLabelText('Master output channels') as HTMLSelectElement).value).toBe('1,2');
+  expect((screen.getByLabelText('Cue output channels') as HTMLSelectElement).value).toBe('3,4');
+  expect(screen.getByText('Master and cue share one 44.1 kHz stream.')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Cue output channels'), { target: { value: '1,2' } });
+  expect((screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole('alert').textContent).toContain('must not overlap');
+  fireEvent.change(screen.getByLabelText('Cue output channels'), { target: { value: '3,4' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: 'Starlight', masterChannels: [1,2], cueChannels: [3,4] }));
+});
+test('96 kHz master can select a 44.1 kHz Starlight cue and restore its saved channels', async () => {
+  invoke.mockResolvedValue({ ...multichannel, routes: { master: 'Speakers', cue: 'Starlight', master_channels: [1,2], cue_channels: [3,4] } });
+  render(<Audio audio={{ ...audio, telemetry: { sample_rate: 96000 } }} />);
+  await screen.findAllByRole('option', { name: 'Starlight · 44.1 kHz' });
+  expect((screen.getByLabelText('Cue output channels') as HTMLSelectElement).value).toBe('3,4');
+  expect(screen.queryByText(/unavailable at 96/)).toBeNull();
+  expect(screen.getByText(/Cue uses 44.1 kHz/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Cue output channels'), { target: { value: '1,2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: 'Starlight', masterChannels: [1,2], cueChannels: [1,2] }));
 });

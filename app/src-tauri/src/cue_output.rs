@@ -23,10 +23,27 @@ impl CueOutput {
     pub fn render(&mut self, data: &mut [f32], channels: usize) {
         self.render_at_rate(data, channels, 1.);
     }
+    /// Bounded scratch storage maps the stereo bridge onto any hardware pair.
+    pub fn render_mapped(&mut self, data: &mut [f32], channels: usize, pair: [u16; 2], ratio: f64) {
+        data.fill(0.);
+        for chunk in data.chunks_mut(channels * 256) {
+            let frames = chunk.len() / channels;
+            let mut stereo = [0.; 512];
+            self.render_at_rate(&mut stereo[..frames * 2], 2, ratio);
+            for (index, frame) in chunk.chunks_exact_mut(channels).enumerate() {
+                crate::audio_devices::write_pair(
+                    frame,
+                    pair,
+                    [stereo[index * 2], stereo[index * 2 + 1]],
+                );
+            }
+        }
+    }
     pub fn render_at_rate(&mut self, data: &mut [f32], channels: usize, source_rate: f64) {
         data.fill(0.);
         // Recover from a stopped/disconnected callback without replaying old audio.
-        let target = (data.len() / channels + 512).min(4096);
+        let target =
+            (((data.len() / channels + 512) as f64 * source_rate).ceil() as usize).clamp(2, 4096);
         if self.consumer.slots() > 6144 {
             self.reset();
         }
@@ -65,6 +82,24 @@ impl CueOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn separate_cue_maps_only_its_pair_at_different_native_rates() {
+        for ratio in [96000. / 44100., 44100. / 96000., 1.] {
+            let (mut producer, consumer) = rtrb::RingBuffer::new(8192);
+            for _ in 0..4096 {
+                producer.push([0.25, -0.5]).unwrap();
+            }
+            let mut cue = CueOutput::new(consumer);
+            let mut data = [1.; 256 * 8];
+            let before = cue.consumer.slots();
+            cue.render_mapped(&mut data, 8, [3, 4], ratio);
+            assert!(data
+                .chunks_exact(8)
+                .all(|frame| frame == [0., 0., 0.25, -0.5, 0., 0., 0., 0.]));
+            let consumed = before - cue.consumer.slots();
+            assert!((consumed as f64 - 256. * ratio).abs() < 10.);
+        }
+    }
     #[test]
     fn converts_input_sample_rates_to_engine_time() {
         for rate in [44100, 48000, 96000] {

@@ -508,12 +508,19 @@ pub fn run() {
         app: tauri::AppHandle,
         master: Option<String>,
         cue: Option<String>,
+        master_channels: Option<[u16; 2]>,
+        cue_channels: Option<[u16; 2]>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         let engine = state.inner().clone();
         let restart = tauri::async_runtime::spawn_blocking(move || {
             engine
-                .set_audio_devices(crate::audio_devices::Routes { master, cue })
+                .set_audio_devices(crate::audio_devices::Routes {
+                    master,
+                    cue,
+                    master_channels: master_channels.unwrap_or([1, 2]),
+                    cue_channels: cue_channels.unwrap_or([1, 2]),
+                })
                 .map_err(|e| e.to_string())
         })
         .await

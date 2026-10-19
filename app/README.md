@@ -816,9 +816,14 @@ Open **SETTINGS** in the workspace tabs, select **Master out** and **Cue headpho
 click **Apply outputs**. Master defaults to the system output; cue starts off.
 Selections are saved in `~/Library/Application Support/uk.ricca.vira/audio.json`.
 The engine adopts the selected master's current/default sample rate, supporting
-stereo float32 from 44.1 to 192 kHz. Devices with more channels use the first
-stereo pair. Use separate devices for master and headphones; cue must support
-the master's rate. The master stream does not resample engine output.
+stereo float32 from 44.1 to 192 kHz. Select a stereo channel pair for each output.
+Master and cue can share a device when their channels do not overlap. For the
+Starlight, select the device for both, master channels **1–2**, and cue channels
+**3–4**. Both mixes are written directly into one four-channel stream at 44.1 kHz.
+The master stream does not resample engine output. A separate cue device opens
+at its own native rate; the bounded stereo bridge adapts the cue mix to that rate.
+Old output settings default to channels 1–2. Channel choices are saved and
+validated against the device's available channels at its selected rate.
 
 Changing the engine rate shows **Apply outputs & restart VIRA**. Save grid and
 patch edits first: the restart clears loaded decks. Preparation generates a

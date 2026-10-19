@@ -2,10 +2,38 @@
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Routes {
     pub master: Option<String>,
     pub cue: Option<String>,
+    #[serde(default = "default_pair")]
+    pub master_channels: [u16; 2],
+    #[serde(default = "default_pair")]
+    pub cue_channels: [u16; 2],
+}
+fn default_pair() -> [u16; 2] {
+    [1, 2]
+}
+impl Default for Routes {
+    fn default() -> Self {
+        Self {
+            master: None,
+            cue: None,
+            master_channels: default_pair(),
+            cue_channels: default_pair(),
+        }
+    }
+}
+/// Write one stereo bus to its one-based hardware channels, leaving other buses intact.
+pub fn write_pair(frame: &mut [f32], channels: [u16; 2], samples: [f32; 2]) {
+    for (channel, sample) in channels.into_iter().zip(samples) {
+        if let Some(target) = channel
+            .checked_sub(1)
+            .and_then(|index| frame.get_mut(index as usize))
+        {
+            *target = sample;
+        }
+    }
 }
 impl Routes {
     fn path() -> std::path::PathBuf {
@@ -26,12 +54,43 @@ impl Routes {
         std::fs::rename(temporary, path)?;
         Ok(())
     }
+    pub fn shared_device(&self, default: Option<&str>) -> bool {
+        self.cue
+            .as_deref()
+            .is_some_and(|cue| Some(cue) == self.master.as_deref().or(default))
+    }
+    pub fn required_master_channels(&self, default: Option<&str>) -> u16 {
+        self.master_channels
+            .into_iter()
+            .chain(
+                self.shared_device(default)
+                    .then_some(self.cue_channels)
+                    .into_iter()
+                    .flatten(),
+            )
+            .max()
+            .unwrap_or(2)
+    }
     pub fn validate(&self, default: Option<&str>) -> Result<()> {
+        for pair in [
+            Some(self.master_channels),
+            self.cue.as_ref().map(|_| self.cue_channels),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            ensure!(
+                pair[0] > 0 && pair[1] > 0 && pair[0] != pair[1],
+                "Choose two distinct output channels"
+            );
+        }
         ensure!(
-            self.cue
-                .as_deref()
-                .is_none_or(|cue| Some(cue) != self.master.as_deref().or(default)),
-            "Choose different devices for master out and cue headphones"
+            !self.shared_device(default)
+                || !self
+                    .master_channels
+                    .iter()
+                    .any(|channel| self.cue_channels.contains(channel)),
+            "Master and cue channels must not overlap on the same device"
         );
         Ok(())
     }
@@ -106,14 +165,22 @@ pub fn config(device: &cpal::Device) -> Result<cpal::StreamConfig> {
 }
 #[cfg(target_os = "macos")]
 pub fn config_at(device: &cpal::Device, rate: u32) -> Result<cpal::StreamConfig> {
+    config_channels(device, rate, 2)
+}
+#[cfg(target_os = "macos")]
+pub fn config_channels(
+    device: &cpal::Device,
+    rate: u32,
+    required: u16,
+) -> Result<cpal::StreamConfig> {
     let channels = ranges(device)?
         .into_iter()
-        .filter(|&(channels, low, high)| channels >= 2 && low <= rate && rate <= high)
+        .filter(|&(channels, low, high)| channels >= required.max(2) && low <= rate && rate <= high)
         .map(|c| c.0)
         .min()
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Device does not support the engine rate ({} kHz). Reapply output settings to use its native rate, or choose devices with a shared rate.",
+                "Device cannot open the selected channels at {} kHz. Choose available channels or reapply output settings for its native rate.",
                 rate as f64 / 1000.
             )
         })?;
@@ -183,6 +250,37 @@ pub fn check(name: Option<&str>) -> Result<serde_json::Value> {
 mod tests {
     use super::*;
     #[test]
+    fn channel_routes_keep_legacy_defaults_and_allow_disjoint_shared_pairs() {
+        let mut routes: Routes =
+            serde_json::from_str(r#"{"master":null,"cue":"Starlight"}"#).unwrap();
+        assert_eq!(routes.master_channels, [1, 2]);
+        assert_eq!(routes.cue_channels, [1, 2]);
+        assert!(routes.validate(Some("Starlight")).is_err());
+        routes.cue_channels = [3, 4];
+        routes.validate(Some("Starlight")).unwrap();
+        assert!(routes.shared_device(Some("Starlight")));
+        assert_eq!(routes.required_master_channels(Some("Starlight")), 4);
+        assert_eq!(routes.required_master_channels(Some("Speakers")), 2);
+        let restored: Routes =
+            serde_json::from_value(serde_json::to_value(&routes).unwrap()).unwrap();
+        assert_eq!(restored.cue_channels, [3, 4]);
+        for pair in [[2, 3], [1, 4], [0, 4], [3, 3]] {
+            routes.cue_channels = pair;
+            assert!(routes.validate(Some("Starlight")).is_err());
+        }
+    }
+    #[test]
+    fn channel_mapping_keeps_master_and_cue_isolated_in_one_frame() {
+        let mut frame = [0.; 8];
+        write_pair(&mut frame, [1, 2], [0.6, -0.4]);
+        write_pair(&mut frame, [3, 4], [-0.3, 0.2]);
+        assert_eq!(frame, [0.6, -0.4, -0.3, 0.2, 0., 0., 0., 0.]);
+        frame.fill(0.);
+        write_pair(&mut frame, [5, 6], [0.1, 0.2]);
+        write_pair(&mut frame, [1, 2], [0., 0.]);
+        assert_eq!(frame, [0., 0., 0., 0., 0.1, 0.2, 0., 0.]);
+    }
+    #[test]
     fn sample_rate_contract_chooses_current_rate_and_rejects_invalid_formats() {
         assert_eq!(choose_rate(44100, &[(4, 44100, 44100)]), Some((4, 44100)));
         assert_eq!(choose_rate(96000, &[(2, 44100, 192000)]), Some((2, 96000)));
@@ -200,6 +298,7 @@ mod tests {
         let routes = Routes {
             master: None,
             cue: Some("Speakers".into()),
+            ..Routes::default()
         };
         assert!(routes.validate(Some("Speakers")).is_err());
         assert!(routes.validate(Some("Interface")).is_ok());

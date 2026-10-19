@@ -26,6 +26,7 @@ struct Shared {
     routes: Mutex<crate::audio_devices::Routes>,
     inputs: crate::audio_inputs::Inputs,
     cue_running: AtomicBool,
+    cue_sample_rate: AtomicU64,
     cue_error: Mutex<Option<String>>,
     cue_device_errors: AtomicU64,
     headphone_cue: [AtomicBool; 2],
@@ -108,6 +109,7 @@ impl Shared {
             cancel: false.into(),
             routes: Mutex::new(crate::audio_devices::Routes::load()),
             cue_running: false.into(),
+            cue_sample_rate: 0.into(),
             cue_error: Mutex::new(None),
             cue_device_errors: 0.into(),
             headphone_cue: std::array::from_fn(|_| false.into()),
@@ -746,10 +748,22 @@ impl EngineHandle {
         routes.validate(default.as_deref())?;
         let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
         let rate = crate::audio_devices::config(&device)?.sample_rate.0;
-        if let Some(name) = routes.cue.as_deref() {
-            crate::audio_devices::config_at(
-                &crate::audio_devices::resolve(&host, Some(name))?,
-                rate,
+        crate::audio_devices::config_channels(
+            &device,
+            rate,
+            routes.required_master_channels(default.as_deref()),
+        )?;
+        if let Some(name) = routes
+            .cue
+            .as_deref()
+            .filter(|_| !routes.shared_device(default.as_deref()))
+        {
+            let cue_device = crate::audio_devices::resolve(&host, Some(name))?;
+            let cue_rate = crate::audio_devices::config(&cue_device)?.sample_rate.0;
+            crate::audio_devices::config_channels(
+                &cue_device,
+                cue_rate,
+                *routes.cue_channels.iter().max().unwrap(),
             )?;
         }
         let mut current = self.shared.routes.lock().unwrap();
@@ -1559,7 +1573,7 @@ impl EngineHandle {
         json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / crate::sample_rate::get() as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "master_volume":f32::from_bits(self.shared.master_volume.load(Relaxed) as u32),
             "cue_volume":f32::from_bits(self.shared.cue_volume.load(Relaxed) as u32),
-            "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
+            "routing":{"master":routes.master,"cue":routes.cue,"master_channels":routes.master_channels,"cue_channels":routes.cue_channels,"cue_sample_rate":self.shared.cue_running.load(Acquire).then(|| self.shared.cue_sample_rate.load(Acquire)),"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":crate::sample_rate::get(),"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
                 "queue_capacity_ms":QUEUE_FRAMES as f64 * 1000. / crate::sample_rate::get() as f64,"realtime_policy_verified":self.shared.realtime.load(Acquire),
@@ -1759,12 +1773,37 @@ fn native_output(
         .recv_timeout(Duration::from_secs(10))
         .map_err(|_| anyhow::anyhow!("Audio producer failed to prebuffer"))
         .and_then(|result| result.map_err(anyhow::Error::msg));
-    let build_stream = || -> Result<(cpal::Stream, String)> {
+    let build_stream = || -> Result<(cpal::Stream, String, bool)> {
         let routes = shared.routes.lock().unwrap().clone();
         let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
         let name = device.name()?;
-        let mut config =
-            crate::audio_devices::config_at(&device, crate::sample_rate::get() as u32)?;
+        // A system-default change can make a previously separate cue share the
+        // master hardware. Suspend an invalid/unavailable cue without stopping master.
+        let master_only = crate::audio_devices::Routes {
+            cue: None,
+            ..routes.clone()
+        };
+        master_only.validate(Some(&name))?;
+        let shared_config =
+            if routes.shared_device(Some(&name)) && routes.validate(Some(&name)).is_ok() {
+                crate::audio_devices::config_channels(
+                    &device,
+                    crate::sample_rate::get() as u32,
+                    routes.required_master_channels(Some(&name)),
+                )
+                .ok()
+            } else {
+                None
+            };
+        let shared_cue = shared_config.is_some();
+        let mut config = match shared_config {
+            Some(config) => config,
+            None => crate::audio_devices::config_channels(
+                &device,
+                crate::sample_rate::get() as u32,
+                *routes.master_channels.iter().max().unwrap(),
+            )?,
+        };
         config.buffer_size = cpal::BufferSize::Fixed(256);
         let channels = config.channels as usize;
         let callback_cue = cue_tx.clone();
@@ -1832,12 +1871,21 @@ fn native_output(
                                 }
                                 anchored = true;
                             }
-                            for channel in 0..2 {
-                                samples[channel] = frame.samples[channel] * master_volume;
-                            }
-                            if let Some(cue) = cue.as_mut() {
-                                let _ =
-                                    cue.push(frame.cue_samples.map(|sample| sample * cue_volume));
+                            let master_samples = frame.samples.map(|sample| sample * master_volume);
+                            let cue_samples = frame.cue_samples.map(|sample| sample * cue_volume);
+                            crate::audio_devices::write_pair(
+                                samples,
+                                routes.master_channels,
+                                master_samples,
+                            );
+                            if shared_cue {
+                                crate::audio_devices::write_pair(
+                                    samples,
+                                    routes.cue_channels,
+                                    cue_samples,
+                                );
+                            } else if let Some(cue) = cue.as_mut() {
+                                let _ = cue.push(cue_samples);
                             }
                             for d in 0..2 {
                                 deck_peaks[d] = deck_peaks[d]
@@ -1846,7 +1894,7 @@ fn native_output(
                             }
                             for channel in 0..2 {
                                 master_peaks[channel] =
-                                    master_peaks[channel].max(samples[channel].abs());
+                                    master_peaks[channel].max(master_samples[channel].abs());
                             }
                             active_deck.observe(
                                 std::array::from_fn(|d| {
@@ -1962,12 +2010,16 @@ fn native_output(
         stream.play()?;
         *shared.device.lock().unwrap() = Some(name.clone());
         shared.running.store(true, Release);
-        Ok((stream, name))
+        Ok((stream, name, shared_cue))
     };
     let build_cue = |name: &str| -> Result<cpal::Stream> {
         let device = crate::audio_devices::resolve(&host, Some(name))?;
-        let config = crate::audio_devices::config_at(&device, crate::sample_rate::get() as u32)?;
+        let pair = shared.routes.lock().unwrap().cue_channels;
+        let rate = crate::audio_devices::config(&device)?.sample_rate.0;
+        let config =
+            crate::audio_devices::config_channels(&device, rate, *pair.iter().max().unwrap())?;
         let channels = config.channels as usize;
+        let ratio = crate::sample_rate::get() as f64 / rate as f64;
         cue_output.lock().unwrap().reset();
         let callback = cue_output.clone();
         let cb = shared.clone();
@@ -1978,7 +2030,7 @@ fn native_output(
                 data.fill(0.);
                 if let Ok(mut cue) = callback.try_lock() {
                     if cb.running.load(Acquire) {
-                        cue.render(data, channels);
+                        cue.render_mapped(data, channels, pair, ratio);
                     } else {
                         cue.reset();
                     }
@@ -1990,6 +2042,7 @@ fn native_output(
             None,
         )?;
         stream.play()?;
+        shared.cue_sample_rate.store(rate as u64, Release);
         Ok(stream)
     };
     let mut error = None;
@@ -1999,13 +2052,15 @@ fn native_output(
         let mut previous_frames = 0;
         let mut previous_errors = 0;
         let mut stream: Option<cpal::Stream> = None;
+        let mut shared_cue_active = false;
         let mut device_name: Option<String> = None;
-        let mut master_route: Option<String> = None;
+        let mut master_routes: Option<crate::audio_devices::Routes> = None;
         let mut cue_stream: Option<cpal::Stream> = None;
-        let mut cue_name: Option<String> = None;
+        let mut cue_name: Option<(String, [u16; 2])> = None;
         let mut cue_errors = 0;
         let mut cue_available_before = false;
         let mut cue_valid_before = false;
+        let mut cue_shared_before = false;
         let mut cue_retry = Instant::now() - Duration::from_secs(2);
         while !shared.cancel.load(Acquire) {
             let frames = shared.stats.frames.load(Relaxed);
@@ -2023,29 +2078,36 @@ fn native_output(
                 .ok()
                 .and_then(|d| d.name().ok());
             let next_cue_errors = shared.cue_device_errors.load(Relaxed);
-            let cue_valid = routes.cue.is_some() && routes.cue != current_device;
+            let cue_shared = routes.shared_device(current_device.as_deref());
+            let cue_valid = routes.validate(current_device.as_deref()).is_ok();
+            let next_cue_name = routes.cue.clone().map(|name| (name, routes.cue_channels));
             let cue_available = routes
                 .cue
                 .as_deref()
                 .and_then(|name| crate::audio_devices::resolve(&host, Some(name)).ok())
                 .is_some();
-            if cue_name != routes.cue
+            if cue_shared != cue_shared_before
+                || cue_name != next_cue_name
                 || next_cue_errors != cue_errors
                 || cue_valid != cue_valid_before
                 || cue_available != cue_available_before
             {
                 drop(cue_stream.take());
                 shared.cue_running.store(false, Release);
-                cue_name = routes.cue.clone();
+                cue_name = next_cue_name;
                 cue_available_before = cue_available;
                 cue_valid_before = cue_valid;
+                cue_shared_before = cue_shared;
                 cue_errors = next_cue_errors;
                 cue_retry = Instant::now() - Duration::from_secs(2);
             }
-            if routes.cue.is_none() {
+            if cue_shared {
+                drop(cue_stream.take());
+                *shared.cue_error.lock().unwrap() = None;
+            } else if routes.cue.is_none() {
                 *shared.cue_error.lock().unwrap() = None;
             } else if !cue_valid {
-                *shared.cue_error.lock().unwrap() = Some("Cue suspended: master and cue resolve to the same device. Choose separate outputs.".into());
+                *shared.cue_error.lock().unwrap() = Some("Cue suspended: master and cue channels overlap. Choose separate channel pairs.".into());
             } else if cue_stream.is_none() && cue_retry.elapsed() >= Duration::from_secs(2) {
                 cue_retry = Instant::now();
                 match build_cue(routes.cue.as_deref().unwrap()) {
@@ -2064,18 +2126,23 @@ fn native_output(
                 || device_errors != previous_errors
                 || progress_at.elapsed() > Duration::from_secs(1)
                 || current_device != device_name
-                || master_route != routes.master;
+                || master_routes.as_ref() != Some(&routes);
             if needs_stream {
                 // Keep the producer, decks, commands and buffered frames alive.
                 // During sleep the full queue naturally pauses their timeline.
                 drop(stream.take());
-                master_route = routes.master.clone();
+                master_routes = Some(routes.clone());
                 output.lock().unwrap().previous = None;
                 shared.running.store(false, Release);
+                if cue_shared {
+                    shared.cue_running.store(false, Release);
+                }
+                shared_cue_active = false;
                 *shared.device.lock().unwrap() = None;
                 previous_errors = device_errors;
                 match build_stream() {
-                    Ok((new_stream, name)) => {
+                    Ok((new_stream, name, shared_cue)) => {
+                        shared_cue_active = shared_cue;
                         stream = Some(new_stream);
                         device_name = Some(name);
                         progress_at = Instant::now();
@@ -2089,6 +2156,24 @@ fn native_output(
                     }
                 }
                 *shared.error.lock().unwrap() = None;
+            }
+            if cue_shared {
+                shared
+                    .cue_sample_rate
+                    .store(crate::sample_rate::get() as u64, Release);
+                shared.cue_running.store(
+                    cue_valid
+                        && shared_cue_active
+                        && shared.running.load(Acquire)
+                        && stream.is_some(),
+                    Release,
+                );
+                if !cue_valid {
+                    *shared.cue_error.lock().unwrap() =
+                        Some("Master and cue channels must not overlap on the same device".into());
+                } else if !shared_cue_active {
+                    *shared.cue_error.lock().unwrap() = Some("Cue channels unavailable on the master device. Choose a supported channel pair.".into());
+                }
             }
             if sample_at.elapsed() >= Duration::from_secs(1) {
                 *shared.resources.lock().unwrap() = metrics::resources();
