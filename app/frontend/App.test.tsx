@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App, Library, duration } from './App';
 const { invoke, audioInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'midi_mapping_poll' ? Promise.resolve({ devices: [], messages: [] }) : command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
 beforeEach(() => { audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
 afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); });
 const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', music_bin: '/fixed/music', tracks: [{
@@ -11,6 +11,21 @@ const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', 
   duration_seconds: 125.4, size_bytes: 100, modified_ns: '123', status: 'ready', error: null,
   source_hash: 'hash', analysis: { state: 'not_analysed', result: null, error: null },
 }] };
+test('header output volumes control master and cue independently without loaded decks', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const master = screen.getByRole('slider', { name: 'Master volume' }) as HTMLInputElement;
+  const cue = screen.getByRole('slider', { name: 'Cue volume' }) as HTMLInputElement;
+  expect(master.closest('header')).toBeTruthy();
+  expect(master.value).toBe('1');
+  expect(cue.value).toBe('1');
+  fireEvent.change(master, { target: { value: '.4' } });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'master_volume', value: .4, generation: 0 }));
+  expect(cue.value).toBe('1');
+  fireEvent.change(cue, { target: { value: '0' } });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'cue_volume', value: 0, generation: 0 }));
+});
 test('startup lists metadata and refresh reconciles removed files', async () => {
   invoke.mockResolvedValueOnce(library).mockResolvedValueOnce({ ...library, tracks: [] });
   render(<App />);
@@ -155,7 +170,7 @@ test.each([
   } : undefined));
   render(<App />);
   await screen.findByText('Unknown artist');
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Load Artist - Filename on deck A' }) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Load Artist - Filename on deck A' }) as HTMLButtonElement).disabled).toBe(playing[0]));
   await waitFor(() => expect(document.querySelectorAll('.deck-title')[0]?.textContent).toBe(tracks[0] ?? 'No track loaded'));
   await waitFor(() => expect(document.querySelectorAll('.deck-title')[1]?.textContent).toBe(tracks[1] ?? 'No track loaded'));
   const row = screen.getByText('Artist - Filename', { selector: 'span' }).closest('tr')!;
@@ -473,11 +488,11 @@ test('typing BPM in either deck or the master field keeps focus and leaves libra
   expect(document.activeElement).toBe(master);
   expect(search.value).toBe('Filename');
 });
-test('space plus an arrow toggles the corresponding loaded deck', async () => {
+test.each([false, true])('space plus an arrow toggles the corresponding loaded deck while loading=%s', async (loading) => {
   invoke.mockResolvedValue(library);
   audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
     running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
-      deck, loading: false, error: null,
+      deck, loading, error: null,
       track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 1, frames: 1, peak_frames: 0, peaks: [] },
       position_seconds: 0, playing: deck === 1, gain: .8, generation: deck + 1, requested_generation: deck + 1,
     })),
@@ -502,21 +517,25 @@ test('space plus an arrow toggles the corresponding loaded deck', async () => {
   fireEvent.keyDown(dial, { key: 'ArrowRight' });
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'play_pause', value: null, generation: 2 }));
 });
-test('command arrows load the selected track only onto a stopped target deck', async () => {
+test.each([.8, .001, 0])('command arrows and load buttons protect a playing deck at fader %s', async gain => {
   invoke.mockResolvedValue(library);
   audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
     running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
-      deck, loading: false, error: null, track: null, position_seconds: 0, playing: deck === 1, gain: .8, generation: 0, requested_generation: 0,
+      deck, loading: false, error: null, track: null, position_seconds: 0, playing: deck === 1, gain, generation: 0, requested_generation: 0,
     })),
   } : undefined));
   render(<App />);
   await screen.findByText('Unknown artist');
   await waitFor(() => expect(screen.getByText('Artist - Filename', { selector: 'span' }).closest('tr')?.getAttribute('aria-selected')).toBe('true'));
 
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Load Artist - Filename on deck B' }) as HTMLButtonElement).disabled).toBe(gain !== 0));
+  fireEvent.click(screen.getByRole('button', { name: 'Load Artist - Filename on deck B' }));
+  if (gain === 0) await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 1, trackId: 'one', preserveLock: true, resetMixer: true }));
+  audioInvoke.mockClear();
   fireEvent.keyDown(window, { key: 'ArrowLeft', metaKey: true });
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 0, trackId: 'one', preserveLock: true, resetMixer: true }));
   fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true });
-  expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(1);
+  await waitFor(() => expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(gain === 0 ? 2 : 1));
 });
 test('timing shortcuts use the last touched rolling waveform with the panel closed', async () => {
   const tracks = [0, 1].map(deck => ({ ...library.tracks[0], id: `loaded-${deck}`, analysis: { state: 'needs_review' as const, result: estimate, error: null } }));
@@ -753,6 +772,49 @@ test('Shift Space updates master BPM for a locked selected deck without unlockin
     expect(screen.getByRole('button', { name: 'Unlock deck B to master tempo' }).getAttribute('aria-pressed')).toBe('true');
   } finally { clock.mockRestore(); }
 });
+test.each([{ playing: false, speed: 1 }, { playing: true, speed: 1 }, { playing: true, speed: 1.25 }])('Shift Space creates a saved grid at the first tap without existing timing (%j)', async ({ playing, speed }) => {
+  const native = {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, synced: false, speed,
+      track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] },
+      grid: null as { bpm: number; downbeat_seconds: number; reviewed: boolean } | null,
+      position_seconds: 12, playing, gain: .8, generation: deck + 1, requested_generation: deck + 1,
+    })),
+  };
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? native : undefined));
+  invoke.mockImplementation((command: string, args?: any) => {
+    if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? null, reference_beats: [] });
+    if (command === 'apply_timing') native.decks[args.deck].grid = args.grid;
+    return Promise.resolve(command === 'open_library' ? library : {});
+  });
+  let now = 1000;
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const tap = () => {
+    fireEvent.keyDown(window, { key: ' ', code: 'Space', shiftKey: true });
+    fireEvent.keyUp(window, { key: ' ', code: 'Space', shiftKey: true });
+  };
+  try {
+    render(<App />);
+    await screen.findByRole('button', { name: `${playing ? 'Pause' : 'Play'} deck A` });
+    tap();
+    expect(screen.getByRole('status', { name: 'Tap tempo' }).textContent).toBe('Tap A: 1 · keep tapping');
+    expect(invoke.mock.calls.some(([command]) => command === 'apply_timing')).toBe(false);
+    now += 500;
+    tap();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', {
+      deck: 0, generation: 1, grid: { bpm: 120 / speed, downbeat_seconds: expect.any(Number), reviewed: false }, preserveSpeed: true,
+    }));
+    const grid = invoke.mock.calls.find(([command]) => command === 'apply_timing')![1].grid;
+    expect(grid.downbeat_seconds).toBe(12);
+    expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: 'loaded-0', grid, referenceBeats: [] });
+    now += 750;
+    tap();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', {
+      deck: 0, generation: 1, grid: { ...grid, bpm: 96 / speed }, preserveSpeed: true,
+    }));
+    expect(audioInvoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action === 'tempo')).toBe(false);
+  } finally { clock.mockRestore(); }
+});
 test('Shift Space does not change tempo on an empty deck', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -794,7 +856,7 @@ test('Settings opens from the workspace tabs without a duplicate waveform zoom c
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
-  expect(screen.getByText('/fixed/music')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Settings' })).getAllByText('/fixed/music').length).toBeGreaterThan(0);
   expect(screen.queryByRole('table')).toBeNull();
   expect(screen.getByRole('button', { name: 'SETTINGS' }).getAttribute('aria-current')).toBe('page');
   expect(screen.queryByRole('heading', { name: 'Display' })).toBeNull();
@@ -822,6 +884,23 @@ test('beat-grid loop alignment defaults on and can be saved in Settings', () => 
   localStorage.removeItem('vira.align-loops');
   localStorage.removeItem('vira.snap-loop-points');
 });
+test('Settings saves the waveform jump crossfade and restores it on launch', async () => {
+  invoke.mockResolvedValue(library);
+  const { unmount } = render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const duration = screen.getByRole('combobox', { name: 'Jump crossfade duration' });
+  expect((duration as HTMLSelectElement).value).toBe('30');
+  fireEvent.change(duration, { target: { value: '50' } });
+  expect(localStorage.getItem('vira.jump-crossfade')).toBe('50');
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'jump_crossfade', value: 50 })));
+  unmount();
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  expect((screen.getByRole('combobox', { name: 'Jump crossfade duration' }) as HTMLSelectElement).value).toBe('50');
+  fireEvent.change(screen.getByRole('combobox', { name: 'Jump crossfade duration' }), { target: { value: '0' } });
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'jump_crossfade', value: 0 })));
+  localStorage.removeItem('vira.jump-crossfade');
+});
 test('Settings saves beat or bar launch timing and sends it to the engine', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -840,7 +919,7 @@ test('track loading preferences are independent and persist across loads', async
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   const lock = screen.getByRole('checkbox', { name: 'Keep deck locked when loading a track' }) as HTMLInputElement;
-  const mixer = screen.getByRole('checkbox', { name: 'Reset volume, EQ and filter when loading a track' }) as HTMLInputElement;
+  const mixer = screen.getByRole('checkbox', { name: 'Reset EQ and filter when loading a track' }) as HTMLInputElement;
   expect(lock.checked).toBe(true);
   expect(mixer.checked).toBe(true);
   fireEvent.click(lock);
@@ -1007,7 +1086,7 @@ test('deck analysis refreshes BPM, key and grids on both loaded copies without r
   } : undefined));
   render(<App />);
   const button = await screen.findByRole('button', { name: 'Analyse deck A' });
-  expect(button.nextElementSibling?.getAttribute('aria-label')).toBe('BPM deck A');
+  expect(button.closest('.deck-tempo')?.querySelector('[aria-label="Original BPM deck A"]')).toBeTruthy();
   fireEvent.click(button);
   await waitFor(() => expect(button.textContent).toBe('Analysing…'));
   expect((button as HTMLButtonElement).disabled).toBe(true);
@@ -1348,6 +1427,46 @@ test('Autopilot follows the collection while ignoring search and marks its choic
   expect(button.getAttribute('aria-pressed')).toBe('false');
 });
 
+test('list-order Autopilot follows the displayed sort while ignoring search', async () => {
+  localStorage.setItem('vira.autopilot-selection', 'list');
+  const current = library.tracks[0];
+  const candidate = (id: string) => ({ ...current, id, title: id, artist: `${id} artist`, filename: `${id}.wav` });
+  invoke.mockResolvedValue({ ...library, tracks: [current, candidate('Bravo'), candidate('Charlie')] });
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, auto_mode: [0, 0], decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: deck === 0 ? { track_id: current.id, artifact_id: 'current', title: current.title,
+        artist: '', filename: '', duration_seconds: 125, frames: 1, peak_frames: 0, peaks: [] } : null,
+      position_seconds: 0, playing: deck === 0, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findByText('Charlie artist');
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by Title' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Sort by Title' }));
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: current.title } });
+  fireEvent.click(screen.getByRole('button', { name: 'Autopilot' }));
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 1, trackId: 'Charlie', preserveLock: true, resetMixer: true }));
+  localStorage.removeItem('vira.autopilot-selection');
+});
+
+test('Autopilot next-track selection persists in Automatic transitions settings', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  const select = screen.getByRole('combobox', { name: 'Autopilot next track' }) as HTMLSelectElement;
+  expect(select.closest('section')?.querySelector('h3')?.textContent).toBe('Automatic transitions');
+  expect(select.value).toBe('automatic');
+  fireEvent.change(select, { target: { value: 'list' } });
+  expect(localStorage.getItem('vira.autopilot-selection')).toBe('list');
+  cleanup();
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  expect((screen.getByRole('combobox', { name: 'Autopilot next track' }) as HTMLSelectElement).value).toBe('list');
+  localStorage.removeItem('vira.autopilot-selection');
+});
+
 test('Autopilot weight sliders persist independently in Settings', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -1362,6 +1481,35 @@ test('Autopilot weight sliders persist independently in Settings', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   names.forEach((name, index) => expect((screen.getByRole('slider', { name: `Autopilot ${name} weight` }) as HTMLInputElement).value).toBe(String((index + 1) * 20)));
   localStorage.removeItem('vira.autopilot-weights');
+});
+
+test.each([[44, 0, 120.1], [0, 44, 119.9]])('dragging the master BPM number adjusts tempo and does not open text entry (%s, %s)', async (x, y, expected) => {
+  invoke.mockResolvedValue(library);
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? { running: true, error: null, telemetry: {}, master_bpm: 120, decks: [0, 1].map(deck => ({ deck, loading: false, track: null, position_seconds: 0, playing: false, gain: .8, generation: 1, requested_generation: 1 })) } : undefined));
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  vi.useFakeTimers();
+  const bpm = screen.getByLabelText('Master BPM');
+  const pointer = (target: Element | Window, type: string, clientX = 0, clientY = 0) => {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.assign(event, { button: 0, isPrimary: true, pointerId: 1, clientX, clientY });
+    fireEvent(target, event);
+  };
+  pointer(bpm, 'pointerdown');
+  pointer(window, 'pointermove', x, y);
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  const changes = () => audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'master_tempo');
+  expect(changes().at(-1)?.[1].value).toBeCloseTo(expected);
+  pointer(window, 'pointerup', x, y);
+  fireEvent.click(bpm);
+  expect(screen.queryByRole('textbox', { name: 'Target master BPM' })).toBeNull();
+  const count = changes().length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  expect(changes()).toHaveLength(count);
+  pointer(bpm, 'pointerdown');
+  pointer(window, 'pointerup');
+  fireEvent.click(bpm);
+  expect(screen.getByRole('textbox', { name: 'Target master BPM' })).toBeTruthy();
 });
 
 test('master BPM selects its text, applies a target on Enter and cancels on Escape or blur', async () => {
@@ -1390,4 +1538,65 @@ test('master BPM selects its text, applies a target on Enter and cancels on Esca
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(screen.getByRole('textbox', { name: 'Target master BPM' })).toBe(input);
   expect(targets()).toHaveLength(1);
+});
+
+test('without BPM Cmd+B keeps a pending reference and approval is hidden and ignored', async () => {
+  const track = { ...library.tracks[0], analysis: { state: 'needs_review' as const, result: { ...estimate, grid: null }, error: null } };
+  const current = { ...library, tracks: [track] };
+  invoke.mockImplementation((command: string) => {
+    if (command === 'track_timing') return Promise.resolve({ grid: null, suggestion: null, reference_beats: [] });
+    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: 'wave', fine_peaks: [], fine_peak_frames: 0 });
+    return Promise.resolve(current);
+  });
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: deck === 0 ? { track_id: track.id, artifact_id: 'wave', title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] } : null,
+      grid: null, position_seconds: 12, playing: false, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findAllByText('Needs review');
+  expect(screen.queryByRole('button', { name: 'Approve grid deck A' })).toBeNull();
+  fireEvent.click(screen.getByLabelText(`Actions for ${track.title}`));
+  expect(screen.queryByRole('button', { name: `Approve ${track.title}` })).toBeNull();
+  fireEvent.click(screen.getByLabelText(`Actions for ${track.title}`));
+  fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
+  expect(invoke.mock.calls.some(([command]) => command === 'approve_track_analysis')).toBe(false);
+  fireEvent.keyDown(window, { key: 'b', metaKey: true });
+  await waitFor(() => expect(document.querySelectorAll('.deck-0 .reference-beat')).toHaveLength(1));
+});
+
+test.each(['Save grid', 'Cancel'])('unsaved grid disables approval everywhere until %s', async finish => {
+  const track = { ...library.tracks[0], analysis: { state: 'needs_review' as const, result: estimate, error: null } };
+  const current = { ...library, tracks: [track] };
+  const grid = { bpm: 120, downbeat_seconds: 0, reviewed: false };
+  invoke.mockImplementation((command: string) => {
+    if (command === 'track_timing') return Promise.resolve({ grid, reference_beats: [] });
+    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: 'wave', fine_peaks: [], fine_peak_frames: 0 });
+    return Promise.resolve(current);
+  });
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: { track_id: track.id, artifact_id: 'wave', title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] },
+      grid, position_seconds: 12, playing: false, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  const approveA = await screen.findByRole('button', { name: 'Approve grid deck A' });
+  const approveB = screen.getByRole('button', { name: 'Approve grid deck B' });
+  const panel = screen.getByRole('region', { name: 'Timing & tempo deck A' });
+  fireEvent.click(within(panel).getByRole('button', { name: 'Edit grid' }));
+  await waitFor(() => expect((approveA as HTMLButtonElement).disabled).toBe(true));
+  expect((approveB as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByLabelText(`Actions for ${track.title}`));
+  const rowApprove = screen.getByRole('button', { name: `Approve ${track.title}` });
+  expect((rowApprove as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(rowApprove);
+  fireEvent.click(approveB);
+  fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
+  expect(invoke.mock.calls.some(([command]) => command === 'approve_track_analysis')).toBe(false);
+  fireEvent.click(within(panel).getByRole('button', { name: finish }));
+  await waitFor(() => expect((approveA as HTMLButtonElement).disabled).toBe(false));
+  expect((approveB as HTMLButtonElement).disabled).toBe(false);
+  expect((rowApprove as HTMLButtonElement).disabled).toBe(false);
 });

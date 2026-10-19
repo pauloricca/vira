@@ -1,3 +1,5 @@
+import { useTrackpadJog } from './TrackpadJog';
+import { useMidiMarkers } from './MidiMapping';
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 'react';
 import { useScrub } from './scrub';
 import { useTransitionDrag } from './transitionDrag';
@@ -7,15 +9,19 @@ import { WaveTiles, gridGeometry } from './waveform';
 import { drawTransitionGuides, transitionMarkers, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
 export function RollingRow({ state, running, window, control, transition, masterBpm = 120, timingOpen = false, onInteract, active = false }: { transition?: TransitionPlan | null; masterBpm?: number; state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+  const midi = useMidiMarkers();
   const pinnedBeat = useRef<HTMLDivElement>(null);
   const hoverX = useRef<number | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+  useTrackpadJog(canvas, state, running, control, onInteract);
   const latest = useRef({ state, running, window, timingOpen, transition, masterBpm });
   const gridDrag = useRef<{ pointer: number; x: number; scale: number; position: number; cursor: 'grabbing' | 'ew-resize' } | null>(null);
+  // Polls omit inactive flags; local edits use false. Neither transition should
+  // cancel a gesture unless the actual editing availability has changed.
   useEffect(() => {
     gridDrag.current = null;
     if (canvas.current) canvas.current.style.cursor = '';
-  }, [state.generation, !!state.grid_edit, state.grid_saving, state.grid_previewing, state.playing, state.grid_pin]);
+  }, [state.generation, !!state.grid_edit, !!state.grid_saving, !!state.grid_previewing, state.playing, !!state.launch_pending, state.grid_pin]);
   function gridTarget(element: HTMLCanvasElement, clientX: number, position = clock.current.at(performance.now())) {
     const bounds = element.getBoundingClientRect();
     const span = window * (state.speed ?? 1);
@@ -28,7 +34,9 @@ export function RollingRow({ state, running, window, control, transition, master
     return { beatSeconds: mark ? grid.downbeat_seconds + ((mark.bar - 1) * 4 + mark.beat - 1) * 60 / grid.bpm : undefined, seconds, position, scale: span / Math.max(1, bounds.width) };
   }
   function gridCursor(element: HTMLCanvasElement, clientX: number, position?: number) {
-    return gridTarget(element, clientX, position).beatSeconds != null ? 'grab' : 'ew-resize';
+    const target = gridTarget(element, clientX, position);
+    if (state.grid_pin != null) return target.beatSeconds != null && Math.abs(target.beatSeconds - state.grid_pin) < 1 / 48000 ? 'not-allowed' : 'ew-resize';
+    return target.beatSeconds != null ? 'grab' : 'ew-resize';
   }
   function moveGrid(event: PointerEvent<HTMLCanvasElement>) {
     hoverX.current = event.clientX;
@@ -137,7 +145,7 @@ export function RollingRow({ state, running, window, control, transition, master
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
   return <div className={`rolling-row deck-${state.deck}${state.grid_edit ? ' editing-grid' : ''}${state.grid_pin != null ? ' grid-pinned' : ''}${state.grid_edit && (state.playing || state.launch_pending || state.grid_previewing) ? ' grid-listening' : ''}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}><span className={`deck-badge${active ? ' active' : ''}`} title={`Deck ${state.deck===0 ? 'A' : 'B'}${active ? ' · active' : ''}`}>{state.deck===0 ? 'A' : 'B'}</span>
-    <canvas {...waveformHandlers} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
+    <canvas {...waveformHandlers} {...midi(`deck:${state.deck}:jog`)} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
       onPointerDown={event => { if (!state.grid_edit) waveformHandlers.onPointerDown(event); }}
       onPointerLeave={event => { hoverX.current = null; if (!gridDrag.current) event.currentTarget.style.cursor = ''; }}
       onPointerMove={event => { if (state.grid_edit) moveGrid(event); else waveformHandlers.onPointerMove(event); }}
@@ -153,7 +161,8 @@ export function RollingRow({ state, running, window, control, transition, master
             if (target.beatSeconds != null) void control(state.deck, 'grid_pin', target.beatSeconds);
             return;
           }
-          const cursor = target.beatSeconds != null ? 'grabbing' : 'ew-resize';
+          if (gridCursor(event.currentTarget, event.clientX) === 'not-allowed') return;
+          const cursor = state.grid_pin == null && target.beatSeconds != null ? 'grabbing' : 'ew-resize';
           gridDrag.current = { pointer: event.pointerId, x: event.clientX, scale: target.scale, position: target.position, cursor };
           event.currentTarget.style.cursor = cursor;
           event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -162,7 +171,7 @@ export function RollingRow({ state, running, window, control, transition, master
         }
         waveformHandlers.onPointerDownCapture(event); if (event.defaultPrevented) return; if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
       onDoubleClick={event => {
-        if (state.grid_edit || !timingOpen || !running || state.playing || !state.track || !state.grid || !control) return;
+        if (state.grid_edit || !timingOpen || !running || state.playing || !state.track || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());
         const seconds = Math.min(Math.max(state.track.start_seconds ?? 0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));

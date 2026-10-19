@@ -264,7 +264,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                     body = json.loads(self.rfile.read(length))
                     track_id = body.get("track_id") if isinstance(body, dict) else None
                     keys = set(body) if isinstance(body, dict) else set()
-                    allowed = ({"track_id"}, {"track_id", "audition"}, {"track_id", "deck", "generation"}) if self.path == "/v1/prepare" else ({"track_id"},)
+                    allowed = ({"track_id"}, {"track_id", "audition"}, {"track_id", "deck", "generation"}, {"track_id", "deck", "generation", "audition"}) if self.path == "/v1/prepare" else ({"track_id"},)
                     if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or keys not in allowed:
                         raise ValueError("Analysis requires a valid library track ID.")
                     if self.path == "/v1/prepare":

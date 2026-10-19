@@ -1,3 +1,4 @@
+import { MidiButton, MidiInput } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { duration, type Track } from './App';
@@ -83,9 +84,9 @@ export function AuditionControls({ audition }: { audition: ReturnType<typeof use
   const loading = selection.generation === null;
   const position = seek?.generation === selection.generation ? seek!.position : state?.position_seconds ?? 0;
   return <div className="library-audition" role="group" aria-label="Library audition" title={`${audition.output === 'master' ? 'Master output' : 'Cue headphones'} · ${selection.track.title}`} onKeyDown={event => event.stopPropagation()}>
-    <button aria-label={state?.playing ? 'Pause audition' : 'Play audition'} disabled={loading} onClick={() => control('play_pause')}><PlayIcon paused={!!state?.playing} /></button>
-    <button aria-label="Stop audition" onClick={() => control('stop')}><StopIcon /></button>
-    <input type="range" aria-label="Audition position" min="0" max={selection.track.duration_seconds ?? 0} step="0.1" value={position} disabled={loading} onChange={event => { const position = Number(event.target.value); setSeek({ generation: selection.generation!, position }); control('seek', position); }} />
+    <MidiButton midiId="audition:play" aria-label={state?.playing ? 'Pause audition' : 'Play audition'} disabled={loading} onClick={() => control('play_pause')}><PlayIcon paused={!!state?.playing} /></MidiButton>
+    <MidiButton aria-label="Stop audition" onClick={() => control('stop')}><StopIcon /></MidiButton>
+    <MidiInput type="range" aria-label="Audition position" min="0" max={selection.track.duration_seconds ?? 0} step="0.1" value={position} disabled={loading} onChange={event => { const position = Number(event.target.value); setSeek({ generation: selection.generation!, position }); control('seek', position); }} />
     <output>{loading ? 'Loading…' : `${duration(position)} / ${duration(selection.track.duration_seconds)}`}</output>
   </div>;
 }

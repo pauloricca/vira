@@ -2,7 +2,7 @@
 import { act, renderHook, waitFor, cleanup } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { chooseAutopilotTrack, defaultAutopilotWeights, useAutopilot } from './Autopilot';
+import { chooseAutopilotTrack, chooseNextInList, defaultAutopilotWeights, useAutopilot } from './Autopilot';
 import type { Track } from './App';
 import type { AudioState } from './Decks';
 
@@ -16,6 +16,52 @@ const tempo = track('tempo', 121, 'F# major');
 const tagged = track('tagged', 135, 'F# major');
 const harmonic = track('harmonic', 135, 'G major');
 const tags = [{ name: 'shared', tracks: ['source', 'tagged'] }];
+
+test('list order follows the current track, wraps, and skips played or unreadable tracks', () => {
+  const tracks = [tagged, source, { ...harmonic, status: 'unreadable' as const }, tempo];
+  expect(chooseNextInList(tracks, source, new Set())).toBe(tempo);
+  expect(chooseNextInList(tracks, tempo, new Set(['source']))).toBe(tagged);
+  expect(chooseNextInList(tracks, undefined, new Set())).toBe(tagged);
+  expect(chooseNextInList(tracks, track('outside'), new Set(['tagged']))).toBe(source);
+  expect(chooseNextInList(tracks, source, new Set(['tempo', 'tagged']))).toBeUndefined();
+});
+
+test('selection defaults to automatic and persists list order', () => {
+  const hook = setup(audio([null, null], [false, false]));
+  expect(hook.result.current.selection).toBe('automatic');
+  act(() => hook.result.current.changeSelection('list'));
+  expect(localStorage.getItem('vira.autopilot-selection')).toBe('list');
+  hook.unmount();
+  const restored = setup(audio([null, null], [false, false]));
+  expect(restored.result.current.selection).toBe('list');
+});
+
+test.each(['automatic', 'list'])('%s selection honours a manual queue including played tracks', async selection => {
+  localStorage.setItem('vira.autopilot-selection', selection);
+  const hook = setup(audio(['tempo', null], [true, false]), ['source', 'tagged']);
+  act(() => hook.result.current.toggle());
+  await waitFor(() => expect(hook.load).toHaveBeenCalledWith(1, 'source'));
+  expect(hook.result.current.next).toEqual(['source', 'tagged']);
+});
+
+test('changing selection replaces an automatic choice and preserves manual plans', async () => {
+  const hook = setup(audio(['source', null], [true, false]));
+  act(() => hook.result.current.toggle());
+  await waitFor(() => expect(hook.load).toHaveBeenCalled());
+  act(() => hook.result.current.changeSelection('list'));
+  await waitFor(() => expect(hook.result.current.next).toEqual(['tempo']));
+  act(() => hook.result.current.prioritize('tagged'));
+  act(() => hook.result.current.changeSelection('automatic'));
+  expect(hook.result.current.next).toEqual(['tagged']);
+});
+
+test('list mode seeds the first eligible track without starting transport', async () => {
+  localStorage.setItem('vira.autopilot-selection', 'list');
+  const hook = setup(audio([null, null], [false, false]));
+  act(() => hook.result.current.toggle());
+  await waitFor(() => expect(hook.load).toHaveBeenCalledWith(0, 'tempo'));
+  expect(hook.control).not.toHaveBeenCalled();
+});
 
 test('weights independently prefer close BPM, shared tags and harmonic neighbours', () => {
   const candidates = [tempo, tagged, harmonic];

@@ -84,6 +84,52 @@ pub struct Graph {
     pub nodes: Vec<Node>,
     pub wires: Vec<Wire>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeValue {
+    pub id: String,
+    pub value: f32,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Parameters {
+    pub nodes: Vec<NodeValue>,
+    pub wires: Vec<Wire>,
+}
+impl Graph {
+    /// Patch values by stable identity without importing any draft topology.
+    pub fn with_parameters(mut self, parameters: Parameters) -> Result<Self> {
+        ensure!(
+            parameters.nodes.len() <= self.nodes.len()
+                && parameters.wires.len() <= self.wires.len(),
+            "Too many routing parameters"
+        );
+        for parameter in parameters.nodes {
+            let node = self
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == parameter.id)
+                .ok_or_else(|| anyhow::anyhow!("Routing node is not applied"))?;
+            ensure!(
+                matches!(node.kind, Kind::Gain | Kind::Compressor | Kind::Oscillator),
+                "Node has no editable parameter"
+            );
+            node.value = parameter.value;
+        }
+        for parameter in parameters.wires {
+            let wire = self
+                .wires
+                .iter_mut()
+                .find(|w| {
+                    w.from == parameter.from
+                        && w.output == parameter.output
+                        && w.to == parameter.to
+                        && w.input == parameter.input
+                })
+                .ok_or_else(|| anyhow::anyhow!("Routing cable is not applied"))?;
+            wire.gain = parameter.gain;
+        }
+        Ok(self)
+    }
+}
 impl Default for Graph {
     fn default() -> Self {
         let mut nodes = Vec::new();
@@ -1314,5 +1360,64 @@ mod rolling_tests {
         assert_eq!(synth["peaks"].as_array().unwrap().len(), 1);
         assert_eq!(synth["peaks"][0][0], 0);
         assert!(synth["peaks"][0][1].as_f64().unwrap() > 0.09);
+    }
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::*;
+    #[test]
+    fn values_patch_existing_identity_without_changing_topology_or_layout() {
+        let mut graph = Graph::default();
+        graph.nodes.push(Node {
+            id: "test-gain".into(),
+            kind: Kind::Gain,
+            deck: None,
+            label: "Gain".into(),
+            custom_label: None,
+            patch_inputs: None,
+            x: 10.,
+            y: 20.,
+            value: 1.,
+        });
+        let original = graph.clone();
+        let mut wire = graph.wires[0].clone();
+        wire.gain = 0.4;
+        let updated = graph
+            .with_parameters(Parameters {
+                nodes: vec![NodeValue {
+                    id: "test-gain".into(),
+                    value: 3.,
+                }],
+                wires: vec![wire],
+            })
+            .unwrap();
+        assert_eq!(updated.nodes.len(), original.nodes.len());
+        assert_eq!(updated.nodes.last().unwrap().x, 10.);
+        assert_eq!(updated.nodes.last().unwrap().value, 3.);
+        assert_eq!(updated.wires.len(), original.wires.len());
+        assert_eq!(updated.wires[0].from, original.wires[0].from);
+        assert_eq!(updated.wires[0].gain, 0.4);
+        assert!(updated.compile().is_ok());
+        assert!(original
+            .clone()
+            .with_parameters(Parameters {
+                nodes: vec![NodeValue {
+                    id: "draft-node".into(),
+                    value: 2.
+                }],
+                wires: vec![]
+            })
+            .is_err());
+        let invalid = original
+            .with_parameters(Parameters {
+                nodes: vec![NodeValue {
+                    id: "test-gain".into(),
+                    value: -1.,
+                }],
+                wires: vec![],
+            })
+            .unwrap();
+        assert!(invalid.compile().is_err());
     }
 }

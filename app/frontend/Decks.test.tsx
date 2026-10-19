@@ -2,12 +2,56 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { RollingRow } from './RollingRow';
+import { MidiProvider, MidiToggle, MidiEditor } from './MidiMapping';
 import { AudioState, Deck, DeckState, Mixer, RollingWaveforms, TRACK_MIME, useDecks } from './Decks';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
 const state: DeckState = { deck: 0, loading: false, error: null, playing: false, position_seconds: 0, gain: .8, generation: 1, requested_generation: 1,
   track: { track_id: 'a'.repeat(64), artifact_id: 'b'.repeat(64), title: 'Unanalysed song', artist: 'Test artist', filename: 'test.wav', duration_seconds: 100, frames: 4800000, peak_frames: 4800000, peaks: [[.2, .1]] } };
+test('decoded audio can play and pause while the loading message stays visible', () => {
+  const control = vi.fn();
+  const pending = { ...state, loading: true, track: { ...state.track!, peaks: [] } };
+  const props = { running: true, loading: true, loadingTitle: 'Unanalysed song', error: null, load: vi.fn(), control };
+  const { rerender } = render(<Deck {...props} state={pending} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Play deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'play_pause');
+  expect(screen.getByText('Loading Unanalysed song')).toBeTruthy();
+  rerender(<Deck {...props} state={{ ...pending, playing: true }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Pause deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'play_pause');
+  expect(screen.getByText('Loading Unanalysed song')).toBeTruthy();
+  rerender(<Deck {...props} state={{ ...pending, track: null }} />);
+  expect((screen.getByRole('button', { name: 'Play deck A' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('deck overview draws peaks arriving after playback audio for the same artifact', () => {
+  const props = { running: true, error: null, load: vi.fn(), control: vi.fn() };
+  const pending = { ...state, loading: true, track: { ...state.track!, peak_frames: 0, peaks: [] } };
+  const { rerender } = render(<Deck {...props} state={pending} loading />);
+  const waveform = screen.getByRole('slider', { name: 'Waveform seek deck A' });
+  expect(waveform.querySelector('path[d="M0.00,50V70"]')).toBeNull();
+  rerender(<Deck {...props} state={{ ...state, playing: true }} loading={false} />);
+  expect(waveform.querySelector('path[d="M0.00,50V70"]')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Pause deck A' })).toBeTruthy();
+  expect(screen.queryByText('Loading track')).toBeNull();
+});
+
+test('waveform metadata refreshes within the playing generation after early audio installation', async () => {
+  let finished = false;
+  const pending = { ...state, playing: true, loading: true, track: { ...state.track!, peaks: [] } };
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state'
+    ? { running: true, error: null, telemetry: {}, decks: [finished ? { ...state, playing: true } : pending, { ...state, deck: 1 }] }
+    : {}));
+  const { result } = renderHook(() => useDecks());
+  await waitFor(() => expect(result.current.audio.decks[0].loading).toBe(true));
+  expect(result.current.audio.decks[0].playing).toBe(true);
+  await waitFor(() => expect(invoke.mock.calls.some(([command, args]) => command === 'get_audio_state' && args.knownGenerations[0] === 0)).toBe(true));
+  finished = true;
+  await waitFor(() => expect(result.current.audio.decks[0].track?.peaks).toEqual(state.track!.peaks));
+  expect(result.current.audio.decks[0].playing).toBe(true);
+  expect(result.current.audio.decks[0].generation).toBe(1);
+});
 test('phrase jumps preserve fractional beat position and use the latest playhead', () => {
   const control = vi.fn().mockResolvedValue(undefined);
   const props = { running: true, loading: false, error: null, load: vi.fn(), control };
@@ -17,12 +61,12 @@ test('phrase jumps preserve fractional beat position and use the latest playhead
   fireEvent.pointerDown(forward);
   expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toHaveLength(0);
   fireEvent.click(forward);
-  expect(control).toHaveBeenLastCalledWith(0, 'seek', 26.375);
+  expect(control).toHaveBeenLastCalledWith(0, 'phrase_jump', 26.375);
   fireEvent.click(screen.getByRole('button', { name: 'Jump 8 bars back on deck A' }));
-  expect(control).toHaveBeenLastCalledWith(0, 'seek', 2.375);
+  expect(control).toHaveBeenLastCalledWith(0, 'phrase_jump', 2.375);
   rerender(<Deck {...props} state={{ ...deck, position_seconds: 21.125, position_epoch: 1 }} />);
   fireEvent.click(forward);
-  expect(control).toHaveBeenLastCalledWith(0, 'seek', 29.125);
+  expect(control).toHaveBeenLastCalledWith(0, 'phrase_jump', 29.125);
   rerender(<Deck {...props} state={state} />);
   expect(screen.queryByRole('button', { name: 'Jump 4 bars forward on deck A' })).toBeNull();
 });
@@ -168,6 +212,30 @@ test('deck overview shows grid lines every eight bars from the downbeat', () => 
   const paths = screen.getByRole('slider', { name: 'Waveform seek deck A' }).querySelectorAll('path[stroke="currentColor"]');
   expect(Array.from(paths, path => path.getAttribute('d'))).toEqual(['M20.48,0V120', 'M184.32,0V120', 'M348.16,0V120', 'M512,0V120', 'M675.84,0V120', 'M839.68,0V120', 'M1003.52,0V120']);
 });
+test.each([[true, .8, false], [true, .001, false], [true, 0, true], [false, .8, true]] as const)('drop on playing=%s gain=%s accepts=%s', (playing, gain, allowed) => {
+  const load = vi.fn();
+  render(<Deck state={{ ...state, playing, gain }} running loading={false} error={null} load={load} control={vi.fn()} />);
+  const deck = screen.getByRole('article', { name: 'Deck A' });
+  const dataTransfer = { types: [TRACK_MIME], dropEffect: '', getData: () => 'c'.repeat(64) };
+  fireEvent.dragOver(deck, { dataTransfer });
+  expect(dataTransfer.dropEffect).toBe(allowed ? 'copy' : 'none');
+  fireEvent.drop(deck, { dataTransfer });
+  expect(load).toHaveBeenCalledTimes(allowed ? 1 : 0);
+});
+test.each([[true, .8, false], [true, .001, false], [true, 0, true], [false, .8, true]] as const)('shared load on playing=%s gain=%s accepts=%s', async (playing, gain, allowed) => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state'
+    ? { running: true, error: null, telemetry: {}, decks: [{ ...state, playing, gain }, { ...state, deck: 1 }] }
+    : command === 'timing_waveform' ? { artifact_id: state.track!.artifact_id } : {}));
+  const hook = renderHook(() => useDecks());
+  await waitFor(() => expect(hook.result.current.audio.running).toBe(true));
+  await act(async () => { await hook.result.current.load(0, 'next'); });
+  expect(invoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(allowed ? 1 : 0);
+  if (!allowed) {
+    expect(hook.result.current.errors[0]).toContain('fader to 0');
+    expect(hook.result.current.loading[0]).toBe(false);
+    expect(hook.result.current.audio.decks[0].track).toEqual(state.track);
+  }
+});
 test('drop accepts only internal track IDs and preparation failure preserves controls', () => {
   const load = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={state} running loading error="Preparation failed" load={load} control={vi.fn()} />);
@@ -257,11 +325,12 @@ test.each(['needs_review', 'stale'])('%s analysis approval works while playing; 
   for (const name of ['Set BPM', 'Half BPM', 'Double BPM', 'Original BPM']) {
     expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false);
   }
-  expect((screen.getByRole('button', { name: 'Approve analysis' }) as HTMLButtonElement).disabled).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
+  expect((screen.getByRole('button', { name: 'Approve grid deck A' }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: 'Approve grid deck A' }));
   expect(approveAnalysis).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Approve grid deck A' }).closest('.deck-header')).toBeTruthy();
   rerender(<Deck state={{ ...state, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState={analysisState} approveAnalysis={approveAnalysis} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Approve analysis' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Approve grid deck A' }));
   expect(approveAnalysis).toHaveBeenCalledTimes(2);
 });
 
@@ -377,9 +446,9 @@ test.each([false, true])('bar start buttons retain speed, lock and reference fla
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false }, preserveSpeed: true, ...(playing ? { followClock: true } : {}) }));
 });
 
-test('rolling waveform double click marks the clicked source position only while timing is open', () => {
+test.each([true, false])('rolling waveform references work with timing open, existing BPM: %s', hasBpm => {
   const control = vi.fn().mockResolvedValue(undefined);
-  const withGrid = { ...state, position_seconds: 50, speed: 2, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } };
+  const withGrid = { ...state, position_seconds: 50, speed: 2, grid: hasBpm ? { bpm: 120, downbeat_seconds: 0, reviewed: false } : null };
   const { rerender } = render(<RollingRow state={withGrid} running window={10} control={control} />);
   const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
   vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 10, width: 100 } as DOMRect);
@@ -402,6 +471,25 @@ test('deck lock lives beside BPM and disables manual tempo while locked', () => 
   expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Unlock deck A to master tempo' }));
   expect(control).toHaveBeenCalledWith(0, 'sync', 0);
+});
+
+test('a sole playing locked deck scrolls master BPM and disables edits when another deck starts', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const deck = { ...state, playing: true, synced: true, target_bpm: 124, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } };
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const { rerender } = render(<Deck {...props} state={deck} otherPlaying={false} />);
+  const bpm = screen.getByLabelText('BPM deck A');
+  expect(bpm.getAttribute('aria-disabled')).toBe('false');
+  fireEvent.wheel(bpm, { deltaY: -100 });
+  expect(control).toHaveBeenLastCalledWith(0, 'master_tempo', 124.1);
+  expect(screen.getByRole('button', { name: 'Unlock deck A to master tempo' }).getAttribute('aria-pressed')).toBe('true');
+  for (const [playing, otherPlaying, launch_pending] of [[true, true, false], [false, false, false], [true, false, true]]) {
+    rerender(<Deck {...props} state={{ ...deck, playing, launch_pending }} otherPlaying={otherPlaying} />);
+    control.mockClear();
+    expect(bpm.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.wheel(bpm, { deltaY: -100 });
+    expect(control).not.toHaveBeenCalled();
+  }
 });
 
 test('double-clicking deck BPM unlocks before restoring the precise source tempo', async () => {
@@ -850,6 +938,10 @@ test('Command-click pins any beat for scaling; repinning, unpinning and cancel r
     expect(screen.getByLabelText('Pinned beat deck A').style.left).toBe('53.125%');
     await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'get_audio_state').length).toBeGreaterThan(1));
     expect(screen.getByLabelText('Pinned beat deck A')).toBeTruthy();
+    fireEvent.pointerMove(wave, { clientX: 85 });
+    expect(wave.style.cursor).toBe('not-allowed');
+    await act(async () => { dragGridMark(85, 95); });
+    expect(screen.getByText(/^Drag to scale/).textContent).toContain('120.00 BPM');
     fireEvent.pointerMove(wave, { clientX: 112.5 });
     expect(wave.style.cursor).toBe('ew-resize');
     await act(async () => { dragGridMark(112.5, 140); });
@@ -869,6 +961,55 @@ test('Command-click pins any beat for scaling; repinning, unpinning and cancel r
     await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
     expect(screen.queryByLabelText('Pinned beat deck A')).toBeNull();
     expect(invoke.mock.calls.filter(([c, args]) => c === 'deck_control' && ['seek', 'scrub', 'scrub_start'].includes(args.action))).toHaveLength(0);
+  } finally { vi.unstubAllGlobals(); }
+});
+test('scaling a stopped deck beyond the tempo limits holds the limit and recovers on the same drag', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    mockGridAudio();
+    render(<GridEditHarness />);
+    await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
+    const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
+    vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 160, height: 80 } as DOMRect);
+    await act(async () => {
+      fireEvent.pointerDown(wave, { button: 0, clientX: 80, metaKey: true });
+      fireEvent.pointerUp(wave, { clientX: 80, metaKey: true });
+    });
+    await act(async () => { fireEvent.pointerDown(wave, { button: 0, clientX: 85 }); });
+    await act(async () => { fireEvent.pointerMove(wave, { clientX: 110 }); });
+    expect(screen.getByText(/^Drag to scale/).textContent).toContain('30.00 BPM');
+    await act(async () => { fireEvent.pointerMove(wave, { clientX: 75 }); });
+    expect(screen.getByText(/^Drag to scale/).textContent).toContain('300.00 BPM');
+    await act(async () => { fireEvent.pointerUp(wave, { clientX: 90 }); });
+    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    expect(screen.getByLabelText('Pinned beat deck A').style.left).toBe('50%');
+  } finally { vi.unstubAllGlobals(); }
+});
+test('reference beats and an audio poll do not cancel a grid drag between pointer events', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    mockGridAudio(); // Includes two saved reference beats.
+    render(<GridEditHarness />);
+    await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
+    const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
+    vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 160, height: 80 } as DOMRect);
+    await act(async () => {
+      fireEvent.pointerDown(wave, { button: 0, clientX: 80, metaKey: true });
+      fireEvent.pointerUp(wave, { clientX: 80, metaKey: true });
+    });
+    const polls = () => invoke.mock.calls.filter(([command]) => command === 'get_audio_state').length;
+    const before = polls();
+    await waitFor(() => expect(polls()).toBeGreaterThan(before));
+    await act(async () => { fireEvent.pointerDown(wave, { button: 0, clientX: 90 }); });
+    const during = polls();
+    await waitFor(() => expect(polls()).toBeGreaterThan(during));
+    await act(async () => { fireEvent.pointerMove(wave, { clientX: 100 }); });
+    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    await act(async () => { fireEvent.pointerUp(wave, { clientX: 100 }); });
+    await act(async () => { fireEvent.click(screen.getByText('Save grid')); });
+    expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 60, downbeat_seconds: 8, reviewed: false }, referenceBeats: [] });
   } finally { vi.unstubAllGlobals(); }
 });
 test('grid editing survives listen-adjust cycles, blocks gestures during playback, and Cancel restores audible timing', async () => {
@@ -939,4 +1080,102 @@ test('direct grid commands cannot change or pin the draft while the deck is play
   expect(hook.result.current.audio.decks[0].grid_edit).toEqual(native.decks[0].grid);
   expect(hook.result.current.audio.decks[0].grid_pin).toBeUndefined();
   expect(hook.result.current.errors[0]).toBeNull();
+});
+
+
+test.each([[126, '↑ 5.0%'], [114, '↓ 5.0%'], [120, '↔ 0.0%']])('deck header compares source BPM with %s BPM', (target, indication) => {
+  render(<Deck state={{ ...state, target_bpm: target as number, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} />);
+  expect(screen.getByLabelText('Original BPM deck A').textContent).toBe('120.0');
+  expect(screen.getByLabelText('BPM deck A').textContent).toBe(Number(target).toFixed(1));
+  expect(screen.getByLabelText('Tempo bias deck A').textContent).toBe(indication);
+});
+
+test('original BPM resets playback without changing the source grid; only current BPM scrolls', async () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const grid = { bpm: 118.999072, downbeat_seconds: 0, reviewed: true };
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const { rerender } = render(<Deck {...props} state={{ ...state, grid, target_bpm: 124, synced: true }} />);
+  await act(async () => { fireEvent.doubleClick(screen.getByLabelText('Original BPM deck A')); });
+  expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[0, 'sync', 0], [0, 'tempo', grid.bpm]]);
+  control.mockClear();
+  fireEvent.wheel(screen.getByLabelText('BPM deck A'), { deltaY: -100 });
+  expect(control).not.toHaveBeenCalled();
+  rerender(<Deck {...props} state={{ ...state, grid, target_bpm: 124 }} />);
+  fireEvent.wheel(screen.getByLabelText('Original BPM deck A'), { deltaY: -100 });
+  expect(control).not.toHaveBeenCalled();
+  fireEvent.wheel(screen.getByLabelText('BPM deck A'), { deltaY: -100 });
+  expect(control).toHaveBeenLastCalledWith(0, 'tempo', 124.1);
+  fireEvent.wheel(screen.getByLabelText('BPM deck A'), { deltaY: 100, shiftKey: true });
+  expect(control.mock.calls.at(-1)?.[2]).toBeCloseTo(124.09);
+});
+
+test('tempo slider learns a percentage range and follows the current track source BPM', async () => {
+  localStorage.setItem('vira.midi-behavior.v1', JSON.stringify('jump'));
+  localStorage.setItem('vira.midi-enabled.v1', '[42]');
+  localStorage.removeItem('vira.midi-bindings.v1');
+  let messages: { device: number; channel: number; cc: number; value: number }[] = [];
+  invoke.mockImplementation(() => Promise.resolve({ devices: [{id:42,name:'Tempo controller'}], messages: messages.splice(0) }));
+  const control = vi.fn().mockResolvedValue(undefined);
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const deck = { ...state, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true }, target_bpm: 120 };
+  const ui = (value: DeckState, otherPlaying = true) => <MidiProvider><Deck {...props} state={value} otherPlaying={otherPlaying} /><MidiToggle /><MidiEditor /></MidiProvider>;
+  const view = render(ui(deck));
+  fireEvent.click(screen.getByRole('button', { name: 'MIDI map' }));
+  fireEvent.click(screen.getByLabelText('Tempo bias deck A'));
+  messages.push({device:42,channel:1,cc:7,value:64});
+  await waitFor(() => expect(JSON.parse(localStorage.getItem('vira.midi-bindings.v1')!)[0]).toMatchObject({ target:'deck:0:tempo_bias', min:-8, max:8 }));
+  fireEvent.click(screen.getByRole('button', { name: 'MIDI map' }));
+  for (const [raw, bpm] of [[0,110.4], [64,120], [127,129.6]]) {
+    messages.push({device:42,channel:1,cc:7,value:raw});
+    await waitFor(() => expect(control.mock.calls.at(-1)?.[2]).toBeCloseTo(bpm));
+    expect(control.mock.calls.at(-1)?.slice(0, 2)).toEqual([0, 'tempo_smooth']);
+  }
+  view.rerender(ui({...deck,generation:2,grid:{...deck.grid,bpm:100}}));
+  messages.push({device:42,channel:1,cc:7,value:127});
+  await waitFor(() => expect(control.mock.calls.at(-1)?.[2]).toBeCloseTo(108));
+  view.rerender(ui({...deck,synced:true}));
+  control.mockClear();
+  messages.push({device:42,channel:1,cc:7,value:0});
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)); });
+  expect(control).not.toHaveBeenCalled();
+  view.rerender(ui({...deck,synced:true,playing:true}, false));
+  messages.push({device:42,channel:1,cc:7,value:127});
+  await waitFor(() => {
+    expect(control.mock.calls.at(-1)?.slice(0, 2)).toEqual([0, 'master_tempo']);
+    expect(control.mock.calls.at(-1)?.[2]).toBeCloseTo(129.6);
+  });
+  localStorage.removeItem('vira.midi-enabled.v1');
+  localStorage.removeItem('vira.midi-bindings.v1');
+  localStorage.removeItem('vira.midi-behavior.v1');
+});
+
+test.each(['analysed', 'needs_review', 'stale'])('no BPM hides approval for %s tracks and allows references', analysisState => {
+  render(<Deck state={{ ...state, grid: null }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} analysisState={analysisState} approveAnalysis={vi.fn()} />);
+  expect(screen.queryByRole('button', { name: 'Approve grid deck A' })).toBeNull();
+  expect((screen.getByRole('button', { name: 'Set reference beat' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('two reference beats create timing without a detected or manual BPM', async () => {
+  let native: AudioState = { running: true, error: null, telemetry: {}, decks: [{ ...state, grid: null }, { ...state, deck: 1, track: null }] };
+  invoke.mockImplementation((command: string, args?: { grid?: { bpm: number; downbeat_seconds: number; reviewed: boolean }; referenceBeats?: number[] }) => {
+    if (command === 'get_audio_state') return Promise.resolve(native);
+    if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? null, suggestion: null, state: 'unprepared', reference_beats: args?.referenceBeats ?? [] });
+    if (command === 'apply_timing') native = { ...native, decks: native.decks.map(d => d.deck === 0 ? { ...d, grid: args!.grid } : d) };
+    if (command === 'timing_waveform') return Promise.resolve(state.track);
+    return Promise.resolve();
+  });
+  function Harness() {
+    const decks = useDecks();
+    return <><output data-testid="refs">{JSON.stringify(decks.audio.decks[0].reference_beats ?? [])}</output><button onClick={() => void decks.control(0, 'reference_beat', 10)}>First</button><button onClick={() => void decks.control(0, 'reference_beat', 12)}>Second</button></>;
+  }
+  render(<Harness />);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('timing_waveform', { deck: 0, generation: 1 }));
+  fireEvent.click(screen.getByText('First'));
+  await waitFor(() => expect(screen.getByTestId('refs').textContent).toBe('[10]'));
+  expect(invoke.mock.calls.filter(([command]) => command === 'apply_timing')).toHaveLength(0);
+  fireEvent.click(screen.getByText('Second'));
+  const grid = { bpm: 120, downbeat_seconds: 10, reviewed: false };
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid }));
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid, referenceBeats: [10, 12] });
+  await waitFor(() => expect(screen.getByTestId('refs').textContent).toBe('[10,12]'));
 });

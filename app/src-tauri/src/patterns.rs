@@ -38,6 +38,12 @@ pub struct Pattern {
     pub output: i32,
     pub channel: u8,
     pub bars: u8,
+    #[serde(default)]
+    pub steps: Option<u32>,
+    #[serde(default = "default_step_division")]
+    pub step_division: u8,
+    #[serde(default = "default_phrase_sync")]
+    pub phrase_sync: bool,
     pub grid: u8,
     pub key: u8,
     pub scale: usize,
@@ -58,7 +64,18 @@ pub struct Pattern {
     #[serde(skip)]
     pub transformations: Vec<pattern_routing::Transformation>,
 }
+fn default_step_division() -> u8 {
+    4
+}
+fn default_phrase_sync() -> bool {
+    true
+}
 impl Pattern {
+    fn length_beats(&self) -> f64 {
+        self.steps.map_or(self.bars as f64 * 4., |steps| {
+            steps as f64 / self.step_division as f64
+        })
+    }
     fn pitch(&self, n: &Note) -> u8 {
         (12 * (self.octave as i16 + 1 + n.octave as i16)
             + self.key as i16
@@ -79,6 +96,8 @@ impl Pattern {
         ensure!(
             (1..=16).contains(&self.channel)
                 && (1..=16).contains(&self.bars)
+                && self.steps.is_none_or(|steps| (1..=65536).contains(&steps))
+                && [1, 2, 4, 8].contains(&self.step_division)
                 && [1, 2, 4, 8].contains(&self.grid)
                 && self.key < 12
                 && self.scale < SCALES.len()
@@ -102,7 +121,7 @@ impl Pattern {
                     && n.duration.is_finite()
                     && n.beat >= 0.
                     && n.duration >= 0.03125
-                    && n.beat + n.duration <= self.bars as f64 * 4. + 1e-8
+                    && n.beat + n.duration <= self.length_beats() + 1e-8
                     && (1..=7).contains(&n.degree)
                     && (-2..=2).contains(&n.octave)
                     && (1..=127).contains(&n.velocity),
@@ -160,7 +179,7 @@ struct Voice {
 }
 // A held note can survive an edit only if its scheduled note-off is unchanged.
 fn keeps_held_note(old: &Pattern, new: &Pattern, id: &str) -> bool {
-    old.bars == new.bars
+    old.length_beats() == new.length_beats()
         && old.notes.iter().find(|n| n.id == id).is_some_and(|a| {
             new.notes.iter().find(|n| n.id == id).is_some_and(|b| {
                 a.beat == b.beat
@@ -348,7 +367,7 @@ fn clock(h: &Host) -> (f64, f64, u64) {
     }
 }
 static START: std::sync::Once = std::sync::Once::new();
-fn start() {
+pub(crate) fn start() {
     let _ = host();
     START.call_once(|| {
         #[cfg(target_os = "macos")]
@@ -421,7 +440,12 @@ fn launch_boundary(bank: &Bank, p: &Pattern, beat: f64, bpm: f64) -> f64 {
                 + 1.
         })
         .fold(0., f64::max);
-    boundary(beat + advance / 1000. * bpm / 60., p.quantum)
+    let earliest = beat + advance / 1000. * bpm / 60.;
+    if p.phrase_sync {
+        boundary(earliest, p.quantum)
+    } else {
+        earliest
+    }
 }
 fn boundary(beat: f64, quantum: u8) -> f64 {
     ((beat + 1e-7) / quantum as f64).ceil() * quantum as f64
@@ -440,6 +464,11 @@ fn recovery_start(
         .is_some_and(|(start, last)| start <= last)
     {
         return launch_boundary(bank, p, beat, bpm);
+    }
+    if !p.phrase_sync {
+        // Carry the local loop phase across a master seek/reset.
+        let elapsed = last_beat.unwrap() - v.start.unwrap();
+        return beat - elapsed.rem_euclid(p.length_beats());
     }
     // A clock reset restarts an already playing pattern without launch quantization.
     // Allow the old MIDI horizon to drain and its note-offs to precede new ons.
@@ -466,7 +495,7 @@ struct Edge {
     velocity: u8,
 }
 fn edges(p: &Pattern, start: f64, from: f64, to: f64, stop: Option<f64>) -> Vec<Edge> {
-    let length = p.bars as f64 * 4.;
+    let length = p.length_beats();
     let mut result = Vec::new();
     let first = ((from - start) / length).floor().max(0.) as u64;
     let last = ((to - start) / length).floor().max(0.) as u64;
@@ -838,6 +867,8 @@ mod mac {
             let roots = if live_running {
                 live.tick(&resolved_source, &mut ports, now, active, s.decks)
             } else {
+                // UI controller permissions remain useful while audio routing is halted.
+                live.tick(&Bank::default(), &mut ports, now, active, [None, None]);
                 HashMap::new()
             };
             s.inputs = live.inputs();
@@ -975,7 +1006,11 @@ mod mac {
                             id,
                             Voice {
                                 start: Some(start),
-                                cursor: start - 1e-8,
+                                cursor: if start < beat {
+                                    launch_boundary(&bank, p, beat, bpm) - 1e-8
+                                } else {
+                                    start - 1e-8
+                                },
                                 ..Voice::default()
                             },
                         );
@@ -997,9 +1032,11 @@ mod mac {
                         let comp = p
                             .compensation
                             .unwrap_or(*bank.output_compensation.get(&p.output).unwrap_or(&0.));
-                        let cursor =
+                        let cursor = if p.phrase_sync {
                             boundary(beat + (comp + lead(p) + 1.) / 1000. * bpm / 60., p.quantum)
-                                - 1e-8;
+                        } else {
+                            beat + (comp + lead(p) + 1.) / 1000. * bpm / 60.
+                        } - 1e-8;
                         s.voices.insert(
                             p.id.clone(),
                             Voice {
@@ -1144,6 +1181,52 @@ mod tests {
     use super::*;
     fn pattern() -> Pattern {
         serde_json::from_value(json!({"id":"a","name":"Melody","kind":"melodic","mode":"relative","output":1,"channel":1,"bars":1,"grid":4,"key":0,"scale":0,"octave":4,"quantum":4,"compensation":null,"notes":[{"id":"n","beat":0.,"duration":4.,"degree":3,"octave":0,"velocity":100}]})).unwrap()
+    }
+    #[test]
+    fn step_lengths_loop_without_realigning_to_bars_and_validate() {
+        let mut p = pattern();
+        assert_eq!(p.length_beats(), 4.); // Legacy bar-based files.
+        assert!(p.phrase_sync);
+        p.steps = Some(7);
+        p.notes[0].duration = 1.75;
+        p.validate().unwrap();
+        let events = edges(&p, 0.3, 0.29, 5.6, None);
+        let ons: Vec<_> = events.iter().filter(|e| e.on).map(|e| e.beat).collect();
+        assert_eq!(ons, vec![0.3, 2.05, 3.8, 5.55]);
+        assert!(!events[1].on); // Note-off before the next loop's note-on.
+        p.notes[0].duration = 2.;
+        assert!(p.validate().is_err());
+        p.notes.clear();
+        for steps in [0, 65537] {
+            p.steps = Some(steps);
+            assert!(p.validate().is_err());
+        }
+        p.steps = Some(65536);
+        p.validate().unwrap();
+    }
+    #[test]
+    fn tempo_only_launches_share_route_timing_and_preserve_phase_on_master_reset() {
+        let mut p = pattern();
+        p.phrase_sync = false;
+        p.steps = Some(7);
+        p.owner = Some("owner".into());
+        let mut second = p.clone();
+        second.id = "second".into();
+        second.compensation = Some(20.);
+        let bank = Bank {
+            patterns: vec![p.clone(), second.clone()],
+            ..Bank::default()
+        };
+        let start = launch_boundary(&bank, &p, 3.2, 120.);
+        assert!(start > 3.2 && start < 3.3);
+        assert_eq!(start, launch_boundary(&bank, &second, 3.2, 120.));
+        let voice = Voice {
+            start: Some(1.),
+            ..Voice::default()
+        };
+        let recovered = recovery_start(&bank, &p, &voice, Some(4.), 0.2, 120.);
+        assert!((0.2 - recovered - 1.25).abs() < 1e-9);
+        assert!((recovery_start(&bank, &p, &voice, Some(4.), 100., 120.) - 98.75).abs() < 1e-9);
     }
     #[test]
     fn transformed_edges_match_note_offs_and_setting_edits_release_held_notes() {

@@ -1,3 +1,4 @@
+import { useMidiControl } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 
 // Keep a held Cue alive across telemetry updates, but release on cancellation.
@@ -32,7 +33,8 @@ export function useCue(deck: number, generation: number, ready: boolean, control
       release();
     };
   }, [deck, generation, ready]);
-  return { pressed, handlers: {
+  const midi = useMidiControl({id:`ui:Cue deck ${deck === 0 ? 'A' : 'B'}`, label:`Cue deck ${deck === 0 ? 'A' : 'B'}`,kind:'switch',defaultMode:'gate',priority:1,disabled:!ready,read:() => held.current ? 1 : 0,apply:value => value ? press() : release()});
+  return { pressed, midi, handlers: {
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0 || !ready) return;
       event.preventDefault();

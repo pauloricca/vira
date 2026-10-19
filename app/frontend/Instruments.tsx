@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { DeviceRefresh } from './DeviceRefresh';
 import type { Instrument, AudioDevice, AudioPort, MidiPort } from './instrumentModel';
 type MidiDevice = { id: number; name: string };
 export function Instruments() {
@@ -12,15 +13,21 @@ export function Instruments() {
   const [error, setError] = useState('');
   const [scanError, setScanError] = useState('');
   const [busy, setBusy] = useState(false);
+  const refreshDevices = useRef<(manual?: boolean) => Promise<void>>(async () => {});
   useEffect(() => {
     let stopped = false;
     void invoke<Instrument[]>('get_instruments').then(value => { if (!stopped) { setItems(value); setSaved(value); setSelected(value[0]?.id ?? ''); setReady(true); } }).catch(e => { if (!stopped) setError(String(e)); });
-    const refresh = async () => {
+    let scanning = false;
+    const refresh = async (manual = false) => {
+      if (scanning) return;
+      scanning = true;
       try {
-        const [audio, state] = await Promise.all([invoke<typeof devices>('get_instrument_devices'), invoke<typeof midi>('patterns_state')]);
+        const [audio, state] = await Promise.all([invoke<typeof devices>('get_instrument_devices'), invoke<typeof midi>(manual ? 'get_midi_devices' : 'patterns_state')]);
         if (!stopped) { setDevices(audio); setMidi({inputs:state.inputs ?? [], outputs:state.outputs ?? []}); setScanError(''); }
       } catch (e) { if (!stopped) setScanError(String(e)); }
+      finally { scanning = false; }
     };
+    refreshDevices.current = refresh;
     void refresh(); const timer = setInterval(() => void refresh(), 3000);
     return () => { stopped = true; clearInterval(timer); };
   }, []);
@@ -32,12 +39,12 @@ export function Instruments() {
     const device = options.find(d => d.id === port?.device);
     const channels = Array.from({length: Math.max(device?.channels ?? 0, ...(port?.channels ?? [0]))}, (_, i) => i + 1);
     const change = (value: AudioPort | null) => update({[key]:value});
-    return <section className="settings-card"><h3>{label}</h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? ''} onChange={e => { const d = options.find(d => d.id === e.target.value); change(d ? {device:d.id, channels:d.channels > 1 ? [1,2] : [1]} : null); }}><option value="">None</option>{port && !device && <option value={port.device}>{port.device} · disconnected</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <><label>Mode<select aria-label={`${label} mode`} value={port.channels.length === 1 ? 'mono' : 'stereo'} onChange={e => change({...port, channels:e.target.value === 'mono' ? [port.channels[0]] : [port.channels[0], channels.find(c => c !== port.channels[0]) ?? 2]})}><option value="mono">Mono</option><option value="stereo" disabled={channels.length < 2}>Stereo</option></select></label>{port.channels.map((channel, index) => <label key={index}>{port.channels.length === 1 ? 'Channel' : index === 0 ? 'Left channel' : 'Right channel'}<select aria-label={`${label} ${port.channels.length === 1 ? 'channel' : index === 0 ? 'left channel' : 'right channel'}`} value={channel} onChange={e => change({...port, channels:port.channels.map((c, i) => i === index ? Number(e.target.value) : c)})}>{channels.map(c => <option key={c} value={c} disabled={port.channels.some((other, i) => i !== index && other === c)}>{c}</option>)}</select></label>)}</>}</section>;
+    return <section className="settings-card"><h3 className="device-list-heading">{label}<DeviceRefresh label={`Refresh ${label.toLowerCase()} devices`} refresh={() => refreshDevices.current(true)} /></h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? ''} onChange={e => { const d = options.find(d => d.id === e.target.value); change(d ? {device:d.id, channels:d.channels > 1 ? [1,2] : [1]} : null); }}><option value="">None</option>{port && !device && <option value={port.device}>{port.device} · disconnected</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <><label>Mode<select aria-label={`${label} mode`} value={port.channels.length === 1 ? 'mono' : 'stereo'} onChange={e => change({...port, channels:e.target.value === 'mono' ? [port.channels[0]] : [port.channels[0], channels.find(c => c !== port.channels[0]) ?? 2]})}><option value="mono">Mono</option><option value="stereo" disabled={channels.length < 2}>Stereo</option></select></label>{port.channels.map((channel, index) => <label key={index}>{port.channels.length === 1 ? 'Channel' : index === 0 ? 'Left channel' : 'Right channel'}<select aria-label={`${label} ${port.channels.length === 1 ? 'channel' : index === 0 ? 'left channel' : 'right channel'}`} value={channel} onChange={e => change({...port, channels:port.channels.map((c, i) => i === index ? Number(e.target.value) : c)})}>{channels.map(c => <option key={c} value={c} disabled={port.channels.some((other, i) => i !== index && other === c)}>{c}</option>)}</select></label>)}</>}</section>;
   }
   function midiField(key: 'midi_input' | 'midi_output', label: string, options: MidiDevice[]) {
     const port = item![key];
     const change = (value: MidiPort | null) => update({[key]:value});
-    return <section className="settings-card"><h3>{label}</h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? 0} onChange={e => change(Number(e.target.value) ? {device:Number(e.target.value), channel:port?.channel ?? null} : null)}><option value={0}>None</option>{port && !options.some(d => d.id === port.device) && <option value={port.device}>Disconnected device ({port.device})</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <label>Channel<select aria-label={`${label} channel`} value={port.channel ?? ''} onChange={e => change({...port, channel:e.target.value ? Number(e.target.value) : null})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(c => <option key={c} value={c}>{c}</option>)}</select></label>}<p className="settings-hint">{key === 'midi_input' ? 'Receive from this device. All accepts every channel.' : 'Send to this device. All preserves the source channel.'}</p></section>;
+    return <section className="settings-card"><h3 className="device-list-heading">{label}<DeviceRefresh label={`Refresh ${label.toLowerCase()} devices`} refresh={() => refreshDevices.current(true)} /></h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? 0} onChange={e => change(Number(e.target.value) ? {device:Number(e.target.value), channel:port?.channel ?? null} : null)}><option value={0}>None</option>{port && !options.some(d => d.id === port.device) && <option value={port.device}>Disconnected device ({port.device})</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <label>Channel<select aria-label={`${label} channel`} value={port.channel ?? ''} onChange={e => change({...port, channel:e.target.value ? Number(e.target.value) : null})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(c => <option key={c} value={c}>{c}</option>)}</select></label>}<p className="settings-hint">{key === 'midi_input' ? 'Receive from this device. All accepts every channel.' : 'Send to this device. All preserves the source channel.'}</p></section>;
   }
   async function save() {
     setBusy(true); setError('');

@@ -6,7 +6,10 @@ export type Grid = { bpm: number; downbeat_seconds: number; reviewed: boolean };
 /** Shift freely, or scale about an explicitly pinned source-time beat. */
 export function dragGrid(grid: Grid, origin: number, delta: number, duration: number, anchor?: number): Grid {
   if (anchor != null && Math.abs(origin - anchor) < 1 / 48000) return grid;
-  const factor = anchor == null ? 1 : (origin + delta - anchor) / (origin - anchor);
+  const requestedFactor = anchor == null ? 1 : (origin + delta - anchor) / (origin - anchor);
+  if (!Number.isFinite(requestedFactor)) return grid;
+  // Stop at the tempo limits instead of snapping back to the initial grid.
+  const factor = Math.max(grid.bpm / 300, Math.min(grid.bpm / 30, requestedFactor));
   const bpm = grid.bpm / factor;
   if (!Number.isFinite(factor) || factor <= 0 || bpm < 30 || bpm > 300) return grid;
   let downbeat_seconds = anchor == null ? grid.downbeat_seconds + delta
@@ -19,20 +22,27 @@ export function dragGrid(grid: Grid, origin: number, delta: number, duration: nu
   return validGrid(result, duration) ? result : grid;
 }
 /** Fit a constant beat grid to one or two source-time beat references. */
-export function gridForReferenceBeats(grid: Grid, references: number[], duration: number): Grid {
+export function gridForReferenceBeats(grid: Grid | null, references: number[], duration: number): Grid {
   if (!references.length || references.length > 2 || references.some(seconds => !Number.isFinite(seconds) || seconds < 0 || seconds >= duration)) throw new Error('Reference beat must lie within the track');
   const [first, second] = references;
-  let bpm = grid.bpm;
+  if (!grid && second === undefined) throw new Error('Set a second reference beat to estimate BPM');
+  let bpm = grid?.bpm ?? 120;
   if (second !== undefined) {
     const difference = second - first;
-    const beats = Math.round(difference * grid.bpm / 60);
+    const gap = Math.abs(difference);
+    // Without a tempo, prefer consecutive bar starts. Short gaps can be
+    // adjacent beats; long gaps use whole bars at the tempo nearest 120 BPM.
+    const inferredBeats = 240 / gap >= 30 && 240 / gap <= 300 ? 4
+      : 60 / gap >= 30 && 60 / gap <= 300 ? 1
+      : Math.max(4, Math.round(gap * 120 / 240) * 4);
+    const beats = grid ? Math.round(difference * grid.bpm / 60) : Math.sign(difference) * inferredBeats;
     if (!beats || Math.abs(difference) < 1 / 48000) throw new Error('Reference beats must be on different beats');
     bpm = Math.round(beats * 600 / difference) / 10;
   }
   const period = 60 / bpm;
   // The first grid beat within the source is bar 1, beat 1. The reference itself
   // may be any later beat, so only its phase within one beat matters here.
-  const downbeat_seconds = ((first % period) + period) % period;
+  const downbeat_seconds = grid ? ((first % period) + period) % period : Math.min(first, second!);
   const result = { bpm, downbeat_seconds, reviewed: false };
   if (!validGrid(result, duration)) throw new Error('These reference beats need a source BPM between 30 and 300');
   return result;

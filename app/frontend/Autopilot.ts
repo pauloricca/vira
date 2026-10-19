@@ -5,7 +5,14 @@ import type { Tag } from './Tags';
 import { camelotKey, shiftedKey } from './harmonic';
 
 export type AutopilotWeights = { bpm: number; tags: number; harmonic: number; direction: number; randomness: number };
+export type AutopilotSelection = 'automatic' | 'list';
 export const defaultAutopilotWeights: AutopilotWeights = { bpm: 50, tags: 50, harmonic: 50, direction: 50, randomness: 0 };
+
+export function chooseNextInList(tracks: Track[], reference: Track | undefined, played: Set<string>): Track | undefined {
+  const index = tracks.findIndex(track => track.id === reference?.id);
+  const ordered = [...tracks.slice(index + 1), ...tracks.slice(0, index + 1)];
+  return ordered.find(track => track.status === 'ready' && !played.has(track.id) && track.id !== reference?.id);
+}
 
 export function chooseAutopilotTrack(tracks: Track[], reference: Track | undefined, played: Set<string>, tags: Tag[], weights: AutopilotWeights, pitch = 0, random = Math.random, lastDirection = 0): Track | undefined {
   const candidates = tracks.filter(track => track.status === 'ready' && !played.has(track.id) && track.id !== reference?.id);
@@ -42,6 +49,7 @@ type Options = {
 
 export function useAutopilot(options: Options) {
   const [enabled, setEnabled] = useState(false);
+  const [selection, setSelection] = useState<AutopilotSelection>(() => localStorage.getItem('vira.autopilot-selection') === 'list' ? 'list' : 'automatic');
   const [weights, setWeights] = useState<AutopilotWeights>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('vira.autopilot-weights') ?? '{}');
@@ -112,7 +120,8 @@ export function useAutopilot(options: Options) {
     }
     if (!queued.length) {
       const reference = allTracks.find(track => track.id === from?.track?.track_id);
-      const chosen = chooseAutopilotTrack(tracks, reference, excluded, tags, weights, from?.pitch_semitones, Math.random, lastDirection.current);
+      const chosen = selection === 'list' ? chooseNextInList(tracks, reference, excluded)
+        : chooseAutopilotTrack(tracks, reference, excluded, tags, weights, from?.pitch_semitones, Math.random, lastDirection.current);
       if (!chosen) return;
       automatic.current = chosen.id;
       setNext(previous => [...previous.filter(id => !playing.some(deck => deck.track?.track_id === id)), chosen.id]);
@@ -143,5 +152,13 @@ export function useAutopilot(options: Options) {
     setWeights(next);
     localStorage.setItem('vira.autopilot-weights', JSON.stringify(next));
   }
-  return { enabled, toggle, disable: () => setEnabled(false), weights, changeWeight, prioritize, control };
+  function changeSelection(value: AutopilotSelection) {
+    setSelection(value);
+    localStorage.setItem('vira.autopilot-selection', value);
+    // Reconsider only our own recommendation, preserving the manual queue.
+    const old = automatic.current;
+    automatic.current = null;
+    if (old) options.setNext(previous => previous.filter(id => id !== old));
+  }
+  return { enabled, toggle, disable: () => setEnabled(false), selection, changeSelection, weights, changeWeight, prioritize, control };
 }

@@ -8,6 +8,19 @@ typedef void (*Receiver)(void*,uint8_t,uint8_t,uint8_t,uint64_t);
 typedef void (*RawReceiver)(void*,const uint8_t*,size_t,uint64_t);
 typedef struct {RawReceiver raw; MIDIClientRef client; MIDIPortRef input,output; MIDIEndpointRef source,destination;Receiver receive;void* context;uint8_t status,data[2],count;atomic_flag reading;} ViraMidi;
 static _Atomic uint64_t time_numer=0,time_denom=1;
+static MIDIClientRef discovery_client=0;
+static _Atomic uint64_t device_generation=1;
+static void midi_changed(const MIDINotification* notification,void* context){
+    (void)notification;(void)context;
+    atomic_fetch_add(&device_generation,1);
+}
+// CoreMIDI delivers topology changes on the run loop of its FIRST client.
+// Call on the application main thread before starting any MIDI/audio workers.
+int vira_midi_initialize(void){
+    if(discovery_client)return noErr;
+    return MIDIClientCreate(CFSTR("VIRA device discovery"),midi_changed,NULL,&discovery_client);
+}
+uint64_t vira_midi_generation(void){return atomic_load(&device_generation);}
 uint64_t vira_midi_now_ns(void){
     uint64_t numer=atomic_load(&time_numer);
     if(!numer){mach_timebase_info_data_t t;mach_timebase_info(&t);atomic_store(&time_denom,t.denom);atomic_store(&time_numer,t.numer);numer=t.numer;}
@@ -42,6 +55,7 @@ void vira_midi_close(void* handle){ViraMidi* m=handle;if(m){MIDIClientDispose(m-
 size_t vira_midi_count(bool output){return output?MIDIGetNumberOfDestinations():MIDIGetNumberOfSources();}
 bool vira_midi_endpoint(bool output,size_t index,int32_t* id,char* name,size_t len){
     MIDIEndpointRef e=output?MIDIGetDestination(index):MIDIGetSource(index);if(!e)return false;
+    SInt32 offline=0;if(MIDIObjectGetIntegerProperty(e,kMIDIPropertyOffline,&offline)==noErr&&offline)return false;
     if(MIDIObjectGetIntegerProperty(e,kMIDIPropertyUniqueID,id)!=noErr)return false;
     CFStringRef text=NULL;if(MIDIObjectGetStringProperty(e,kMIDIPropertyDisplayName,&text)!=noErr)return false;
     Boolean ok=CFStringGetCString(text,name,len,kCFStringEncodingUTF8);CFRelease(text);return ok;

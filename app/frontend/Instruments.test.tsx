@@ -41,3 +41,17 @@ test('retains disconnected selections, reports save failures, and can revert del
   fireEvent.click(screen.getByText('Revert edits'));
   expect((screen.getByLabelText('Instrument name') as HTMLInputElement).value).toBe('Synth');
 });
+
+test('manual device refresh preserves instrument edits and disconnected connections', async () => {
+  setup([{id:'synth',name:'Synth',audio_input:{device:'Interface',channels:[3,4]},audio_output:null,midi_input:{device:41,channel:2},midi_output:null}]);
+  await screen.findByLabelText('Instrument name');
+  fireEvent.change(screen.getByLabelText('Instrument name'), {target:{value:'Edited synth'}});
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_instrument_devices' ? {inputs:[{id:'USB',name:'USB interface',channels:2}],outputs:[]} : {inputs:[{id:44,name:'New keyboard'}],outputs:[]}));
+  fireEvent.click(screen.getByRole('button', {name:'Refresh audio input devices'}));
+  await screen.findByRole('option', {name:'USB interface'});
+  await screen.findByRole('option', {name:'New keyboard'});
+  expect((screen.getByLabelText('Instrument name') as HTMLInputElement).value).toBe('Edited synth');
+  expect((screen.getByLabelText('Audio input device') as HTMLSelectElement).value).toBe('Interface');
+  expect(screen.getByRole('option', {name:'Interface · disconnected'})).toBeTruthy();
+  expect(screen.getByRole('option', {name:'Disconnected device (41)'})).toBeTruthy();
+});

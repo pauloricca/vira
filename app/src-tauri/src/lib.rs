@@ -12,6 +12,7 @@ mod instrument_output;
 mod instruments;
 mod metrics;
 mod midi_live;
+mod midi_mapping;
 mod mixer;
 pub mod native_check;
 pub mod paths;
@@ -310,6 +311,10 @@ pub fn track_artwork(track_id: &str) -> Result<Option<String>, String> {
 
 #[cfg(target_os = "macos")]
 pub fn run() {
+    // The first CoreMIDI client must belong to the running main event loop.
+    if let Err(error) = midi_live::initialize() {
+        eprintln!("{error}");
+    }
     #[tauri::command]
     async fn get_tags() -> Result<Vec<tags::Tag>, String> {
         tauri::async_runtime::spawn_blocking(tags::get)
@@ -441,6 +446,24 @@ pub fn run() {
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> serde_json::Value {
         state.rolling_waveforms(&selected, after)
+    }
+    #[tauri::command]
+    async fn set_routing_parameters(
+        window: tauri::WebviewWindow,
+        parameters: routing::Parameters,
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<routing::Graph, String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        let engine = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            engine
+                .set_routing_parameters(parameters)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     #[tauri::command]
     async fn set_routing_graph(
@@ -763,6 +786,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
+            midi_mapping::midi_mapping_poll,
+            midi_mapping::get_midi_devices,
             patterns_deck_keys,
             patterns_state,
             patterns_save,
@@ -788,6 +813,7 @@ pub fn run() {
             get_instrument_devices,
             save_instruments,
             set_routing_graph,
+            set_routing_parameters,
             get_audio_levels,
             get_audio_devices,
             set_audio_devices,

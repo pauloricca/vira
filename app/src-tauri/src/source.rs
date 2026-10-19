@@ -207,6 +207,9 @@ impl Prepared {
 pub fn prepare_track(track_id: &str, request: Option<(usize, u64)>) -> Result<Prepared> {
     prepare(track_id, request, false)
 }
+pub fn prepare_playback(track_id: &str, deck: usize, generation: u64) -> Result<Prepared> {
+    prepare(track_id, Some((deck, generation)), true)
+}
 pub fn prepare_audition(track_id: &str) -> Result<Prepared> {
     prepare(track_id, None, true)
 }
@@ -216,7 +219,12 @@ fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Res
         "/v1/prepare",
         Some(match request {
             Some((deck, generation)) => {
-                serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation})
+                let mut body =
+                    serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation});
+                if audition {
+                    body["audition"] = serde_json::json!(true);
+                }
+                body
             }
             None if audition => serde_json::json!({"track_id":track_id,"audition":true}),
             None => serde_json::json!({"track_id":track_id}),

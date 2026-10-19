@@ -1,10 +1,16 @@
+import { useState } from 'react';
+import { normalizeSearch, SettingsSearch } from './SettingsSearch';
+
 const shortcutCategories = [
   { title: 'Deck playback & tempo', shortcuts: [
+    ['Drag master BPM', 'Adjust master tempo continuously; drag right or up to speed up, left or down to slow down; release to stop. Click without dragging to enter a target BPM', 'Header BPM number or bpm label; MIDI map mode off'],
+    ['Drag / scroll current deck BPM', 'Change playback tempo; when the locked deck is the only playing track, change master BPM and keep it locked; scroll up speeds up, down slows down; Shift-scroll adjusts in 0.01 BPM steps', 'Loaded deck with a timing grid; audio running; deck not loading; unlocked or locked and the only playing track'],
+    ['Double-click original / current deck BPM', 'Unlock and restore the track’s original playback tempo', 'Loaded deck with a timing grid; audio running; deck not loading'],
     ['Double-click AUTO NOW / AUTO END', 'Arm a transition using Fast transition overlap (default 4 bars); button blinks faster', 'Decks page; eligible outgoing deck playing; both decks loaded with timing grids; no loops or scrubbing'],
     ['Enter / Escape', 'Apply target master BPM (15–600) / cancel editing; clicking elsewhere also cancels', 'Master BPM text field is focused after clicking the header BPM number'],
     ['Alt + ←', 'Make deck A active', 'Decks page; outside text fields'],
     ['Alt + →', 'Make deck B active', 'Decks page; outside text fields'],
-    ['Shift + Space', 'Tap active deck playback BPM; locked decks update master BPM and stay locked. Keep Shift held and press Space on each beat. The header confirms each tap; a pause over 4 seconds starts a new tempo', 'Anywhere on the Decks page, including text fields and dropdowns; loaded deck with a timing grid; at least two taps'],
+    ['Shift + Space', 'Tap active deck playback BPM; without a grid, create and save one with the first tap as beat 1 (track BPM 30–300). Locked decks update master BPM and stay locked. Keep Shift held and press Space on each beat. The header confirms each tap; a pause over 4 seconds starts a new tempo', 'Anywhere on the Decks page, including text fields and dropdowns; loaded deck; at least two taps'],
     ['Cmd + L', 'Lock active deck to master tempo', 'Decks page; outside text fields; loaded deck with a timing grid'],
     ['Cmd + Shift + L', 'Unlock active deck from master tempo', 'Decks page; outside text fields; loaded deck with a timing grid'],
     ['Hold Space + ←', 'Play / pause deck A; preserves an active AUTO overlap when A is outgoing', 'Decks page; loaded deck; start holding Space outside text fields'],
@@ -22,18 +28,20 @@ const shortcutCategories = [
     ['Escape', 'Close collection dropdown', 'Music collection dropdown is open'],
     ['Escape', 'Close track actions dropdown', 'Track actions dropdown is open and receives keyboard input'],
     ['Cmd + N', 'Toggle selected library track in the planned Play Next order; Autopilot gives new choices priority', 'Decks page; readable track selected; outside text fields; key and collection dropdowns closed'],
-    ['Cmd + ←', 'Load selected library track onto deck A', 'Decks page; readable track; deck stopped'],
-    ['Cmd + →', 'Load selected library track onto deck B', 'Decks page; readable track; deck stopped'],
+    ['Cmd + ←', 'Load selected library track onto deck A', 'Decks page; readable track; deck stopped or deck fader at 0'],
+    ['Cmd + →', 'Load selected library track onto deck B', 'Decks page; readable track; deck stopped or deck fader at 0'],
     ['↑ / ↓', 'Select previous / next library track in the selected collection', 'Decks page; collection selector closed'],
     ['Type text', 'Focus library search and append to query', 'Decks page; outside typing fields; without Cmd, Ctrl or Alt; collection selector closed'],
   ] },
   { title: 'Track timing & analysis', shortcuts: [
     ['Play / Pause during Edit grid', 'Listen with the unsaved draft grid, then pause to continue adjusting; the draft and pinned beat stay in place', 'Loaded track; Edit grid enabled; moving, scaling and pinning are disabled during playback'],
-    ['Drag the rolling waveform', 'Move the entire grid; with a pinned beat, scale the grid and BPM around it', 'Stopped track; Edit grid enabled; hand cursor over any beat mark, horizontal resize cursor between marks'],
+    ['Two-finger scroll / slide over rolling waveform', 'Smoothly nudge playback or audition stopped movement with horizontal or vertical trackpad scrolling. Set separate playing and stopped movement in Settings → Waveform trackpad; works in Edit grid mode without changing the grid; pinch still zooms', 'Loaded deck; audio running; MIDI map mode off; not saving the grid; playing deck unlocked'],
+    ['MIDI wheel on rolling waveform', 'Smoothly nudge playback or audition stopped movement; map the waveform in MIDI map mode and choose the wheel encoding. Set playing and stopped movement in Settings', 'Loaded deck; audio running; Edit grid off; playing deck unlocked'],
+    ['Drag the rolling waveform', 'Move the entire grid; with a pinned beat, drag away from the pin to scale around it (30–300 BPM)', 'Stopped track; Edit grid enabled; hand cursor over unpinned beat marks; with a pin, resize cursor away from it and unavailable cursor over the fixed pin'],
     ['Command-click a beat mark', 'Pin any beat as the scaling centre (green); click another beat to move the pin, or the same beat to unpin', 'Stopped track; Edit grid enabled; Save grid commits changes, Cancel discards them'],
-    ['Cmd + B', 'Set reference beat at the playhead', 'Decks page; active loaded deck, or first loaded deck; stopped with a timing grid; grid editing closed'],
+    ['Cmd + B', 'Set reference beat at the playhead; without BPM, set two references to estimate timing from bar starts', 'Decks page; active loaded deck, or first loaded deck; stopped; grid editing closed'],
     ['Cmd + Shift + ← / →', 'Shift bar start one beat earlier / later; while playing, master clock follows and tempo lock is preserved', 'Decks page; active loaded deck, or first loaded deck; timing grid required; stopped or the only playing deck; grid editing closed'],
-    ['Cmd + Shift + A', 'Approve track analysis', 'Decks page; active loaded deck, or first loaded deck; analysed, needs review, or stale with saved analysis; also available while playing'],
+    ['Cmd + Shift + A', 'Approve track analysis', 'Decks page; active loaded deck, or first loaded deck; timing grid required; no unsaved grid edits on either loaded copy; analysed, needs review, or stale with saved analysis; also available while playing'],
     ['← / →', 'Move timing cursor backward / forward 10 ms', 'Timing editor waveform receives keyboard input'],
     ['Shift + ← / →', 'Move timing cursor backward / forward 1 second', 'Timing editor waveform receives keyboard input'],
     ['Home / End', 'Move timing cursor to track beginning / end', 'Timing editor waveform receives keyboard input'],
@@ -52,6 +60,7 @@ const shortcutCategories = [
     ['Escape', 'Close key dropdown', 'Deck key dropdown is open'],
   ] },
   { title: 'Patterns canvas', shortcuts: [
+    ['Drag between input and output ports', 'Add a musical cable in either direction; several patterns can share a device input', 'Patterns canvas; compatible ports; root note and scale inputs accept one cable each'],
     ['Escape', 'Cancel pattern deletion', 'Pattern deletion confirmation is open'],
     ['Drag / double-click palette item', 'Add a node at the drop position / center of the visible canvas', 'Patterns and Routing palettes'],
     ['Double-click pattern / Expand', 'Open the detailed pattern editor', 'Patterns canvas; pattern node'],
@@ -61,7 +70,7 @@ const shortcutCategories = [
     ['Escape', 'Cancel cable/node drag and clear canvas selection', 'Patterns canvas; outside text fields and selectors'],
   ] },
   { title: 'Audio routing', shortcuts: [
-    ['Enter / Escape', 'Finish / cancel node renaming; clicking elsewhere also finishes. Apply routing (or Live routing) publishes the name to waveforms', 'Routing page; node name text field is focused; no Apply in progress'],
+    ['Enter / Escape', 'Finish / cancel node renaming; clicking elsewhere also finishes. Apply routing publishes the name to waveforms', 'Routing page; node name text field is focused; no Apply in progress'],
     ['Delete / Backspace', 'Remove selected added node and its cables, or disconnect selected cable; default Routing nodes are protected; session patches stay in Decks', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
     ['Cmd + Z', 'Undo the last routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
     ['Cmd + Shift + Z', 'Redo the last undone routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
@@ -86,11 +95,15 @@ const shortcutCategories = [
 ];
 
 export function Shortcuts() {
+  const [search, setSearch] = useState('');
+  const query = normalizeSearch(search);
+  const categories = shortcutCategories.map(category => ({ ...category, shortcuts: category.shortcuts.filter(shortcut => normalizeSearch(shortcut.join(' ')).includes(query) || normalizeSearch(category.title).includes(query)) })).filter(category => category.shortcuts.length);
   return <section className="settings-page" aria-label="Shortcuts"><div className="settings-inner">
-    <div className="settings-heading"><h2>Shortcuts</h2><p>Keyboard controls · Alt is Option (⌥) and Cmd is Command (⌘) on macOS.</p></div>
-    <p className="shortcuts-help">Deck controls require the audio engine to be running and the target deck to finish loading. The active deck is highlighted; interacting with a deck also makes it active.</p>
+    <div className="settings-heading"><div><h2>Shortcuts</h2><p>Keyboard controls · Alt is Option (⌥) and Cmd is Command (⌘) on macOS.</p></div><SettingsSearch label="Search shortcuts" value={search} onChange={setSearch} /></div>
+    <p className="shortcuts-help">Deck controls require the audio engine to be running and decoded track audio to be available. Play / pause also works while waveforms and analysis are still loading; the loading message stays visible. The active deck is highlighted; interacting with a deck also makes it active.</p>
+    {!categories.length && <p role="status" className="shortcuts-help">No shortcuts match your search.</p>}
     <div className="shortcut-categories">
-      {shortcutCategories.map(({ title, shortcuts }) => <details className="shortcut-category" key={title}>
+      {categories.map(({ title, shortcuts }) => <details className="shortcut-category" key={`${query ? 'search' : 'browse'}-${title}`} open={query ? true : undefined}>
         <summary><span>{title}</span><span className="shortcut-count">{shortcuts.length} shortcuts</span></summary>
         <table className="shortcuts-table" aria-label={`${title} shortcuts`}><thead><tr><th scope="col">Shortcut</th><th scope="col">Action</th><th scope="col">Available when</th></tr></thead>
           <tbody>{shortcuts.map(([keys, action, context]) => <tr key={`${keys}-${action}`}><td><kbd>{keys}</kbd></td><td>{action}</td><td>{context}</td></tr>)}</tbody>

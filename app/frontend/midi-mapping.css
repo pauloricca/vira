@@ -1,0 +1,13 @@
+.midi-root { display: contents; }
+.midi-map-mode [data-midi-target] { outline: 1px solid #dbbd47 !important; outline-offset: 2px; cursor: crosshair !important; }
+.midi-map-mode [data-midi-mapped] { outline-color: #68c98a !important; }
+.midi-map-mode [data-midi-selected] { outline-width: 3px !important; }
+.audio-status > .midi-map-toggle { margin-left: auto; padding: 3px 8px; color: #9baeb6; background: transparent; border: 1px solid #34424b; font-size: 10px; }
+.audio-status > .midi-map-toggle[aria-pressed=true] { color: #ebcf69; border-color: #a58d38; }
+.midi-editor { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: none; padding: 10px 12px; background: #25271e; border-top: 1px solid #74632c; color: #d4cda9; font-size: 11px; }
+.midi-editor label { display: flex; align-items: center; gap: 5px; }
+.midi-editor input[type=number] { width: 72px; }
+.midi-editor-count { margin-left: auto; color: #9ba28b; }
+
+.midi-page-host { display: contents; }
+.midi-page-host[hidden], .settings-page[hidden] { display: none; }

@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { Patterns } from './Patterns';
-import { newPattern, fitLength, pitch, type Bank } from './patternModel';
+import { newPattern, fitLength, fitSteps, patternBeats, pitch, type Bank } from './patternModel';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 let bank: Bank;
@@ -122,4 +122,26 @@ test('stop remains available when saving fails', async () => {
   await screen.findByText(/Changes not saved: Disk full/);
   fireEvent.click(screen.getByText('■ Stop'));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('patterns_transport', { id: 'one', play: false }));
+});
+
+test('step counts and step size are independent of the editing grid and persist clock mode', async () => {
+  await mount();
+  fireEvent.change(screen.getByLabelText('Pattern steps'), { target: { value: '7' } });
+  fireEvent.blur(screen.getByLabelText('Pattern steps'));
+  await waitFor(() => expect(bank.patterns[0].steps).toBe(7));
+  expect(patternBeats(bank.patterns[0])).toBe(1.75);
+  fireEvent.change(screen.getByLabelText('Pattern grid'), { target: { value: '8' } });
+  await waitFor(() => expect(bank.patterns[0].grid).toBe(8));
+  expect(patternBeats(bank.patterns[0])).toBe(1.75);
+  fireEvent.change(screen.getByLabelText('Pattern clock alignment'), { target: { value: 'tempo' } });
+  await waitFor(() => expect(bank.patterns[0].phraseSync).toBe(false));
+  expect((screen.getByLabelText('Pattern launch quantisation') as HTMLSelectElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Pattern step size'), { target: { value: '2' } });
+  await waitFor(() => expect(patternBeats(bank.patterns[0])).toBe(3.5));
+});
+test('partial-beat lengths clip notes and legacy bar lengths remain readable', () => {
+  const p = newPattern(); delete p.steps; delete p.stepDivision;
+  expect(patternBeats(p)).toBe(8);
+  p.notes = [{ id: 'a', beat: 1.5, duration: 1, degree: 1, octave: 0, velocity: 100 }, { id: 'b', beat: 1.75, duration: 1, degree: 5, octave: 0, velocity: 100 }];
+  expect(fitSteps(p, 7).notes).toEqual([{ ...p.notes[0], duration: .25 }]);
 });

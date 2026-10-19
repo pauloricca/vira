@@ -39,3 +39,17 @@ test('device errors are shown without reporting a successful selection', async (
   await screen.findByText('Device disconnected');
   expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(false);
 });
+test('manual refresh updates connected devices without replacing pending output selections', async () => {
+  invoke.mockResolvedValue(inventory);
+  render(<Audio audio={audio} />);
+  await screen.findAllByRole('option', { name: 'Headphones' });
+  const cue = screen.getByLabelText('Cue headphones device') as HTMLSelectElement;
+  fireEvent.change(cue, { target: { value: 'Headphones' } });
+  invoke.mockResolvedValue({ ...inventory, devices: [{ id: 'USB', name: 'USB interface', supported: true }] });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh audio devices' }));
+  await screen.findAllByRole('option', { name: 'USB interface' });
+  expect(screen.queryAllByRole('option', { name: 'Speakers' })).toHaveLength(0);
+  expect(cue.value).toBe('Headphones');
+  expect(screen.getByRole('option', { name: 'Headphones · disconnected' })).toBeTruthy();
+  expect(invoke).not.toHaveBeenCalledWith('set_audio_devices', expect.anything());
+});

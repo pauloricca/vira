@@ -1,3 +1,4 @@
+import { useMidiControl, MidiButton } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { addSessionPatch } from './patchLibrary';
@@ -22,7 +23,7 @@ export function formatPatchValue(value: number) {
   const decimals = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
   return `${Number(scaled.toFixed(scale === 1 ? decimals : Math.min(1, decimals)))}${scale === 1e6 ? 'M' : scale === 1e3 ? 'k' : ''}`;
 }
-function PatchKnob({ parameter: p, value, disabled, change }: { parameter: Parameter; value: number; disabled: boolean; change: (value: number) => void }) {
+function PatchKnob({ midiId, parameter: p, value, disabled, change }: { midiId: string; parameter: Parameter; value: number; disabled: boolean; change: (value: number) => void }) {
   const drag = useRef<{ pointer: number; y: number; value: number } | null>(null);
   const fraction = p.max === p.min ? 0 : (value - p.min) / (p.max - p.min);
   const angle = fraction * 300;
@@ -33,8 +34,9 @@ function PatchKnob({ parameter: p, value, disabled, change }: { parameter: Param
     const rounded = step ? p.min + Math.round((next - p.min) / step) * step : next;
     change(Math.min(p.max, Math.max(p.min, rounded)));
   };
+  const midi = useMidiControl({id:midiId,label:p.name,kind:'number',min:p.min,max:p.max,step:p.integer ? 1 : p.step,disabled,read:() => value,apply:turn});
   return <div className="patch-parameter" title={`${p.name}: ${value}`}>
-    <div className="mixer-dial patch-knob" role="slider" tabIndex={disabled ? -1 : 0} aria-disabled={disabled} aria-label={p.name} aria-valuemin={p.min} aria-valuemax={p.max} aria-valuenow={value} aria-valuetext={String(value)}
+    <div {...midi} className="mixer-dial patch-knob" role="slider" tabIndex={disabled ? -1 : 0} aria-disabled={disabled} aria-label={p.name} aria-valuemin={p.min} aria-valuemax={p.max} aria-valuenow={value} aria-valuetext={String(value)}
       onPointerDown={e => { if (disabled || e.button !== 0) return; e.preventDefault(); e.currentTarget.focus(); drag.current = { pointer: e.pointerId, y: e.clientY, value }; e.currentTarget.setPointerCapture?.(e.pointerId); }}
       onPointerMove={e => { const start = drag.current; if (start?.pointer === e.pointerId) turn(start.value + (start.y - e.clientY) / 140 * (p.max - p.min)); }}
       onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}
@@ -201,10 +203,10 @@ export function Patches() {
           const rect = e.currentTarget.getBoundingClientRect();
           reorder(entry.slot, e.clientY >= rect.top + rect.height / 2); finishDrag();
         }} onDragEnd={finishDrag}>
-        <button className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${patchName(record)}`} disabled={busy || !entry.state.running} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</button>
+        <MidiButton midiId={`patch:${record.name}:enabled`} className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${patchName(record)}`} disabled={busy || !entry.state.running} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</MidiButton>
         <strong className="patch-name" title={record.name}>{patchName(record)}</strong>
         {entry.state.suspended && <span className="patch-recovering" role="status">Recovering audio…</span>}
-        {record.prepared.parameters.map(p => <PatchKnob key={`${entry.state.generation}:${p.id}`} parameter={p} value={pending.current.get(`${entry.slot}:${p.id}`) ?? entry.state.parameters?.[p.id] ?? record.overrides[p.id] ?? p.defaultValue} disabled={busy || !entry.state.running || Boolean(entry.state.suspended)} change={value => control(entry, 'parameter', p.id, value)} />)}
+        {record.prepared.parameters.map(p => <PatchKnob midiId={`patch:${record.name}:parameter:${p.id}`} key={`${entry.state.generation}:${p.id}`} parameter={p} value={pending.current.get(`${entry.slot}:${p.id}`) ?? entry.state.parameters?.[p.id] ?? record.overrides[p.id] ?? p.defaultValue} disabled={busy || !entry.state.running || Boolean(entry.state.suspended)} change={value => control(entry, 'parameter', p.id, value)} />)}
       </div>;
     })}{!active.length && <div className="slots-empty"><span>PATCHES</span><p>Add a patch to start playing</p></div>}</div>
     {removing && <dialog className="patch-confirmation" ref={confirmation} aria-labelledby="remove-patch-title" onCancel={e => { e.preventDefault(); if (!busy) setRemoving(null); }} onKeyDown={e => e.stopPropagation()}>

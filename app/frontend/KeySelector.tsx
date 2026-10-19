@@ -1,3 +1,4 @@
+import { useMidiControl } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { keyChoices, shiftedKey } from './harmonic';
@@ -21,13 +22,14 @@ export function KeySelector({ deck, generation, original, other, semitones, disa
     if (!open) return;
     menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
   }, [open]);
+  const midi = useMidiControl({id:`deck:${deck}:pitch`,label:`Key / pitch deck ${name}`,kind:'number',min:-6,max:6,step:1,disabled:disabled || !current,read:() => semitones,apply:value => { void select(value); }});
   return <div className="deck-key" ref={container} onBlur={event => {
     if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget) && !menu.current?.contains(event.relatedTarget)) setOpen(false);
   }} onKeyDown={event => {
     if (open || event.key === ' ' || event.key === 'Enter') event.stopPropagation();
     if (event.key === 'Escape' && open) { event.stopPropagation(); setOpen(false); trigger.current?.focus(); }
   }}>
-    <button ref={trigger} className="key-trigger" aria-label={`Key deck ${name}: ${current ?? original ?? 'unknown'}${semitones ? ', shifted' : ''}`}
+    <button {...midi} ref={trigger} className="key-trigger" aria-label={`Key deck ${name}: ${current ?? original ?? 'unknown'}${semitones ? ', shifted' : ''}`}
       aria-haspopup="menu" aria-expanded={open} disabled={disabled || !current}
       title={current ? `Original: ${original}${semitones ? ` · ${semitones > 0 ? '+' : ''}${semitones} semitones` : ''}` : 'Analyse this track to select a key'}
       onClick={() => { const rect = trigger.current!.getBoundingClientRect(); setAnchor({ top: rect.bottom + 7, left: Math.max(8, Math.min(rect.right - 265, window.innerWidth - 273)) }); setOpen(!open); }}>{current ?? original ?? '—'}{semitones !== 0 ? '*' : ''}<span aria-hidden="true"> ▾</span></button>

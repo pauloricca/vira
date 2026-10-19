@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { Patterns } from './Patterns';
+import { patchPortPoint } from './Patching';
 import { connectMusical, newPattern, normaliseBank, type Bank } from './patternModel';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -21,6 +22,63 @@ afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstub
 async function mount() { render(<Patterns active />); await screen.findByLabelText('Expand Melody'); }
 const canvas = () => document.querySelector('.musical-canvas')!;
 async function saved() { await waitFor(() => expect(invoke).toHaveBeenCalledWith('patterns_save', expect.anything())); }
+test('adds several patterns to an occupied device input in either drag direction', async () => {
+  for (const id of ['q', 'r']) {
+    bank.patterns.push({...newPattern(), id, name:`Pattern ${id}`});
+    bank.graph!.nodes.push({id:`pattern-${id}`, kind:'pattern', pattern:id, label:id, x:430, y:id === 'q' ? 270 : 470});
+  }
+  await mount();
+  fireEvent.pointerDown(screen.getByLabelText('pattern-q output midi'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('midi-42 input midi'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
+  await waitFor(() => expect(bank.graph!.wires).toHaveLength(2));
+  // Reconnect handles remain on the selected cable ports.
+  const device = bank.graph!.nodes.find(n => n.id === 'midi-42')!;
+  expect(Number.parseFloat(screen.getByLabelText('Reconnect musical cable target').style.left)).toBe(patchPortPoint(device, 0, false).x);
+  const pattern = bank.graph!.nodes.find(n => n.id === 'pattern-q')!;
+  expect(Number.parseFloat(screen.getByLabelText('Reconnect musical cable source').style.left)).toBe(patchPortPoint(pattern, 1, true).x);
+  fireEvent.pointerDown(canvas(), {button:0});
+  expect(screen.queryByLabelText('Reconnect musical cable target')).toBeNull();
+  fireEvent.pointerDown(screen.getByLabelText('midi-42 input midi'), {button:0,pointerId:2});
+  expect(screen.getByTestId('musical-wire-preview')).toBeTruthy();
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('pattern-r output midi'));
+  fireEvent.pointerUp(canvas(), {pointerId:2});
+  await waitFor(() => expect(bank.graph!.wires).toHaveLength(3));
+  expect(bank.graph!.wires.map(w => [w.from,w.to])).toEqual(['p','q','r'].map(id => [`pattern-${id}`,'midi-42']));
+  expect(new Set(bank.graph!.wires.map(w => w.route)).size).toBe(3);
+  fireEvent.keyDown(window, {key:'Delete'});
+  await waitFor(() => expect(bank.graph!.wires).toHaveLength(2));
+  expect(bank.graph!.wires.map(w => w.from)).toEqual(['pattern-p','pattern-q']);
+});
+test('input-origin drags retain duplicate and single root input protections', async () => {
+  await mount();
+  fireEvent.pointerDown(screen.getByLabelText('midi-42 input midi'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('pattern-p output midi'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
+  expect(screen.getByRole('alert').textContent).toContain('already exists');
+  expect(bank.graph!.wires).toHaveLength(1);
+  fireEvent.pointerDown(screen.getByLabelText('pattern-p input notes'), {button:0,pointerId:2});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('deck-0 output notes'));
+  fireEvent.pointerUp(canvas(), {pointerId:2});
+  await waitFor(() => expect(bank.graph!.wires).toHaveLength(2));
+  fireEvent.pointerDown(screen.getByLabelText('pattern-p input notes'), {button:0,pointerId:3});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('deck-1 output notes'));
+  fireEvent.pointerUp(canvas(), {pointerId:3});
+  expect(screen.getByRole('alert').textContent).toContain('existing input cable');
+  expect(bank.graph!.wires.find(w => w.kind === 'notes')?.from).toBe('deck-0');
+});
+test('device input-origin drags accept note outputs and cancel on incompatible ports', async () => {
+  await mount();
+  fireEvent.pointerDown(screen.getByLabelText('midi-42 input midi'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('pattern-p output notes'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
+  await waitFor(() => expect(bank.graph!.wires).toHaveLength(2));
+  expect(bank.graph!.wires[1]).toMatchObject({from:'pattern-p',to:'midi-42',kind:'notes'});
+  fireEvent.pointerDown(screen.getByLabelText('midi-42 input midi'), {button:0,pointerId:2});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('deck-0 output scale'));
+  fireEvent.pointerUp(canvas(), {pointerId:2});
+  expect(bank.graph!.wires).toHaveLength(2);
+});
 test('opens on the canvas, expands on double-click, and restores without losing notes', async () => {
   await mount(); expect(screen.queryByLabelText('Pattern name')).toBeTruthy(); // editor exists but hidden
   expect((screen.getByLabelText('Pattern name').closest('.pattern-editor') as HTMLElement).hidden).toBe(true);

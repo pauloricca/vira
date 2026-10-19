@@ -64,6 +64,11 @@ The shortcut is available on the Decks page, outside text fields and dropdowns.
 **Autopilot**, after Play Next, blinks while enabled. It starts a session if needed
 and keeps an unplayed recommendation marked next when no manual plans remain.
 Candidates come from the current collection and selected tags, ignoring search.
+Settings → Automatic transitions → Autopilot next track selects Automatic (the
+default, using the weights below) or List order. List order follows the current
+library sort after the playing track, wrapping to remaining unplayed tracks;
+with no current track it starts at the first eligible track. Both modes give manual
+Play Next choices priority, even for previously played tracks. The choice persists.
 Settings has independent 0–100 weights for BPM proximity (within 10% of the
 playing track's original BPM), shared tags, harmonic compatibility (the same
 key, neighbouring fifths, or relative major/minor), BPM direction, and randomness.
@@ -78,7 +83,7 @@ The next track loads onto the stopped deck and the playing deck arms AUTO END
 once both decks have timing grids and their loops are released. Manual Play Next
 choices and tracks loaded onto the stopped deck take priority over recommendations.
 Cancelling AUTO END or ending the session disables Autopilot. Enabling it never
-starts playback; with empty decks it loads a random eligible track for you to start.
+starts playback; with empty decks it loads an eligible track for you to start (the first in List order).
 When the eligible tracks are exhausted, it waits for a manual choice or a new session.
 
 The deck workspace follows the minimalist interface reference: blue/orange shared
@@ -197,12 +202,23 @@ left (20 kHz down to 30 Hz) and a high-pass to the right (20 Hz up to 18 kHz);
 the center bypasses the filter. Double-click any dial to reset. Dial changes
 ramp over 10 ms, and settings carry over when replacing a loaded track.
 Use **Timing & tempo** for grid editing, tempo presets and click volume.
+Each deck header shows original BPM, the speed change (↑ faster / ↓ slower),
+and current BPM. Drag or scroll the current BPM to change tempo; Shift-scroll
+uses 0.01 BPM steps. Double-click either BPM to unlock and restore original speed.
+In **MIDI map**, select the percentage change to learn a tempo slider relative
+to the loaded track's original BPM (default −8% to +8%; edit From/To or Invert
+in the mapping editor). The slider centre restores original speed. Manual tempo
+controls require an unlocked deck; the current BPM also retains absolute BPM mapping.
+Both controller mappings smooth playing tempo changes over 80 ms, preserving the
+time stretcher's audio history throughout slider movements.
 **Edit grid** enables dragging beat marks while the deck is stopped in that deck's rolling waveform.
 Dragging anywhere shifts the whole grid without changing BPM. **Command-click**
 any beat mark to pin it (shown green); subsequent drags scale the grid and BPM
-around that beat. Command-click another beat to move the pin, or the pinned beat
-to unpin and return to shifting. The hand cursor appears over any beat mark, with a horizontal resize cursor
-between marks. These cursors remain visible during playback while editing is paused. Save and Cancel clear the pin.
+around that beat. Start scaling away from the green pin, which stays fixed; scaling
+stops at 30–300 BPM rather than reverting the drag. Command-click another beat to move the pin, or the pinned beat
+to unpin and return to shifting. Without a pin, the hand cursor appears over beat marks,
+with a horizontal resize cursor between marks. With a pin, the resize cursor appears
+away from the pin and an unavailable cursor over the fixed pin. These cursors remain visible during playback while editing is paused. Save and Cancel clear the pin.
 Play and pause freely while editing to listen with the unsaved draft grid.
 Moving, scaling and pinning are disabled during playback and resume when paused.
 The draft and pin survive playback; Cancel also restores the original audible grid. **Save grid** persists and applies
@@ -445,8 +461,8 @@ The mixer **Gain** knob is saved automatically as `gain_db` in per-track metadat
 under `~/Library/Application Support/uk.ricca.vira/track-metadata/`, keyed by the
 source content hash. Loading the same audio on either deck restores that gain,
 including after restarting the app or moving the file. New content starts at 0 dB.
-The loading preference resets volume, EQ and filter; saved track gain is always
-restored. Double-clicking Gain saves its 0 dB reset. Source music files stay read-only.
+The deck volume fader stays at its current level when loading another track.
+The loading preference resets EQ and filter; saved track gain is always restored. Double-clicking Gain saves its 0 dB reset. Source music files stay read-only.
 For tracks with a timing grid, the first beat is playable zero: load, Stop,
 Cue and Home start there, and the deck clock reads 0:00. Seeking, scrubbing,
 master alignment and loops stay between that boundary and the source end.
@@ -628,7 +644,8 @@ clears that deck’s master tempo lock.
 
 Each deck supports the full 15–600 target BPM range, regardless of its source BPM.
 Rubber Band R3 uses duration ratio = source BPM / target BPM, with independent pitch scale
-`2^(semitones / 12)`. Unreviewed grids can be auditioned. Tempo changes reset/re-prime R3 at the
+`2^(semitones / 12)`. Unreviewed grids can be auditioned. Controller tempo sweeps
+ramp the live ratio over 80 ms without resetting R3. Other tempo changes reset/re-prime R3 at the
 producer boundary using the current precise source anchor, discard old prepared
 DSP output and crossfade from the last output over 5 ms. This is a short transition,
 not a guarantee that stretched song attacks remain sample-exact.
@@ -667,7 +684,12 @@ external clock integration remain future work.
 
 In **Timing & tempo**, **Set reference beat** marks the exact playhead position.
 With that panel open, double-click the top rolling waveform to mark the clicked
-source position instead. The first flag shifts the source beat grid without
+source position instead. Without a BPM, the first flag waits for a second reference (keep the track loaded).
+The pair is treated as consecutive bar starts when that gives 30–300 BPM;
+shorter gaps use adjacent beats, and longer gaps use whole bars nearest 120 BPM.
+The earlier reference becomes bar 1, beat 1; the resulting grid is a draft.
+Approve is hidden until a timing grid is available.
+With an existing BPM, the first flag shifts the source beat grid without
 changing BPM; the earliest grid beat in the track becomes bar 1, beat 1.
 The second flag fits BPM so both flags fall on beats. A third flag replaces the
 oldest. Flags appear on the rolling and full-track waveforms while the panel is
@@ -691,6 +713,13 @@ beats (2/4/8/16 s fallback). Each row maps source peaks and grid through its own
 speed, so different target tempos have different beat spacing. Draft grids are
 fainter; unavailable grids draw no markers. Empty space outside source boundaries
 remains empty. The overviews stay seekable and the top rows also support paused scrubbing.
+Moving triangle markers jump by whole phrases while retaining the current musical
+phase. During playback they crossfade the continuing outgoing audio into the new
+position over 30 ms by default. Settings → Waveform jumps → Jump crossfade saves
+a duration from 5–100 ms, or Off. Paused jumps remain immediate. The producer
+reserves both overlap buffers when loading the voice; the destination clock
+starts at the jump boundary and advances throughout the overlap.
+
 Preparation caches stereo peaks at 240 source frames (5 ms). The native load keeps
 those saved fine peaks for the webview, which fetches them once per active artifact
 without a second preparation request and retains at most active-source caches;
@@ -911,11 +940,19 @@ The **Patterns** workspace contains reusable, persistent MIDI loops. Create a
 pattern, select a CoreMIDI destination and channel, and launch it on the next beat
 or bar. Each pattern has its own transport; several can play together. The audio
 engine must be running. Patterns keep the master beat moving even when both decks
-are stopped, and use the same master tempo and phase as the decks.
+are stopped, and use the same master tempo as the decks.
+
+Several patterns can connect to the same device MIDI input. Drag from each
+pattern's MIDI output to that input, or from the device input to each pattern's
+MIDI output. Adding a cable preserves the other patterns' connections and
+independent playback. Pattern root note and scale inputs still accept one source.
 
 Click empty grid space to add a note, click a note to delete it, drag a note to
 move it, or drag its right edge to resize it. Grid values range from quarter notes
-to 32nd notes; loops span 1–16 bars in 4/4. The grid shows five octaves of scale
+to 32nd notes. Set Length to any integer from 1 to 65,536 steps and choose a
+Step size from 1/4 to 1/32, independently of the editing grid. For example,
+7 steps at 1/16 loop every 1.75 beats, enabling polymeters. Existing bar-based
+patterns retain their length. The grid shows five octaves of scale
 degrees, with mapped MIDI notes beside them. Key, Major / Natural minor / Dorian /
 Mixolydian scale and base octave remap the melody without changing its stored
 degrees or octave offsets. Rename inline; duplicate and delete are in the editor
@@ -936,9 +973,15 @@ Scheduling runs on a native worker from the Core Audio playback timestamp and
 master beat anchor; webview polling only displays the playhead. Events use exact
 CoreMIDI host timestamps and a 5 ms scheduling horizon, plus the configured early
 advance. Active note ownership is counted across patterns sharing a channel/pitch.
-Loop ends release notes before retriggering them. Stop is quantised; edits to a
+Loop ends release notes before retriggering them. Clock alignment defaults to
+Master beat / bar, with launch and stop quantised to the selected boundary.
+Tempo only launches and stops immediately (allowing the destination's scheduling
+advance), keeps tempo with the master, and preserves its local loop phase across
+master phase jumps. In either mode loops repeat at their own step length, without
+resetting at bar boundaries. Changing alignment applies to subsequent transport
+commands without restarting a running loop. Edits to a
 running pattern preserve its scheduling cursor unless its destination changes.
-Master phase jumps release and requeue patterns. Missing audio clock, MIDI device
+Master phase jumps release and requeue events; tempo-only patterns retain their loop phase. Missing audio clock, MIDI device
 disconnection and application exit release owned notes. A stalled worker skips
 stale events instead of emitting a burst of old note-ons.
 
@@ -1074,3 +1117,80 @@ updates existing routes. Removing an audio connection removes its endpoint and
 cables; a deleted MIDI instrument remains visibly missing with disabled ports.
 Explicit audio devices never fall back to the system speakers. Device support,
 round trip latency, and independent hardware clocks need verification on macOS.
+
+### MIDI interface mappings
+
+MIDI discovery initializes on the macOS main event loop before audio/MIDI workers
+start. Device notifications trigger an immediate routing inventory scan, with a
+one-second fallback scan. Enabled controllers reconnect automatically when plugged
+back in; **Refresh MIDI controllers** also reads the current system inventory.
+
+The native hot-plug regression test creates a separate-process MIDI source twice
+with the same negative ID, receives CC messages on both connections, and verifies
+both removals. Cross-build in Docker, then run the device measurement on macOS:
+
+```sh
+cd app
+docker compose run --rm builder sh -c 'scripts/mac-cc -DVIRA_TEST_INITIALIZE tests/native/midi_hotplug.c src-tauri/native/teia_midi.c -framework CoreMIDI -framework CoreFoundation -o output/midi-hotplug-test'
+./output/midi-hotplug-test
+```
+
+Enable controller inputs under **Settings → MIDI controllers**, then use **MIDI map**
+next to CPU usage in the footer. Yellow outlines indicate mappable controls; click
+one and move a controller knob/fader or press a note-sending button. The first CC
+or nonzero-velocity Note On from an enabled input binds its device ID, channel,
+message type and CC/note number. Note Off and zero-velocity Note On never learn. Green outlines indicate saved mappings.
+The extra footer edits the range, inversion and behavior, relearns or removes a
+mapping, and lists saved mappings. Turn mapping mode off to perform with the
+controller. MIDI routing input selection is independent of mapping permissions.
+
+Controller behaviour in Settings defaults to **Grab**: absolute CC knobs and sliders
+wait until their position meets or crosses the current value before taking over.
+Changes elsewhere require pickup again. **Jump** applies each movement immediately.
+This preference persists locally and does not affect press, gate or note mappings.
+
+Mappings and controller permissions persist locally. Absolute mappings scale CC
+0–127 into a target range and respect its bounds and step; choices select discrete
+options. Press mappings trigger at the rising midpoint crossing, while gate
+mappings follow press/release (Cue defaults to gate and releases on disable,
+disconnect or entering mapping mode). Multiple targets may share a CC or note. CC and note numbers are distinct sources;
+existing CC mappings remain compatible. Note buttons trigger at any nonzero
+velocity, and gate mappings release on Note Off (including zero-velocity Note On).
+Absolute note mappings use press velocity; releases leave the value unchanged.
+
+`MidiTarget` and `useMidiTargets` in `frontend/MidiMapping.tsx` are the common
+adapter contract: a stable ID, label, kind, bounds/choices, availability, a current-value read callback, and an
+apply callback. `useMidiControl` also supplies outline/selection attributes;
+`MidiButton`, `MidiInput` and `MidiSelect` adapt standard controls. Use explicit
+`midiId` values for dynamic labels or repeated controls. Entity targets must use
+persistent entity IDs, never selection indexes. Pattern handlers remain registered
+for every pattern and note, independently of the visible selection. Routing node
+parameters use saved node IDs; patch knobs use the patch filename and parameter ID.
+Deleted or unavailable targets are inert and remain removable from saved mappings.
+Existing routing node parameters and cable gains are always live. **Apply routing**
+commits structural edits (new/removed nodes and cables, reconnections). Parameters
+on new nodes become live after those nodes are applied. Ordinary text fields and cable ports are not MIDI
+value targets. Native CC/note collection shares the MIDI routing worker and uses a
+bounded queue outside the audio callback; callbacks never invoke the UI.
+
+
+Rolling waveforms can learn MIDI controller wheels in MIDI map mode. Select the
+waveform, turn the wheel, then choose its encoding in the mapping editor:
+two’s complement (1/127), offset (65/63), sign magnitude (1/65), or absolute
+with wrap. Invert reverses direction. Wheel mappings bypass controller pickup.
+Settings → Waveform MIDI wheels stores independent playing and stopped movement
+amounts in milliseconds per MIDI step (defaults: 2 ms playing, 20 ms stopped).
+The native audio engine smooths motion: playing decks temporarily adjust speed
+without seeking or changing their selected BPM; stopped decks audition forwards
+and backwards, retaining motion between MIDI messages. Playing decks must be
+unlocked. Locking cancels pending movement, and stale track commands are ignored.
+
+
+Two-finger trackpad scrolling over a deck’s rolling waveform uses the same native
+smoothed jog path. Horizontal and vertical scrolling both work; the dominant axis
+is used so diagonal gestures do not double the movement. Settings → Waveform
+trackpad stores independent playing/stopped sensitivities (defaults: 0.5/5 ms per
+scroll pixel), separate from MIDI wheel settings. Playing decks must be unlocked.
+Pinch gestures continue to zoom. Trackpad movement also works in Edit grid mode
+without changing the draft grid or its pinned beat; pointer dragging still edits
+the grid. MIDI map mode and grid saving disable trackpad movement. Queued scrolling is discarded when the deck changes or is locked.

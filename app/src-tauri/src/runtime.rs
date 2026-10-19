@@ -21,6 +21,8 @@ use std::{
 };
 
 struct Shared {
+    master_volume: AtomicU64,
+    cue_volume: AtomicU64,
     routes: Mutex<crate::audio_devices::Routes>,
     inputs: crate::audio_inputs::Inputs,
     cue_running: AtomicBool,
@@ -47,6 +49,7 @@ struct Shared {
     position_epochs: [AtomicU64; 2],
     generations: [AtomicU64; 2],
     playing: [AtomicBool; 2],
+    rejected_load: [AtomicU64; 2],
     cue_positions: [AtomicU64; 2],
     cue_preview: [AtomicBool; 2],
     loop_starts: [AtomicU64; 2],
@@ -99,6 +102,8 @@ pub struct AudioLevels {
 impl Shared {
     fn new() -> Self {
         Self {
+            master_volume: (1_f32.to_bits() as u64).into(),
+            cue_volume: (1_f32.to_bits() as u64).into(),
             inputs: crate::audio_inputs::Inputs::default(),
             cancel: false.into(),
             routes: Mutex::new(crate::audio_devices::Routes::load()),
@@ -125,6 +130,7 @@ impl Shared {
             position_epochs: std::array::from_fn(|_| 0.into()),
             generations: std::array::from_fn(|_| 0.into()),
             playing: std::array::from_fn(|_| false.into()),
+            rejected_load: std::array::from_fn(|_| 0.into()),
             cue_positions: std::array::from_fn(|_| 0.into()),
             cue_preview: std::array::from_fn(|_| false.into()),
             loop_starts: std::array::from_fn(|_| u64::MAX.into()),
@@ -651,6 +657,15 @@ impl EngineHandle {
         self.set_routing_graph(graph.clone())?;
         Ok(Some(graph))
     }
+    pub fn set_routing_parameters(
+        &self,
+        parameters: crate::routing::Parameters,
+    ) -> Result<crate::routing::Graph> {
+        let _transaction = self.patch_transaction.lock().unwrap();
+        let graph = self.routing_graph().with_parameters(parameters)?;
+        self.set_routing_graph(graph.clone())?;
+        Ok(graph)
+    }
     pub fn apply_session_routing(&self, mut graph: crate::routing::Graph) -> Result<()> {
         let _transaction = self.patch_transaction.lock().unwrap();
         let previous = self.routing_graph();
@@ -894,6 +909,12 @@ impl EngineHandle {
     }
     pub fn begin_load(&self, deck: usize) -> Result<u64> {
         ensure!(deck < 2, "Deck must be A or B");
+        let snapshot = self.shared.audible();
+        ensure!(
+            !snapshot.playing[deck] || snapshot.gains[deck] == 0.,
+            "{}",
+            crate::decks::LOAD_BLOCKED
+        );
         let generation =
             self.shared.requested[deck].fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
         let mut meta = self.metadata.lock().unwrap();
@@ -933,7 +954,9 @@ impl EngineHandle {
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
         );
-        let mut prepared = source::prepare_track(track_id, Some((deck, generation)))?;
+        // Install decoded audio before the more expensive waveform work. The same
+        // voice remains installed when that metadata arrives, even during playback.
+        let mut prepared = source::prepare_playback(track_id, deck, generation)?;
         ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
@@ -1008,7 +1031,29 @@ impl EngineHandle {
             voice,
             preserve_lock,
             reset_mixer,
-        })
+        })?;
+        let mut complete = source::prepare_track(track_id, Some((deck, generation)))?;
+        ensure!(
+            self.shared.requested[deck].load(Acquire) == generation,
+            "Load superseded by a newer selection"
+        );
+        let mut meta = self.metadata.lock().unwrap();
+        let start_seconds = meta[deck]
+            .records
+            .get(&generation)
+            .map_or(0., |p| p.start_seconds);
+        complete.start_seconds = start_seconds;
+        meta[deck].waveform = Some((
+            generation,
+            Waveform {
+                artifact_id: complete.artifact_id.clone(),
+                fine_peak_frames: complete.fine_peak_frames,
+                fine_peaks: std::mem::take(&mut complete.fine_peaks),
+                fine_features: std::mem::take(&mut complete.fine_features),
+            },
+        ));
+        meta[deck].records.insert(generation, complete);
+        Ok(())
     }
     pub fn control(&self, deck: usize, action: &str, value: Option<f64>) -> Result<()> {
         self.control_for_generation(deck, action, value, None)
@@ -1021,6 +1066,20 @@ impl EngineHandle {
         expected: Option<u64>,
     ) -> Result<()> {
         ensure!(deck < 2, "Deck must be A or B");
+        if matches!(action, "master_volume" | "cue_volume") {
+            let gain = value.ok_or_else(|| anyhow::anyhow!("Output volume is required"))?;
+            ensure!(
+                gain.is_finite() && (0. ..=1.).contains(&gain),
+                "Output volume must be 0–1"
+            );
+            let volume = if action == "master_volume" {
+                &self.shared.master_volume
+            } else {
+                &self.shared.cue_volume
+            };
+            volume.store((gain as f32).to_bits() as u64, Relaxed);
+            return Ok(());
+        }
         // Keep command and persistence ordering identical during rapid gain drags.
         let _trim = (action == "trim").then(|| self.trim_control.lock().unwrap());
         let snapshot = self.shared.audible();
@@ -1047,6 +1106,7 @@ impl EngineHandle {
                         | "master_tempo"
                         | "drift_rate"
                         | "sync_quantum"
+                        | "jump_crossfade"
                         | "crossfader"
                         | "crossfader_enabled"
                         | "headphone_cue"
@@ -1054,6 +1114,14 @@ impl EngineHandle {
             "Load a track before using transport"
         );
         let command = match action {
+            "jump_crossfade" => {
+                let milliseconds = value.unwrap_or(-1.);
+                ensure!(
+                    milliseconds.is_finite() && (0. ..=100.).contains(&milliseconds),
+                    "Jump crossfade must be between 0 and 100 ms"
+                );
+                Command::JumpCrossfade((milliseconds * 48.).round() as usize)
+            }
             "auto_bars" => {
                 let bars = value.unwrap_or(-1.);
                 ensure!(
@@ -1185,14 +1253,25 @@ impl EngineHandle {
                     action == "loop_length_aligned",
                 )
             }
-            "seek" | "scrub_start" | "scrub" | "scrub_pause" => {
+            "jog" => {
+                let seconds =
+                    value.ok_or_else(|| anyhow::anyhow!("Jog requires a displacement"))?;
+                ensure!(
+                    seconds.is_finite() && seconds.abs() <= 10.,
+                    "Jog displacement is outside the supported range"
+                );
+                Command::Jog(deck, generations[deck], seconds)
+            }
+            "seek" | "phrase_jump" | "scrub_start" | "scrub" | "scrub_pause" => {
                 let seconds = value.ok_or_else(|| anyhow::anyhow!("Seek requires a position"))?;
                 ensure!(
                     seconds.is_finite() && seconds >= 0. && seconds <= frames as f64 / RATE as f64,
                     "Seek position is outside the track"
                 );
                 let position = (seconds * RATE as f64).round() as usize;
-                if action == "seek" {
+                if action == "phrase_jump" {
+                    Command::PhraseJump(deck, generations[deck], position)
+                } else if action == "seek" {
                     Command::Seek(deck, generations[deck], position)
                 } else if action == "scrub_start" {
                     Command::ScrubStart(deck, generations[deck], position)
@@ -1246,12 +1325,16 @@ impl EngineHandle {
                 );
                 Command::Pitch(deck, generations[deck], shift)
             }
-            "tempo" => {
+            "tempo" | "tempo_smooth" => {
                 let target = value.ok_or_else(|| anyhow::anyhow!("Tempo requires target BPM"))?;
                 snapshot.grids[deck]
                     .ok_or_else(|| anyhow::anyhow!("Apply a source grid first"))?
                     .speed(target)?;
-                Command::Tempo(deck, generations, target)
+                if action == "tempo_smooth" {
+                    Command::SmoothTempo(deck, generations, target)
+                } else {
+                    Command::Tempo(deck, generations, target)
+                }
             }
             "master_tempo" | "master_target" => {
                 let target = value.ok_or_else(|| anyhow::anyhow!("Master tempo requires BPM"))?;
@@ -1392,8 +1475,13 @@ impl EngineHandle {
         let decks: Vec<DeckState> = (0..2)
             .map(|d| {
                 let requested = self.shared.requested[d].load(Acquire);
-                if generations[d] == requested && generations[d] != 0 {
+                if generations[d] == requested && generations[d] != 0
+                    && metadata[d].records.get(&requested).is_some_and(|p| !p.peaks.is_empty()) {
                     metadata[d].loading = false;
+                }
+                if requested != 0 && self.shared.rejected_load[d].load(Acquire) == requested {
+                    metadata[d].loading = false;
+                    metadata[d].error = Some(crate::decks::LOAD_BLOCKED.into());
                 }
                 // Old records are only small UI metadata; PCM lives solely in voices
                 // and a weak cache. Bound UI history while preserving the audible one.
@@ -1462,6 +1550,8 @@ impl EngineHandle {
             "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
         }));
         json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+            "master_volume":f32::from_bits(self.shared.master_volume.load(Relaxed) as u32),
+            "cue_volume":f32::from_bits(self.shared.cue_volume.load(Relaxed) as u32),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
             "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
@@ -1522,7 +1612,9 @@ fn native_output(
             while let Ok(voice) = retire_rx.pop() {
                 match voice {
                     crate::decks::Retired::Audition(v) => drop(v),
-                    crate::decks::Retired::Voice(v) => drop(v),
+                    crate::decks::Retired::Voice(v) | crate::decks::Retired::RejectedLoad(_, v) => {
+                        drop(v)
+                    }
                     crate::decks::Retired::Routing(p) => drop(p),
                 }
             }
@@ -1534,7 +1626,9 @@ fn native_output(
         while let Ok(voice) = retire_rx.pop() {
             match voice {
                 crate::decks::Retired::Audition(v) => drop(v),
-                crate::decks::Retired::Voice(v) => drop(v),
+                crate::decks::Retired::Voice(v) | crate::decks::Retired::RejectedLoad(_, v) => {
+                    drop(v)
+                }
                 crate::decks::Retired::Routing(p) => drop(p),
             }
         }
@@ -1611,6 +1705,9 @@ fn native_output(
                         let latest =
                             std::array::from_fn(|d| worker_shared.requested[d].load(Acquire));
                         if let Some(old) = decks.command(command, latest) {
+                            if let crate::decks::Retired::RejectedLoad(deck, voice) = &old {
+                                worker_shared.rejected_load[*deck].store(voice.generation, Release);
+                            }
                             retire_tx.push(old).map_err(|_| {
                                 anyhow::anyhow!("Retirement queue accounting error")
                             })?;
@@ -1667,6 +1764,8 @@ fn native_output(
         let callback_output = output.clone();
         let midi_clocks = teia_midi_clocks.clone();
         let mut active_deck = crate::active_deck::Tracker::default();
+        let mut master_volume = f32::from_bits(shared.master_volume.load(Relaxed) as u32);
+        let mut cue_volume = f32::from_bits(shared.cue_volume.load(Relaxed) as u32);
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
@@ -1694,8 +1793,13 @@ fn native_output(
                 let mut deck_peaks = [0_f32; 2];
                 let mut master_peaks = [0_f32; 2];
                 let mut cue = callback_cue.try_lock().ok();
+                let master_target = f32::from_bits(cb.master_volume.load(Relaxed) as u32);
+                let cue_target = f32::from_bits(cb.cue_volume.load(Relaxed) as u32);
                 data.fill(0.);
                 for (index, samples) in data.chunks_exact_mut(channels).enumerate() {
+                    // Smooth output changes over roughly 5 ms to avoid clicks.
+                    master_volume += (master_target - master_volume) / 240.;
+                    cue_volume += (cue_target - cue_volume) / 240.;
                     match state.consumer.pop() {
                         Ok(frame) => {
                             if !anchored {
@@ -1712,9 +1816,12 @@ fn native_output(
                                 }
                                 anchored = true;
                             }
-                            samples[..2].copy_from_slice(&frame.samples);
+                            for channel in 0..2 {
+                                samples[channel] = frame.samples[channel] * master_volume;
+                            }
                             if let Some(cue) = cue.as_mut() {
-                                let _ = cue.push(frame.cue_samples);
+                                let _ =
+                                    cue.push(frame.cue_samples.map(|sample| sample * cue_volume));
                             }
                             for d in 0..2 {
                                 deck_peaks[d] = deck_peaks[d]
@@ -1723,7 +1830,7 @@ fn native_output(
                             }
                             for channel in 0..2 {
                                 master_peaks[channel] =
-                                    master_peaks[channel].max(frame.samples[channel].abs());
+                                    master_peaks[channel].max(samples[channel].abs());
                             }
                             active_deck.observe(
                                 std::array::from_fn(|d| {

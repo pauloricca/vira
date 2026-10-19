@@ -84,6 +84,20 @@ test('grid drags shift at every position until a beat is explicitly pinned', () 
   expect(yellow.beat).toBe(1);
   expect((yellow.bar - 1) % 4).toBe(0);
   expect(dragGrid(original, anchor, 1, 100, anchor)).toEqual(original);
-  expect(dragGrid(original, anchor + 1, -2, 100, anchor)).toEqual(original);
-  expect(dragGrid(original, anchor + 1, 20, 100, anchor)).toEqual(original);
+  for (const [delta, bpm] of [[-2, 300], [20, 30]]) {
+    const limited = dragGrid(original, anchor + 1, delta, 100, anchor);
+    expect(limited.bpm).toBe(bpm);
+    expect(markers(limited, anchor - .001, anchor + .001)[0].seconds).toBeCloseTo(anchor);
+  }
+});
+
+test('references without BPM infer bar starts and handle short beats and long gaps', () => {
+  for (const references of [[10, 12], [12, 10]]) {
+    const inferred = gridForReferenceBeats(null, references, 100);
+    expect(inferred).toEqual({ bpm: 120, downbeat_seconds: 10, reviewed: false });
+    for (const seconds of references) expect(markers(inferred, seconds, seconds)[0].beat).toBe(1);
+  }
+  expect(gridForReferenceBeats(null, [10, 10.5], 100).bpm).toBe(120);
+  expect(gridForReferenceBeats(null, [10, 42], 100).bpm).toBe(120);
+  for (const references of [[10], [10, 10], [10, 10.001], [10, 100]]) expect(() => gridForReferenceBeats(null, references, 100)).toThrow();
 });

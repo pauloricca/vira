@@ -344,6 +344,10 @@ impl Stream {
 #[cfg(target_os = "macos")]
 mod native;
 #[cfg(target_os = "macos")]
+pub use native::devices;
+#[cfg(target_os = "macos")]
+pub use native::initialize;
+#[cfg(target_os = "macos")]
 pub use native::Router;
 #[cfg(test)]
 mod tests {

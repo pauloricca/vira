@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 unsafe extern "C" {
+    fn vira_midi_initialize() -> i32;
+    fn vira_midi_generation() -> u64;
     fn vira_midi_open_raw(
         callback: extern "C" fn(*mut c_void, *const u8, usize, u64),
         context: *mut c_void,
@@ -95,6 +97,23 @@ struct Endpoint {
     id: i32,
     name: String,
 }
+pub fn initialize() -> Result<(), String> {
+    let status = unsafe { vira_midi_initialize() };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("MIDI device discovery failed ({status})"))
+    }
+}
+pub fn devices() -> Value {
+    let list = |output| {
+        endpoints(output)
+            .into_iter()
+            .map(|e| json!({"id": e.id, "name": e.name}))
+            .collect::<Vec<_>>()
+    };
+    json!({"inputs": list(false), "outputs": list(true)})
+}
 fn endpoints(output: bool) -> Vec<Endpoint> {
     (0..unsafe { vira_midi_count(output) })
         .filter_map(|index| {
@@ -116,6 +135,7 @@ pub struct Router {
     available: Vec<Endpoint>,
     outputs: Vec<Endpoint>,
     last: Instant,
+    device_generation: u64,
     teia: Vec<Source>,
     pub error: Option<String>,
     pub notes: HashMap<String, u8>,
@@ -129,6 +149,7 @@ impl Router {
             available: vec![],
             outputs: vec![],
             last: Instant::now() - Duration::from_secs(2),
+            device_generation: 0,
             teia: vec![],
             error: None,
             notes: HashMap::new(),
@@ -189,10 +210,22 @@ impl Router {
         decks: [Option<crate::pattern_routing::Harmony>; 2],
     ) -> HashMap<String, u8> {
         self.error = None;
-        if self.last.elapsed() > Duration::from_secs(1) {
+        let generation = unsafe { vira_midi_generation() };
+        if generation != self.device_generation || self.last.elapsed() > Duration::from_secs(1) {
             self.available = endpoints(false);
+            if let Ok(mut s) = crate::midi_mapping::STATE.lock() {
+                s.devices = self
+                    .available
+                    .iter()
+                    .map(|e| crate::midi_mapping::Device {
+                        id: e.id,
+                        name: e.name.clone(),
+                    })
+                    .collect();
+            }
             self.outputs = endpoints(true);
             self.last = Instant::now();
+            self.device_generation = generation;
         }
         let monitored: std::collections::HashSet<_> = bank
             .graph
@@ -281,7 +314,7 @@ impl Router {
             }
         }
         self.core.reconcile(routes, sink, ns);
-        let desired: Vec<_> = monitored
+        let mut desired: Vec<_> = monitored
             .iter()
             .filter_map(|s| {
                 if let Source::Midi(id) = s {
@@ -291,6 +324,13 @@ impl Router {
                 }
             })
             .collect();
+        if let Ok(s) = crate::midi_mapping::STATE.lock() {
+            for id in &s.enabled {
+                if self.available.iter().any(|e| e.id == *id) && !desired.contains(id) {
+                    desired.push(*id);
+                }
+            }
+        }
         let removed: Vec<_> = self
             .inputs
             .keys()
@@ -331,6 +371,7 @@ impl Router {
                     break;
                 };
                 for message in input.stream.feed(&packet.bytes[..packet.len]) {
+                    crate::midi_mapping::receive(id, &message);
                     self.core.message(
                         &source,
                         &message,

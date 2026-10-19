@@ -610,6 +610,52 @@ mod tests {
         serde_json::from_value(json!({"patterns":[{"id":"p","name":"Arp","kind":"melodic","mode":"relative","output":42,"channel":2,"bars":2,"grid":4,"key":0,"scale":0,"octave":4,"quantum":4,"compensation":null,"notes":[{"id":"n","beat":0,"duration":4,"degree":3,"octave":0,"velocity":100}]}],"outputCompensation":{}})).unwrap()
     }
     #[test]
+    fn several_patterns_share_one_device_with_independent_routes() {
+        let mut b = bank();
+        for id in ["q", "r"] {
+            let mut p = b.patterns[0].clone();
+            p.id = id.into();
+            b.patterns.push(p);
+        }
+        migrate(&mut b);
+        let graph = b.graph.as_ref().unwrap();
+        graph.validate(&b).unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|n| n.kind == "instrument")
+                .count(),
+            1
+        );
+        let plan = resolve(&b, [None, None]);
+        let routes: Vec<_> = plan.patterns.iter().filter(|p| !p.note_source).collect();
+        assert_eq!(routes.len(), 3);
+        assert_eq!(
+            routes.iter().map(|p| p.route).collect::<HashSet<_>>().len(),
+            3
+        );
+        for (p, owner) in routes.iter().zip(["p", "q", "r"]) {
+            assert_eq!(p.owner.as_deref(), Some(owner));
+            assert_eq!(p.destination, Some(Destination::Midi { output: 42 }));
+        }
+        b.graph
+            .as_mut()
+            .unwrap()
+            .wires
+            .retain(|w| w.from != "pattern-q");
+        let after = resolve(&b, [None, None]);
+        for p in routes.iter().filter(|p| p.owner.as_deref() != Some("q")) {
+            let retained = after.patterns.iter().find(|new| new.id == p.id).unwrap();
+            assert_eq!(retained.route, p.route);
+            assert_eq!(retained.destination, p.destination);
+        }
+        assert!(!after
+            .patterns
+            .iter()
+            .any(|p| !p.note_source && p.owner.as_deref() == Some("q")));
+    }
+    #[test]
     fn octave_and_filter_boundaries_never_wrap_or_include_the_threshold() {
         assert_eq!(
             Transformation::OctaveShift { octaves: -2 }.apply(60),

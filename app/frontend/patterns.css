@@ -93,3 +93,6 @@
 .transformation-controls label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .transformation-controls select { max-width:125px; padding:3px; font-size:11px; }
 .transformation-controls small { font-size:9px; }
+
+.pattern-settings input[type=number] { width: 85px; font-size: 11px; }
+.pattern-settings > small { flex-basis: 100%; color: var(--muted); font-size: 11px; }

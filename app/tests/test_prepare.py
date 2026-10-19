@@ -44,6 +44,17 @@ class PreparationTests(unittest.TestCase):
         with patch("preparation.prepare.spectral_features", side_effect=AssertionError("Audition must not repair unused features")), patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Audition must reuse decoded PCM")):
             self.assertEqual(self.prepare.prepare(self.track_id, audition=True), preview)
 
+    def test_deck_audio_is_available_before_waveform_generation(self):
+        with patch("preparation.prepare.pcm_info", side_effect=AssertionError("Playback must precede waveform work")):
+            playback = self.prepare.prepare(self.track_id, deck=0, generation=1, audition=True)
+        self.assertNotIn("peaks", playback)
+        pcm = self.prepare.audio_path(playback["artifact_id"])
+        self.assertEqual(pcm.stat().st_size, playback["pcm_bytes"])
+        with patch("preparation.prepare.subprocess.Popen", side_effect=AssertionError("Waveform upgrade must reuse PCM")):
+            complete = self.prepare.prepare(self.track_id, deck=0, generation=1)
+        self.assertEqual(complete["pcm_hash"], playback["pcm_hash"])
+        self.assertTrue(complete["peaks"])
+
     def test_full_duration_stereo_peaks_and_no_analysis_dependency(self):
         descriptor = self.prepare.prepare(self.track_id)
         self.assertEqual(descriptor["frames"], 96000)

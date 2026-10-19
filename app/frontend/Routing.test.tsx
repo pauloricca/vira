@@ -18,54 +18,65 @@ beforeEach(() => {
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => null) });
 });
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-async function mount() {
-  invoke.mockImplementation(command => Promise.resolve(command === 'get_routing_graph' || command === 'default_routing_graph' ? structuredClone(graph) : undefined));
+async function mount(initial = graph) {
+  let live = structuredClone(initial);
+  invoke.mockImplementation((command, args) => {
+    if (command === 'set_routing_graph') { live = structuredClone(args.graph); return Promise.resolve(); }
+    if (command === 'set_routing_parameters') {
+      live = {...live,nodes:live.nodes.map(n => ({...n,...args.parameters.nodes.find((p:{id:string}) => p.id === n.id)})),wires:live.wires.map(w => ({...w,...args.parameters.wires.find((p:typeof w) => p.from === w.from && p.to === w.to && p.output === w.output && p.input === w.input)}))};
+      return Promise.resolve(structuredClone(live));
+    }
+    return Promise.resolve(command === 'get_routing_graph' || command === 'default_routing_graph' ? structuredClone(live) : undefined);
+  });
   const view = render(<Routing />); await screen.findByRole('button', { name: 'a-eq output audio' }); return view;
 }
 const canvas = () => document.querySelector('.routing-canvas')!;
-test('live routing defaults off, applies pending edits when enabled, and returns to manual mode', async () => {
-  await mount();
-  const live = screen.getByRole('checkbox', { name: 'Live routing' }) as HTMLInputElement;
-  expect(live.checked).toBe(false);
+const withGain:Graph = {...graph,nodes:[...graph.nodes,{id:'fx-existing',kind:'gain',deck:null,label:'Existing gain',x:400,y:100,value:1}]};
+test('parameters are always live while new nodes and cables wait for Apply', async () => {
+  await mount(withGain);
+  expect(screen.queryByRole('checkbox',{name:'Live routing'})).toBeNull();
   create('Gain');
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(0);
-  fireEvent.click(live);
-  expect(screen.queryByRole('button', { name: 'Apply routing' })).toBeNull();
-  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1));
-  const field = screen.getByRole('spinbutton');
-  fireEvent.change(field, { target: { value: '2' } });
-  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').at(-1)![1].graph.nodes.at(-1).value).toBe(2));
-  fireEvent.click(live);
-  await screen.findByRole('button', { name: 'Apply routing' });
-  const writes = invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').length;
-  fireEvent.change(field, { target: { value: '3' } });
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(writes);
+  const fields=screen.getAllByRole('spinbutton');
+  fireEvent.change(fields[1],{target:{value:'3'}});
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_parameters',expect.anything());
+  fireEvent.change(screen.getByLabelText('fx-existing value'),{target:{value:'.5'}});
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'fx-existing',value:.5}],wires:[]}}));
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
+  await waitFor(() => expect((screen.getByRole('button',{name:'Apply routing'}) as HTMLButtonElement).disabled).toBe(false));
+  const saved=await applied(); expect(saved.nodes.at(-1)?.value).toBe(3); expect(saved.nodes.find(n => n.id === 'fx-existing')?.value).toBe(.5);
 });
 
-test('live routing serializes writes and sends the latest edit after an in-flight apply', async () => {
-  await mount(); create('Gain');
+test('parameter writes serialize and coalesce later changes without applying draft topology', async () => {
+  await mount(withGain); create('Compressor');
   let finish!: () => void;
-  invoke.mockImplementation(command => command === 'set_routing_graph' ? new Promise<void>(resolve => { finish = resolve; }) : Promise.resolve(undefined));
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Live routing' }));
-  const field = screen.getByRole('spinbutton');
-  fireEvent.change(field, { target: { value: '2' } });
-  fireEvent.change(field, { target: { value: '3' } });
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1);
+  invoke.mockImplementation((command,args) => command === 'set_routing_parameters' ? new Promise<Graph>(resolve => {finish=() => resolve({...withGain,nodes:withGain.nodes.map(n => ({...n,...args.parameters.nodes.find((p:{id:string}) => p.id === n.id)}))});}) : Promise.resolve(undefined));
+  const field=screen.getByLabelText('fx-existing value');
+  fireEvent.change(field,{target:{value:'2'}}); fireEvent.change(field,{target:{value:'3'}}); fireEvent.change(field,{target:{value:'4'}});
+  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters')).toHaveLength(1);
+  expect((screen.getByRole('button',{name:'Applying…'}) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => finish());
-  await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(2));
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph').at(-1)![1].graph.nodes.at(-1).value).toBe(3);
+  await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters')).toHaveLength(2));
+  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters').at(-1)![1]).toEqual({parameters:{nodes:[{id:'fx-existing',value:4}],wires:[]}});
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
   await act(async () => finish());
 });
 
-test('live routing reports failed edits without retrying and applies a corrected draft', async () => {
-  await mount(); create('Gain');
-  invoke.mockRejectedValueOnce('Routing rejected');
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Live routing' }));
-  expect((await screen.findByRole('alert')).textContent).toBe('Routing rejected');
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(1);
-  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '2' } });
+test('failed parameter writes stop retrying until corrected', async () => {
+  await mount(withGain);
+  invoke.mockRejectedValueOnce('Parameter rejected');
+  fireEvent.change(screen.getByLabelText('fx-existing value'),{target:{value:'-1'}});
+  expect((await screen.findByRole('alert')).textContent).toBe('Parameter rejected');
+  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters')).toHaveLength(1);
+  fireEvent.change(screen.getByLabelText('fx-existing value'),{target:{value:'2'}});
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-  expect(invoke.mock.calls.filter(([command]) => command === 'set_routing_graph')).toHaveLength(2);
+  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters')).toHaveLength(2);
+});
+
+test('existing cable gains are live while a reconnected cable remains a draft', async () => {
+  await mount(); fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!,{button:0});
+  fireEvent.change(screen.getByRole('slider',{name:'Wire gain'}),{target:{value:'.3'}});
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[],wires:[{...graph.wires[0],gain:.3}]}}));
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
 });
 
 test('gain nodes accept 10 without an upper input limit', async () => {
