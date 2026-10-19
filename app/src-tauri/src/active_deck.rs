@@ -1,16 +1,28 @@
 //! Audio-clock selection using channel sound after EQ and the channel fader,
 //! before crossfader/master gain. A 100 ms energy envelope avoids sample chatter.
-#[derive(Default)]
 pub struct Tracker {
+    alpha: f64,
     playing: [bool; 2],
     energy: [f64; 2],
     weight: [f64; 2],
     last_started: usize,
     selected: usize,
 }
+impl Default for Tracker {
+    fn default() -> Self {
+        Self {
+            alpha: 1. - (-1. / (crate::sample_rate::get() as f64 * 0.1)).exp(),
+            playing: [false; 2],
+            energy: [0.; 2],
+            weight: [0.; 2],
+            last_started: 0,
+            selected: 0,
+        }
+    }
+}
 impl Tracker {
     pub fn observe(&mut self, playing: [bool; 2], samples: [[f32; 2]; 2]) {
-        const ALPHA: f64 = 0.00020831163345; // 1 - exp(-1 / (48000 * .1))
+        let alpha = self.alpha;
         for d in 0..2 {
             if playing[d] && !self.playing[d] {
                 self.last_started = d;
@@ -29,8 +41,8 @@ impl Tracker {
                     })
                     .sum::<f64>()
                     / 2.;
-                self.energy[d] += ALPHA * (power - self.energy[d]);
-                self.weight[d] += ALPHA * (1. - self.weight[d]);
+                self.energy[d] += alpha * (power - self.energy[d]);
+                self.weight[d] += alpha * (1. - self.weight[d]);
             }
         }
         self.playing = playing;

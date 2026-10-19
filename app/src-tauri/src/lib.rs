@@ -3,6 +3,8 @@ use std::{collections::HashSet, time::Duration};
 mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
+#[cfg(target_os = "macos")]
+pub use audio_devices::check as check_audio_device;
 mod audio_inputs;
 mod cue_output;
 mod deck_notes;
@@ -21,6 +23,7 @@ pub mod patterns;
 mod rolling;
 pub mod routing;
 pub mod runtime;
+pub mod sample_rate;
 mod scheduling;
 mod smart;
 pub mod source;
@@ -502,18 +505,23 @@ pub fn run() {
     }
     #[tauri::command]
     async fn set_audio_devices(
+        app: tauri::AppHandle,
         master: Option<String>,
         cue: Option<String>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         let engine = state.inner().clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        let restart = tauri::async_runtime::spawn_blocking(move || {
             engine
                 .set_audio_devices(crate::audio_devices::Routes { master, cue })
                 .map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+        if restart {
+            app.restart();
+        }
+        Ok(())
     }
     #[tauri::command]
     async fn get_audio_levels(

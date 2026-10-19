@@ -188,8 +188,8 @@ pub fn devices() -> Result<serde_json::Value> {
                 .ok()?
                 .filter(|c| {
                     c.sample_format() == cpal::SampleFormat::F32
-                        && c.min_sample_rate().0 <= 48000
-                        && c.max_sample_rate().0 >= 48000
+                        && c.min_sample_rate().0 <= crate::sample_rate::get() as u32
+                        && c.max_sample_rate().0 >= crate::sample_rate::get() as u32
                 })
                 .map(|c| c.channels())
                 .max()?;

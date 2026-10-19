@@ -969,7 +969,8 @@ impl Step {
             }
             Kind::RingModulation => std::array::from_fn(|c| input[0][c] * input[1][c]),
             Kind::Oscillator => {
-                self.phase = (self.phase + self.node.value / 48000.).fract();
+                self.phase =
+                    (self.phase + self.node.value / crate::sample_rate::get() as f32).fract();
                 let v = (self.phase * std::f32::consts::TAU).sin() * 0.1;
                 [v, v]
             }
@@ -1055,7 +1056,7 @@ impl Plan {
         &mut self,
         block: &[crate::decks::Frame; crate::decks::PRODUCER_FRAMES],
     ) {
-        let interval = crate::rolling::PEAK_FRAMES;
+        let interval = crate::rolling::peak_frames();
         for index in self.history.indices() {
             let output = self.history.output(index);
             for (i, frame) in block.iter().enumerate() {

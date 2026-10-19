@@ -101,3 +101,14 @@ test('references without BPM infer bar starts and handle short beats and long ga
   expect(gridForReferenceBeats(null, [10, 42], 100).bpm).toBe(120);
   for (const references of [[10], [10, 10], [10, 10.001], [10, 100]]) expect(() => gridForReferenceBeats(null, references, 100)).toThrow();
 });
+
+test('prepared waveform timebase follows PCM frames and duration at each device rate', async () => {
+  const { trackSampleRate, gridGeometry } = await import('./waveform');
+  for (const rate of [44100, 48000, 96000]) {
+    expect(trackSampleRate({ frames: rate * 10, duration_seconds: 10 })).toBe(rate);
+    const grid = { bpm: 120, downbeat_seconds: 0, reviewed: true };
+    const geometry = gridGeometry(grid, 5, 4, 1, 800, 10);
+    expect(geometry.some(mark => mark.x === 400)).toBe(true);
+    expect(gridForReferenceBeats(null, [1, 3], 10, rate).bpm).toBe(120);
+  }
+});

@@ -1,8 +1,10 @@
 //! Compact stereo bass-energy lookahead, built on the ordinary PCM loading thread.
 //! This deliberately conservative heuristic identifies bass returns, not song labels.
-use crate::{source::RATE, timing::Grid};
+use crate::timing::Grid;
 use anyhow::{ensure, Result};
-const STEP: usize = 2400; // 50 ms buckets; stereo power avoids phase cancellation.
+fn step() -> usize {
+    crate::sample_rate::get() / 20
+} // // 50 ms buckets; stereo power avoids phase cancellation.
 
 #[derive(Default)]
 pub struct BassProfile {
@@ -15,15 +17,15 @@ impl BassProfile {
             left.len() == right.len(),
             "Bass profile requires matching stereo channels"
         );
-        let mut prefix = Vec::with_capacity(left.len().div_ceil(STEP) + 1);
+        let mut prefix = Vec::with_capacity(left.len().div_ceil(step()) + 1);
         prefix.push([0., 0.]);
-        let low_a = 1. - (-std::f64::consts::TAU * 220. / RATE as f64).exp();
-        let high_a = 1. - (-std::f64::consts::TAU * 35. / RATE as f64).exp();
+        let low_a = 1. - (-std::f64::consts::TAU * 220. / crate::sample_rate::get() as f64).exp();
+        let high_a = 1. - (-std::f64::consts::TAU * 35. / crate::sample_rate::get() as f64).exp();
         let mut lp = [[0.; 2]; 2];
         let mut baseline = [0.; 2];
-        for first in (0..left.len()).step_by(STEP) {
+        for first in (0..left.len()).step_by(step()) {
             ensure!(current(), "Load superseded during bass lookahead");
-            let end = (first + STEP).min(left.len());
+            let end = (first + step()).min(left.len());
             let mut power = [0., 0.];
             for i in first..end {
                 for (channel, x) in [left[i] as f64, right[i] as f64].into_iter().enumerate() {
@@ -46,14 +48,15 @@ impl BassProfile {
         })
     }
     fn at(&self, seconds: f64, band: usize) -> f64 {
-        let bucket =
-            (seconds * RATE as f64 / STEP as f64).clamp(0., (self.prefix.len() - 1) as f64);
+        let bucket = (seconds * crate::sample_rate::get() as f64 / step() as f64)
+            .clamp(0., (self.prefix.len() - 1) as f64);
         let lo = bucket.floor() as usize;
         let hi = (lo + 1).min(self.prefix.len() - 1);
         self.prefix[lo][band] + (self.prefix[hi][band] - self.prefix[lo][band]) * bucket.fract()
     }
     fn mean(&self, start: f64, end: f64, band: usize) -> f64 {
-        ((self.at(end, band) - self.at(start, band)) / ((end - start) * RATE as f64 / STEP as f64))
+        ((self.at(end, band) - self.at(start, band))
+            / ((end - start) * crate::sample_rate::get() as f64 / step() as f64))
             .max(0.)
     }
     /// Return beats from the incoming cue, using the current grid rather than cached bar labels.
@@ -65,7 +68,7 @@ impl BassProfile {
         let beat = 60. / grid.bpm;
         let bar = beat * 4.;
         let end = cue + overlap_beats * beat;
-        let track_end = self.frames as f64 / RATE as f64;
+        let track_end = self.frames as f64 / crate::sample_rate::get() as f64;
         let first_bar = (grid.beat(cue + 2. * bar) / 4. - 1e-8).ceil() as i64;
         let mut best: Option<(f64, f64)> = None;
         for index in first_bar..first_bar + 32 {
@@ -112,8 +115,8 @@ mod tests {
     fn profile(bass: impl Fn(f64) -> f64, right_only: bool) -> BassProfile {
         let mut left = Vec::new();
         let mut right = Vec::new();
-        for i in 0..RATE * 20 {
-            let t = i as f64 / RATE as f64;
+        for i in 0..crate::sample_rate::get() * 20 {
+            let t = i as f64 / crate::sample_rate::get() as f64;
             let x = (bass(t) * (std::f64::consts::TAU * 80. * t).sin()
                 + 0.04 * (std::f64::consts::TAU * 8000. * t).sin()) as f32;
             left.push(if right_only { 0. } else { x });

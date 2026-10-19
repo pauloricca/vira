@@ -383,17 +383,25 @@ impl Host {
             return 0;
         }
         if ns >= time {
-            frame.saturating_add(((ns - time) as u128 * 48000 / 1_000_000_000) as u64)
+            frame.saturating_add(
+                ((ns - time) as u128 * crate::sample_rate::get() as u128 / 1_000_000_000) as u64,
+            )
         } else {
-            frame.saturating_sub(((time - ns) as u128 * 48000 / 1_000_000_000) as u64)
+            frame.saturating_sub(
+                ((time - ns) as u128 * crate::sample_rate::get() as u128 / 1_000_000_000) as u64,
+            )
         }
     }
     pub(crate) fn time_at(&self, frame: u64) -> u64 {
         let (base, ns) = self.clock();
         if frame >= base {
-            ns.saturating_add(((frame - base) as u128 * 1_000_000_000 / 48000) as u64)
+            ns.saturating_add(
+                ((frame - base) as u128 * 1_000_000_000 / crate::sample_rate::get() as u128) as u64,
+            )
         } else {
-            ns.saturating_sub(((base - frame) as u128 * 1_000_000_000 / 48000) as u64)
+            ns.saturating_sub(
+                ((base - frame) as u128 * 1_000_000_000 / crate::sample_rate::get() as u128) as u64,
+            )
         }
     }
 }
@@ -638,6 +646,15 @@ pub fn start(_: Arc<Host>, _: std::path::PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sample_rate_contract_midi_timestamps_follow_engine_frames() {
+        let render = channel();
+        let host = render.host;
+        let rate = crate::sample_rate::get() as u64;
+        host.anchor(rate, 1_000_000_000);
+        assert_eq!(host.frame_at(2_000_000_000), rate * 2);
+        assert_eq!(host.time_at(rate * 2), 2_000_000_000);
+    }
     #[test]
     fn midi_timing_decoding_and_overflow_are_bounded() {
         let mut render = channel();

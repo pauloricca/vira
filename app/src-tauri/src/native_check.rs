@@ -1,5 +1,5 @@
 //! Repeatable native transport/soak session using the product engine and service.
-use crate::{runtime::EngineHandle, source::RATE};
+use crate::runtime::EngineHandle;
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::{
@@ -308,7 +308,8 @@ fn session(
                 let state = engine.state();
                 ensure!(
                     state["decks"][1]["playing"] == false
-                        && (position(&state, 1) - duration).abs() < 1. / RATE as f64,
+                        && (position(&state, 1) - duration).abs()
+                            < 1. / crate::sample_rate::get() as f64,
                     "End of track looped or stopped early"
                 );
                 engine.control(1, "stop", None)?;

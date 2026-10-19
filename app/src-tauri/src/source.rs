@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 
-pub const RATE: usize = 48000;
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024 * 1024;
 
 pub(crate) struct LoadPriority(String);
@@ -85,7 +84,9 @@ impl Source {
 impl Prepared {
     pub fn validate_audio(&self, track_id: &str, hash: &str) -> Result<()> {
         ensure!(
-            self.schema_version == 1 && self.conversion_version == "ffmpeg-stereo-f32le-48000-v1",
+            self.schema_version == 1
+                && self.conversion_version
+                    == format!("ffmpeg-stereo-f32le-{}-v1", crate::sample_rate::get()),
             "Prepared audio version mismatch"
         );
         ensure!(
@@ -105,7 +106,8 @@ impl Prepared {
             "Prepared artifact does not match the source/conversion version"
         );
         ensure!(
-            self.settings == serde_json::json!({"sample_rate":48000,"channels":2,"format":"f32le"}),
+            self.settings
+                == serde_json::json!({"sample_rate":crate::sample_rate::get(),"channels":2,"format":"f32le"}),
             "Unsupported prepared PCM settings"
         );
         ensure!(
@@ -116,7 +118,9 @@ impl Prepared {
         );
         ensure!(
             self.duration_seconds.is_finite()
-                && (self.duration_seconds - self.frames as f64 / RATE as f64).abs() < 1e-6,
+                && (self.duration_seconds - self.frames as f64 / crate::sample_rate::get() as f64)
+                    .abs()
+                    < 1e-6,
             "Prepared duration mismatch"
         );
         Ok(())
@@ -135,8 +139,8 @@ impl Prepared {
             "Invalid waveform peaks"
         );
         ensure!(
-            self.fine_peak_frames == 240
-                && self.fine_peaks.len() == self.frames.div_ceil(240)
+            self.fine_peak_frames == crate::sample_rate::fine_frames()
+                && self.fine_peaks.len() == self.frames.div_ceil(crate::sample_rate::fine_frames())
                 && self
                     .fine_peaks
                     .iter()
@@ -217,17 +221,18 @@ fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Res
     ensure!(valid_id(track_id), "Loading requires a library track ID");
     let value = service_response(
         "/v1/prepare",
-        Some(match request {
-            Some((deck, generation)) => {
-                let mut body =
-                    serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation});
-                if audition {
-                    body["audition"] = serde_json::json!(true);
+        Some({
+            let mut body = match request {
+                Some((deck, generation)) => {
+                    serde_json::json!({"track_id":track_id,"deck":deck,"generation":generation})
                 }
-                body
+                None => serde_json::json!({"track_id":track_id}),
+            };
+            if audition {
+                body["audition"] = serde_json::json!(true);
             }
-            None if audition => serde_json::json!({"track_id":track_id,"audition":true}),
-            None => serde_json::json!({"track_id":track_id}),
+            body["sample_rate"] = serde_json::json!(crate::sample_rate::get());
+            body
         }),
         true,
     )
@@ -243,4 +248,33 @@ fn prepare(track_id: &str, request: Option<(usize, u64)>, audition: bool) -> Res
         value.validate(track_id, expected_hash)?;
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+    #[test]
+    fn sample_rate_contract_rejects_audio_prepared_for_another_rate() {
+        let rate = crate::sample_rate::get();
+        let track = "a".repeat(64);
+        let hash = "b".repeat(64);
+        let version = format!("ffmpeg-stereo-f32le-{rate}-v1");
+        let artifact = format!(
+            "{:x}",
+            Sha256::digest(format!("{hash}{version}").as_bytes())
+        );
+        let frames = rate * 2;
+        let width = frames.div_ceil(1024);
+        let mut prepared: Prepared = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"conversion_version":version,"settings":{"sample_rate":rate,"channels":2,"format":"f32le"},
+            "source_hash":hash,"artifact_id":artifact,"track_id":track,"title":"Tone","artist":"","filename":"tone.wav",
+            "frames":frames,"duration_seconds":2.,"peak_frames":width,"peaks":vec![[0.2,0.1];frames.div_ceil(width)],
+            "fine_peak_frames":crate::sample_rate::fine_frames(),"fine_peaks":vec![[0.2,0.1];frames.div_ceil(crate::sample_rate::fine_frames())],
+            "pcm_hash":"c".repeat(64),"pcm_bytes":frames*8
+        })).unwrap();
+        prepared.validate(&track, &hash).unwrap();
+        prepared.settings["sample_rate"] =
+            serde_json::json!(if rate == 44100 { 48000 } else { 44100 });
+        assert!(prepared.validate_audio(&track, &hash).is_err());
+    }
 }

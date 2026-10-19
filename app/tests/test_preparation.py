@@ -119,6 +119,14 @@ class MetadataTests(unittest.TestCase):
             self.assertEqual(prepared["track_id"], tracks[1]["id"])
             pcm = urllib.request.urlopen(url + "/v1/prepared/" + prepared["artifact_id"] + "/pcm").read()
             self.assertGreater(len(pcm), 100)
+            native = post("/v1/prepare", {"track_id": tracks[1]["id"], "sample_rate": 44100})
+            self.assertEqual(native["settings"]["sample_rate"], 44100)
+            self.assertNotEqual(native["artifact_id"], prepared["artifact_id"])
+            self.assertAlmostEqual(native["duration_seconds"], prepared["duration_seconds"], delta=.001)
+            native_pcm = urllib.request.urlopen(url + "/v1/prepared/" + native["artifact_id"] + "/pcm").read()
+            self.assertEqual(len(native_pcm), native["frames"] * 8)
+            with self.assertRaises(urllib.error.HTTPError):
+                post("/v1/prepare", {"track_id": tracks[1]["id"], "sample_rate": True})
             refreshed = post("/v1/library/scan")
             self.assertEqual([row["id"] for row in refreshed["tracks"]], [row["id"] for row in tracks])
             with self.assertRaises(urllib.error.HTTPError):

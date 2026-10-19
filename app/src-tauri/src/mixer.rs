@@ -1,6 +1,7 @@
-//! Per-deck stereo trim, three-band kill EQ and bipolar filter at 48 kHz.
-const RATE: f64 = 48_000.;
-const RAMP: usize = 480; // 10 ms control ramps.
+//! Per-deck stereo trim, three-band kill EQ and bipolar filter at the engine sample rate.
+fn ramp() -> usize {
+    crate::sample_rate::get() / 100
+} // 10 ms control ramps.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
@@ -25,7 +26,7 @@ struct Biquad {
 }
 impl Biquad {
     fn tune(&mut self, hz: f64, high: bool) {
-        let omega = std::f64::consts::TAU * hz / RATE;
+        let omega = std::f64::consts::TAU * hz / crate::sample_rate::get() as f64;
         let c = omega.cos();
         let alpha = omega.sin() / std::f64::consts::SQRT_2;
         let a = 1. + alpha;
@@ -120,7 +121,7 @@ impl MixerDsp {
             settings.filter as f64,
             if settings.eq == [0.5; 3] { 0. } else { 1. },
         ];
-        self.remaining = RAMP;
+        self.remaining = ramp();
     }
     pub fn reset(&mut self) {
         self.low = Crossover::new(250.);
@@ -218,7 +219,8 @@ mod tests {
         dsp.set(settings);
         let mut power = 0.;
         for i in 0..48_000 {
-            let x = (std::f64::consts::TAU * hz * i as f64 / RATE).sin() as f32;
+            let x = (std::f64::consts::TAU * hz * i as f64 / crate::sample_rate::get() as f64).sin()
+                as f32;
             let y = dsp.process([x, 0.]);
             assert!(y.iter().all(|s| s.is_finite()));
             assert_eq!(y[1], 0.);

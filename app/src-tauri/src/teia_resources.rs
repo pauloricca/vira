@@ -8,6 +8,17 @@ const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL: usize = 128 * 1024 * 1024;
 pub const REPEAT_CAPACITY: u32 = 16;
 pub const REPEAT_MEMORY: u32 = 64 * 1024 * 1024;
+// The native kernel bounds Buffer capacity in samples. Reject a restore that
+// would exceed it after rate conversion, rather than compressing its duration.
+pub(crate) fn validate_buffer_rate(samples: usize, source_rate: f64) -> Result<()> {
+    ensure!(
+        source_rate.is_finite() && source_rate > 0.,
+        "Invalid Buffer sample rate"
+    );
+    let restored = (samples as f64 * crate::sample_rate::get() as f64 / source_rate).round();
+    ensure!(restored <= 960000., "Saved Buffer exceeds native capacity at this sample rate. Choose a lower output rate or shorten the Buffer.");
+    Ok(())
+}
 fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value]> {
     match value.get(key) {
         None => Ok(&[]),
@@ -314,10 +325,12 @@ pub fn prepare(root: &Path, prepared: &Prepared) -> Result<Resources> {
                 digest(&bytes) == id && bytes.len() / 4 == size(&snapshot["sampleCount"])?,
                 "Buffer snapshot checksum/size mismatch"
             );
+            let sample_rate = number(&snapshot["sampleRate"])?;
+            validate_buffer_rate(bytes.len() / 4, sample_rate)?;
             result.buffers.push(Buffer {
                 state: size(&state["state"])? as u32,
                 samples: floats(&bytes)?,
-                sample_rate: number(&snapshot["sampleRate"])?,
+                sample_rate,
             });
         }
     }
@@ -514,6 +527,14 @@ mod tests {
             bytes.extend(value.to_le_bytes());
         }
         bytes
+    }
+    #[test]
+    fn sample_rate_contract_buffers_preserve_duration_or_reject_capacity() {
+        let rate = crate::sample_rate::get() as f64;
+        assert!(validate_buffer_rate(960000, rate).is_ok());
+        assert!(validate_buffer_rate(960000, rate * 2.).is_ok());
+        assert!(validate_buffer_rate(960000, rate / 2.).is_err());
+        assert!(validate_buffer_rate(100, 0.).is_err());
     }
     #[test]
     fn pcm_decode_and_immutable_asset_integrity() {

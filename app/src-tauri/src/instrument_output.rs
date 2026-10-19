@@ -33,8 +33,8 @@ impl Output {
                     .filter(|c| {
                         c.channels() as usize >= required
                             && c.sample_format() == cpal::SampleFormat::F32
-                            && c.min_sample_rate().0 <= 48000
-                            && c.max_sample_rate().0 >= 48000
+                            && c.min_sample_rate().0 <= crate::sample_rate::get() as u32
+                            && c.max_sample_rate().0 >= crate::sample_rate::get() as u32
                     })
                     .map(|c| c.channels())
                     .min()
@@ -43,7 +43,7 @@ impl Output {
                     })?;
                 let config = cpal::StreamConfig {
                     channels,
-                    sample_rate: cpal::SampleRate(48000),
+                    sample_rate: cpal::SampleRate(crate::sample_rate::get() as u32),
                     buffer_size: cpal::BufferSize::Default,
                 };
                 let mut reader = crate::cue_output::CueOutput::new(consumer);

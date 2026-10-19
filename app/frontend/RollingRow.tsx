@@ -5,7 +5,7 @@ import { useScrub } from './scrub';
 import { useTransitionDrag } from './transitionDrag';
 import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
-import { WaveTiles, gridGeometry } from './waveform';
+import { WaveTiles, gridGeometry, trackSampleRate } from './waveform';
 import { drawTransitionGuides, transitionMarkers, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
 export function RollingRow({ state, running, window, control, transition, masterBpm = 120, timingOpen = false, onInteract, active = false }: { transition?: TransitionPlan | null; masterBpm?: number; state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
@@ -35,7 +35,7 @@ export function RollingRow({ state, running, window, control, transition, master
   }
   function gridCursor(element: HTMLCanvasElement, clientX: number, position?: number) {
     const target = gridTarget(element, clientX, position);
-    if (state.grid_pin != null) return target.beatSeconds != null && Math.abs(target.beatSeconds - state.grid_pin) < 1 / 48000 ? 'not-allowed' : 'ew-resize';
+    if (state.grid_pin != null) return target.beatSeconds != null && Math.abs(target.beatSeconds - state.grid_pin) < 1 / trackSampleRate(state.track) ? 'not-allowed' : 'ew-resize';
     return target.beatSeconds != null ? 'grab' : 'ew-resize';
   }
   function moveGrid(event: PointerEvent<HTMLCanvasElement>) {
@@ -174,7 +174,7 @@ export function RollingRow({ state, running, window, control, transition, master
         if (state.grid_edit || !timingOpen || !running || state.playing || !state.track || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());
-        const seconds = Math.min(Math.max(state.track.start_seconds ?? 0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / 48000));
+        const seconds = Math.min(Math.max(state.track.start_seconds ?? 0, anchor + ((event.clientX - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1)), Math.max(0, state.track.duration_seconds - 1 / trackSampleRate(state.track)));
         firstClick.current = null;
         void control(state.deck, 'reference_beat', seconds);
       }} />

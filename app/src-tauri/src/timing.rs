@@ -59,9 +59,11 @@ impl Grid {
         let phase = leader_beat.rem_euclid(quantum);
         // The playable start is rounded to a source frame. Keep the first
         // grid boundary eligible when it rounds to that same frame.
-        let rounding = self.bpm / (60. * 48000. * 2. * quantum) + 1e-12;
+        let rounding = self.bpm / (60. * (crate::sample_rate::get() as f64) * 2. * quantum) + 1e-12;
         let low = ((self.beat(start) - phase) / quantum - rounding).ceil();
-        let high = ((self.beat(duration - 1. / 48000.) - phase) / quantum).floor();
+        let high = ((self.beat(duration - 1. / (crate::sample_rate::get() as f64)) - phase)
+            / quantum)
+            .floor();
         ensure!(low <= high, "No matching bar phase lies within this source");
         let bar = ((self.beat(current) - phase) / quantum + 0.5 - 1e-12)
             .floor()

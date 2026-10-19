@@ -3,7 +3,7 @@ use crate::{
     decks::{Command, Decks, Frame, Voice, PRODUCER_FRAMES, QUEUE_FRAMES},
     metrics::{self, CallbackStats},
     scheduling::Wake,
-    source::{self, Prepared, Source, RATE},
+    source::{self, Prepared, Source},
 };
 use anyhow::{ensure, Result};
 use serde::Serialize;
@@ -474,6 +474,7 @@ pub struct EngineHandle {
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
+        let _ = crate::sample_rate::get();
         let mut patches = Vec::new();
         let mut drivers = Vec::new();
         for slot in 0..crate::routing::PATCH_LIMIT {
@@ -738,21 +739,23 @@ impl EngineHandle {
         Ok(inventory)
     }
     #[cfg(target_os = "macos")]
-    pub fn set_audio_devices(&self, routes: crate::audio_devices::Routes) -> Result<()> {
+    pub fn set_audio_devices(&self, routes: crate::audio_devices::Routes) -> Result<bool> {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
         let default = host.default_output_device().and_then(|d| d.name().ok());
         routes.validate(default.as_deref())?;
-        for name in [routes.master.as_deref(), routes.cue.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            crate::audio_devices::config(&crate::audio_devices::resolve(&host, Some(name))?)?;
+        let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
+        let rate = crate::audio_devices::config(&device)?.sample_rate.0;
+        if let Some(name) = routes.cue.as_deref() {
+            crate::audio_devices::config_at(
+                &crate::audio_devices::resolve(&host, Some(name))?,
+                rate,
+            )?;
         }
         let mut current = self.shared.routes.lock().unwrap();
         routes.save()?;
         *current = routes;
-        Ok(())
+        Ok(rate as usize != crate::sample_rate::get())
     }
     fn send(&self, command: Command) -> Result<()> {
         ensure!(
@@ -901,7 +904,7 @@ impl EngineHandle {
                 );
                 self.send(Command::AuditionControl(
                     generation,
-                    Some((seconds * RATE as f64).round() as usize),
+                    Some((seconds * crate::sample_rate::get() as f64).round() as usize),
                 ))
             }
             _ => anyhow::bail!("Unknown audition control"),
@@ -1120,7 +1123,9 @@ impl EngineHandle {
                     milliseconds.is_finite() && (0. ..=100.).contains(&milliseconds),
                     "Jump crossfade must be between 0 and 100 ms"
                 );
-                Command::JumpCrossfade((milliseconds * 48.).round() as usize)
+                Command::JumpCrossfade(
+                    (milliseconds * crate::sample_rate::get() as f64 / 1000.).round() as usize,
+                )
             }
             "auto_bars" => {
                 let bars = value.unwrap_or(-1.);
@@ -1265,10 +1270,12 @@ impl EngineHandle {
             "seek" | "phrase_jump" | "scrub_start" | "scrub" | "scrub_pause" => {
                 let seconds = value.ok_or_else(|| anyhow::anyhow!("Seek requires a position"))?;
                 ensure!(
-                    seconds.is_finite() && seconds >= 0. && seconds <= frames as f64 / RATE as f64,
+                    seconds.is_finite()
+                        && seconds >= 0.
+                        && seconds <= frames as f64 / crate::sample_rate::get() as f64,
                     "Seek position is outside the track"
                 );
-                let position = (seconds * RATE as f64).round() as usize;
+                let position = (seconds * crate::sample_rate::get() as f64).round() as usize;
                 if action == "phrase_jump" {
                     Command::PhraseJump(deck, generations[deck], position)
                 } else if action == "seek" {
@@ -1502,12 +1509,12 @@ impl EngineHandle {
                     },
                     track_unchanged: known.is_some_and(|g| g[d] == generations[d]),
                     position_epoch: snapshot.position_epochs[d],
-                    position_seconds: positions[d] as f64 / RATE as f64,
+                    position_seconds: positions[d] as f64 / crate::sample_rate::get() as f64,
                     playing: playing[d] && self.shared.running.load(Acquire),
-                    cue_seconds: snapshot.cue_positions[d] as f64 / RATE as f64,
+                    cue_seconds: snapshot.cue_positions[d] as f64 / crate::sample_rate::get() as f64,
                     cue_preview: snapshot.cue_preview[d],
-                    loop_in_seconds: snapshot.loop_starts[d].map(|p| p as f64 / RATE as f64),
-                    loop_out_seconds: snapshot.loop_ends[d].map(|p| p as f64 / RATE as f64),
+                    loop_in_seconds: snapshot.loop_starts[d].map(|p| p as f64 / crate::sample_rate::get() as f64),
+                    loop_out_seconds: snapshot.loop_ends[d].map(|p| p as f64 / crate::sample_rate::get() as f64),
                     loop_length_beats: snapshot.loop_lengths[d],
                     loop_release_pending: snapshot.loop_release_pending[d],
                     slip_enabled: snapshot.slip_enabled[d],
@@ -1549,13 +1556,13 @@ impl EngineHandle {
             "from":from, "style":match snapshot.auto_style { 2 => "smart", 1 => "bass-swap", _ => "crossfade" },
             "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
         }));
-        json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / RATE as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / crate::sample_rate::get() as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "master_volume":f32::from_bits(self.shared.master_volume.load(Relaxed) as u32),
             "cue_volume":f32::from_bits(self.shared.cue_volume.load(Relaxed) as u32),
             "routing":{"master":routes.master,"cue":routes.cue,"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
-            "telemetry":{"sample_rate":RATE,"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
+            "telemetry":{"sample_rate":crate::sample_rate::get(),"device":self.shared.device.lock().unwrap().clone(),"rubberband_engine":3,"speed_basis":"per-deck target/source BPM","pitch_semitones":snapshot.pitches,
                 "requested_buffer_frames":256,"producer_chunk_frames":PRODUCER_FRAMES,"queue_capacity_frames":QUEUE_FRAMES,
-                "queue_capacity_ms":QUEUE_FRAMES as f64/48.,"realtime_policy_verified":self.shared.realtime.load(Acquire),
+                "queue_capacity_ms":QUEUE_FRAMES as f64 * 1000. / crate::sample_rate::get() as f64,"realtime_policy_verified":self.shared.realtime.load(Acquire),
                 "realtime_policy_at_exit":self.shared.realtime_at_end.load(Acquire),
                 "worker_max_chunk_us":self.shared.worker_max_ns.load(Relaxed) as f64/1000.,"worker_slow_chunks":self.shared.worker_slow_chunks.load(Relaxed),
                 "workgroup_interval_errors":self.shared.scheduling_errors.load(Relaxed),"wake_wait_nonzero_returns":self.shared.wait_errors.load(Relaxed),
@@ -1717,7 +1724,9 @@ fn native_output(
                 decks.next_block(&mut block, &mut drivers)?;
                 let elapsed = start.elapsed().as_nanos() as u64;
                 worker_shared.worker_max_ns.fetch_max(elapsed, Relaxed);
-                if elapsed > PRODUCER_FRAMES as u64 * 1_000_000_000 / 48000 {
+                if elapsed
+                    > PRODUCER_FRAMES as u64 * 1_000_000_000 / crate::sample_rate::get() as u64
+                {
                     worker_shared.worker_slow_chunks.fetch_add(1, Relaxed);
                 }
                 if ready {
@@ -1754,7 +1763,8 @@ fn native_output(
         let routes = shared.routes.lock().unwrap().clone();
         let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
         let name = device.name()?;
-        let mut config = crate::audio_devices::config(&device)?;
+        let mut config =
+            crate::audio_devices::config_at(&device, crate::sample_rate::get() as u32)?;
         config.buffer_size = cpal::BufferSize::Fixed(256);
         let channels = config.channels as usize;
         let callback_cue = cue_tx.clone();
@@ -1798,20 +1808,26 @@ fn native_output(
                 data.fill(0.);
                 for (index, samples) in data.chunks_exact_mut(channels).enumerate() {
                     // Smooth output changes over roughly 5 ms to avoid clicks.
-                    master_volume += (master_target - master_volume) / 240.;
-                    cue_volume += (cue_target - cue_volume) / 240.;
+                    master_volume +=
+                        (master_target - master_volume) / crate::sample_rate::fine_frames() as f32;
+                    cue_volume +=
+                        (cue_target - cue_volume) / crate::sample_rate::fine_frames() as f32;
                     match state.consumer.pop() {
                         Ok(frame) => {
                             if !anchored {
                                 crate::patterns::anchor(
                                     frame.global_beat,
                                     frame.master_bpm,
-                                    playback_ns + index as u64 * 1_000_000_000 / 48000,
+                                    playback_ns
+                                        + index as u64 * 1_000_000_000
+                                            / crate::sample_rate::get() as u64,
                                 );
                                 for midi_clock in &midi_clocks {
                                     midi_clock.anchor(
                                         frame.output_frame,
-                                        playback_ns + index as u64 * 1_000_000_000 / 48000,
+                                        playback_ns
+                                            + index as u64 * 1_000_000_000
+                                                / crate::sample_rate::get() as u64,
                                     );
                                 }
                                 anchored = true;
@@ -1950,7 +1966,7 @@ fn native_output(
     };
     let build_cue = |name: &str| -> Result<cpal::Stream> {
         let device = crate::audio_devices::resolve(&host, Some(name))?;
-        let config = crate::audio_devices::config(&device)?;
+        let config = crate::audio_devices::config_at(&device, crate::sample_rate::get() as u32)?;
         let channels = config.channels as usize;
         cue_output.lock().unwrap().reset();
         let callback = cue_output.clone();

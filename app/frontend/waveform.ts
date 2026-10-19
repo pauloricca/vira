@@ -1,5 +1,9 @@
 import type { Prepared } from './Decks';
 import type { Grid } from './Timing';
+/** Prepared PCM defines its own timebase, including cached tracks at older rates. */
+export function trackSampleRate(track: Pick<Prepared, 'frames' | 'duration_seconds'> | null | undefined) {
+  return track && track.frames > 0 && track.duration_seconds > 0 ? track.frames / track.duration_seconds : 48000;
+}
 const cache = new WeakMap<NonNullable<Prepared['fine_peaks']>, Float32Array[]>();
 /** Dark deck tint → bright tint for treble → white for strong attacks. */
 export function waveformColour(colour: string, feature?: [number, number]) {
@@ -65,7 +69,7 @@ export class WaveTiles {
     const pixels = width * dpr / window;
     const key = `${pixels}:${height}:${dpr}:${colour}:${track.start_seconds ?? 0}`;
     if (key !== this.key || this.peaks !== peaks) { this.tiles.clear(); this.key=key; this.peaks=peaks; }
-    const levels = peakLevels(peaks), features = track.fine_features?.length ? featureLevels(track.fine_features) : null, step = (track.fine_peak_frames ?? 240) / 48000;
+    const levels = peakLevels(peaks), features = track.fine_features?.length ? featureLevels(track.fine_features) : null, step = (track.fine_peak_frames ?? 240) / trackSampleRate(track);
     const tileWidth = 1024, origin = start * pixels;
     const first = Math.max(0, Math.floor(origin/tileWidth));
     const last = Math.min(Math.ceil(track.duration_seconds*pixels/tileWidth)-1, Math.floor((origin+width*dpr)/tileWidth));

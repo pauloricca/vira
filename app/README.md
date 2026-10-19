@@ -445,7 +445,7 @@ Drag a readable library row onto **Deck A** or **Deck B**, or use the row's
 ID; external filenames/paths are not accepted. Analysis is not required.
 
 Preparation independently snapshots the selected source, checks its revision,
-converts the complete song with FFmpeg to stereo float32 48 kHz, and derives up
+converts the complete song with FFmpeg to stereo float32 at the engine rate, and derives up
 to 1,024 stereo peak buckets from those exact samples. Peaks preserve channel
 and time correspondence. Each deck displays one combined waveform, using the
 larger channel peak per bucket, while playback stays stereo. These are full-song
@@ -815,13 +815,24 @@ FFT analysis when frequency features are valid.
 Open **SETTINGS** in the workspace tabs, select **Master out** and **Cue headphones**, then
 click **Apply outputs**. Master defaults to the system output; cue starts off.
 Selections are saved in `~/Library/Application Support/uk.ricca.vira/audio.json`.
-Each output must support stereo float32 at 48 kHz. Devices with more channels use
-the first stereo pair. Use separate devices for master and headphones.
+The engine adopts the selected master's current/default sample rate, supporting
+stereo float32 from 44.1 to 192 kHz. Devices with more channels use the first
+stereo pair. Use separate devices for master and headphones; cue must support
+the master's rate. The master stream does not resample engine output.
+
+Changing the engine rate shows **Apply outputs & restart VIRA**. Save grid and
+patch edits first: the restart clears loaded decks. Preparation generates a
+separate PCM/waveform cache for each rate; existing 48 kHz caches remain reusable
+when returning to 48 kHz. BPM, saved beat grids and analysis are source-time
+metadata and remain valid. Pitch processing, filters, MIDI clocks and patch
+instruments use the engine rate for the entire app session. Saved patch Buffers
+are restored at that rate; a Buffer that would exceed native sample capacity
+is rejected with an actionable error rather than changing its duration.
 
 The headphone buttons above the channel faders select deck A, B, or both for
 cue. Cue follows trim, EQ and filter, and bypasses channel volume and crossfader.
 The transport CUE button continues to set/return to the deck's cue point.
-Changing outputs preserves loaded tracks and transport. Disconnected explicit
+Changing outputs at the same engine rate preserves loaded tracks and transport. Disconnected explicit
 outputs wait for reconnection instead of falling back to another device; cue
 failure leaves master playback running. Settings refreshes the device list
 and displays output errors. A bounded stereo queue with interpolation compensates
@@ -842,7 +853,7 @@ its source node. Input nodes can be removed and added again from the list.
 Connect a source's audio output to a processor, patch, mix, or output and select
 **Apply routing** to begin capture. Each device supplies its first two channels;
 mono inputs feed both stereo channels. Native device sample rates are converted
-to the routing engine's 48 kHz rate. macOS microphone permission is required.
+to the routing engine's selected rate. macOS microphone permission is required.
 Disconnected inputs become silent; reconnect the device and apply routing again
 to restart capture. Capture errors appear when applying routing.
 

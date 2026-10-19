@@ -6,7 +6,9 @@ use std::sync::atomic::{
     Ordering::{Acquire, Release},
 };
 
-pub const PEAK_FRAMES: u64 = 240; // 5 ms at the engine's 48 kHz rate.
+pub fn peak_frames() -> u64 {
+    crate::sample_rate::fine_frames() as u64
+}
 const CAPACITY: usize = 16384; // 81.92 seconds, independent of UI polling.
 struct Peak {
     frame: AtomicU64,
@@ -86,7 +88,7 @@ impl History {
         let Some(source) = self.sources.iter().find(|s| s.index == index) else {
             return;
         };
-        let slot = &source.peaks[(frame / PEAK_FRAMES % CAPACITY as u64) as usize];
+        let slot = &source.peaks[(frame / peak_frames() % CAPACITY as u64) as usize];
         // Mark the slot unavailable while replacing it, so readers never pair
         // a recycled timestamp with a newer peak.
         slot.frame.store(u64::MAX, Release);
@@ -100,22 +102,22 @@ impl History {
             .map(|s| {
                 let mut peaks = Vec::new();
                 if selected.contains(&s.id) {
-                    let start = after.max(audible.saturating_sub(CAPACITY as u64 * PEAK_FRAMES));
-                    let mut frame = start.div_ceil(PEAK_FRAMES) * PEAK_FRAMES;
-                    while frame + PEAK_FRAMES <= audible {
-                        let slot = &s.peaks[(frame / PEAK_FRAMES % CAPACITY as u64) as usize];
+                    let start = after.max(audible.saturating_sub(CAPACITY as u64 * peak_frames()));
+                    let mut frame = start.div_ceil(peak_frames()) * peak_frames();
+                    while frame + peak_frames() <= audible {
+                        let slot = &s.peaks[(frame / peak_frames() % CAPACITY as u64) as usize];
                         let stamp = slot.frame.load(Acquire);
                         let peak = f32::from_bits(slot.value.load(Acquire) as u32);
                         if stamp == frame && slot.frame.load(Acquire) == stamp {
                             peaks.push((frame, peak));
                         }
-                        frame += PEAK_FRAMES;
+                        frame += peak_frames();
                     }
                 }
                 json!({"id":s.id,"label":s.label,"peaks":peaks})
             })
             .collect();
-        json!({"generation":self.generation,"sources":sources,"output_frame":audible,"peak_frames":PEAK_FRAMES})
+        json!({"generation":self.generation,"sources":sources,"output_frame":audible,"sample_rate":crate::sample_rate::get(),"peak_frames":peak_frames()})
     }
 }
 
@@ -189,20 +191,20 @@ mod tests {
         let index = history.indices().next().unwrap();
         let selected = vec!["mix".into()];
         history.write(index, 0, 0.7);
-        history.write(index, PEAK_FRAMES, 0.9);
-        let snapshot = history.snapshot(&selected, 0, PEAK_FRAMES);
+        history.write(index, peak_frames(), 0.9);
+        let snapshot = history.snapshot(&selected, 0, peak_frames());
         assert_eq!(snapshot["sources"][0]["peaks"].as_array().unwrap().len(), 1);
         assert!((snapshot["sources"][0]["peaks"][0][1].as_f64().unwrap() - 0.7).abs() < 1e-6);
-        let wrapped = CAPACITY as u64 * PEAK_FRAMES;
+        let wrapped = CAPACITY as u64 * peak_frames();
         history.write(index, wrapped, 0.2);
         assert!(
-            history.snapshot(&selected, 0, PEAK_FRAMES)["sources"][0]["peaks"]
+            history.snapshot(&selected, 0, peak_frames())["sources"][0]["peaks"]
                 .as_array()
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            history.snapshot(&selected, wrapped, wrapped + PEAK_FRAMES)["sources"][0]["peaks"][0]
+            history.snapshot(&selected, wrapped, wrapped + peak_frames())["sources"][0]["peaks"][0]
                 [0],
             wrapped
         );

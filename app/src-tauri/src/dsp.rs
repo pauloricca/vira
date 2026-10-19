@@ -34,8 +34,15 @@ impl Dsp {
         // Real-time, no native threading, linked stereo, consistent pitch mode.
         let options =
             1 | 0x10000 | 0x10000000 | 0x04000000 | if engine == 3 { 0x20000000 } else { 0 };
-        let state =
-            unsafe { rubberband_new(48000, 2, options, 1.0 / speed, 2_f64.powf(semitones / 12.0)) };
+        let state = unsafe {
+            rubberband_new(
+                crate::sample_rate::get() as u32,
+                2,
+                options,
+                1.0 / speed,
+                2_f64.powf(semitones / 12.0),
+            )
+        };
         assert!(!state.is_null());
         unsafe {
             assert_eq!(rubberband_get_engine_version(state), engine as i32);

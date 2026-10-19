@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { waveformColour } from './waveform';
+import { waveformColour, trackSampleRate } from './waveform';
 import type { Prepared } from './Decks';
 export type Grid = { bpm: number; downbeat_seconds: number; reviewed: boolean };
 /** Shift freely, or scale about an explicitly pinned source-time beat. */
-export function dragGrid(grid: Grid, origin: number, delta: number, duration: number, anchor?: number): Grid {
-  if (anchor != null && Math.abs(origin - anchor) < 1 / 48000) return grid;
+export function dragGrid(grid: Grid, origin: number, delta: number, duration: number, anchor?: number, sampleRate = 48000): Grid {
+  if (anchor != null && Math.abs(origin - anchor) < 1 / sampleRate) return grid;
   const requestedFactor = anchor == null ? 1 : (origin + delta - anchor) / (origin - anchor);
   if (!Number.isFinite(requestedFactor)) return grid;
   // Stop at the tempo limits instead of snapping back to the initial grid.
@@ -17,12 +17,12 @@ export function dragGrid(grid: Grid, origin: number, delta: number, duration: nu
   // Wrap by whole yellow phrases so beat/bar colour survives crossing source zero.
   const phraseSeconds = 16 * 60 / bpm;
   if (downbeat_seconds < 0) downbeat_seconds += Math.ceil(-downbeat_seconds / phraseSeconds) * phraseSeconds;
-  if (downbeat_seconds >= duration) downbeat_seconds -= Math.ceil((downbeat_seconds - duration + 1 / 48000) / phraseSeconds) * phraseSeconds;
+  if (downbeat_seconds >= duration) downbeat_seconds -= Math.ceil((downbeat_seconds - duration + 1 / sampleRate) / phraseSeconds) * phraseSeconds;
   const result = { bpm, downbeat_seconds, reviewed: false };
   return validGrid(result, duration) ? result : grid;
 }
 /** Fit a constant beat grid to one or two source-time beat references. */
-export function gridForReferenceBeats(grid: Grid | null, references: number[], duration: number): Grid {
+export function gridForReferenceBeats(grid: Grid | null, references: number[], duration: number, sampleRate = 48000): Grid {
   if (!references.length || references.length > 2 || references.some(seconds => !Number.isFinite(seconds) || seconds < 0 || seconds >= duration)) throw new Error('Reference beat must lie within the track');
   const [first, second] = references;
   if (!grid && second === undefined) throw new Error('Set a second reference beat to estimate BPM');
@@ -36,7 +36,7 @@ export function gridForReferenceBeats(grid: Grid | null, references: number[], d
       : 60 / gap >= 30 && 60 / gap <= 300 ? 1
       : Math.max(4, Math.round(gap * 120 / 240) * 4);
     const beats = grid ? Math.round(difference * grid.bpm / 60) : Math.sign(difference) * inferredBeats;
-    if (!beats || Math.abs(difference) < 1 / 48000) throw new Error('Reference beats must be on different beats');
+    if (!beats || Math.abs(difference) < 1 / sampleRate) throw new Error('Reference beats must be on different beats');
     bpm = Math.round(beats * 600 / difference) / 10;
   }
   const period = 60 / bpm;
@@ -74,7 +74,7 @@ export function markers(grid: Grid | null | undefined, start: number, end: numbe
 export function WaveDetail({ track, grid, start, end }: { track: Prepared | null; grid?: Grid | null; start: number; end: number }) {
   const width = end - start;
   const peaks = track?.fine_peaks ?? [];
-  const step = (track?.fine_peak_frames ?? 240) / 48000;
+  const step = (track?.fine_peak_frames ?? 240) / trackSampleRate(track);
   const first = Math.max(0, Math.floor(start / step));
   const last = Math.min(peaks.length, Math.ceil(end / step));
   // Aggregate only the visible fine buckets to at most one line per screen column.

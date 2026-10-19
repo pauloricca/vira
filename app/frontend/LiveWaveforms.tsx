@@ -5,7 +5,7 @@ import { gridGeometry } from './waveform';
 import { useOutsideDismiss } from './Dropdown';
 
 export type LiveSource = { id: string; label: string; peaks: [number, number][] };
-type Feed = { global_beat?: number; master_bpm?: number | null; clock_running?: boolean; sources: LiveSource[]; output_frame: number; peak_frames: number; generation: number; sampled_at: number };
+type Feed = { sample_rate?: number; global_beat?: number; master_bpm?: number | null; clock_running?: boolean; sources: LiveSource[]; output_frame: number; peak_frames: number; generation: number; sampled_at: number };
 const empty: Feed = { sources: [], output_frame: 0, peak_frames: 240, generation: 0, sampled_at: 0 };
 export function useRollingSources() {
   const [selected, setSelected] = useState<string[]>(() => {
@@ -30,7 +30,7 @@ export function useRollingSources() {
           const sources = value.sources.map(source => {
             const old = same && key === previousSelection ? previous.sources.find(s => s.id === source.id)?.peaks ?? [] : [];
             const first = source.peaks[0]?.[0] ?? Infinity;
-            return { ...source, peaks: [...old.filter(([frame]) => frame < first && frame >= value.output_frame - 48000 * 82), ...source.peaks] };
+            return { ...source, peaks: [...old.filter(([frame]) => frame < first && frame >= value.output_frame - (value.sample_rate ?? 48000) * 82), ...source.peaks] };
           });
           previous = { ...value, sources, sampled_at: (sent + performance.now()) / 2 };
           previousSelection = key;
@@ -78,20 +78,20 @@ export function LiveRollingRow({ source, feed, window: span, running }: { source
       const ctx = element!.getContext('2d');
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
-      const head = feed.output_frame + (running ? Math.min(100, Math.max(0, now - feed.sampled_at)) * 48 : 0);
+      const head = feed.output_frame + (running ? Math.min(100, Math.max(0, now - feed.sampled_at)) * (feed.sample_rate ?? 48000) / 1000 : 0);
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, width / 2, height); ctx.clip();
       ctx.strokeStyle = '#a8d6b0'; ctx.lineWidth = 1;
       // Aggregate into screen columns, preserving transients when zoomed out.
       const columns = new Float32Array(Math.ceil(width / 2));
       for (const [frame, peak] of source.peaks) {
-        const x = Math.floor(width * (.5 + (frame - head) / (48000 * span)));
-        const end = Math.ceil(width * (.5 + (frame + feed.peak_frames - head) / (48000 * span)));
+        const x = Math.floor(width * (.5 + (frame - head) / ((feed.sample_rate ?? 48000) * span)));
+        const end = Math.ceil(width * (.5 + (frame + feed.peak_frames - head) / ((feed.sample_rate ?? 48000) * span)));
         for (let column = Math.max(0, x); column < Math.min(columns.length, end); column++) columns[column] = Math.max(columns[column], peak);
       }
       ctx.beginPath();
       columns.forEach((peak, x) => { if (peak > 0) { const amplitude = Math.min(1, peak) * height * .45; ctx.moveTo(x + .5, height / 2 - amplitude); ctx.lineTo(x + .5, height / 2 + amplitude); } });
       ctx.stroke(); ctx.restore();
-      const beat = feed.global_beat == null ? undefined : feed.global_beat + (feed.clock_running ? (head - feed.output_frame) / 48000 * (feed.master_bpm ?? 0) / 60 : 0);
+      const beat = feed.global_beat == null ? undefined : feed.global_beat + (feed.clock_running ? (head - feed.output_frame) / (feed.sample_rate ?? 48000) * (feed.master_bpm ?? 0) / 60 : 0);
       for (const mark of masterGridGeometry(beat, feed.master_bpm, span, width)) {
         ctx.strokeStyle = mark.beat === 1 && (mark.bar - 1) % 4 === 0 ? '#f6d477' : '#c8f3ff';
         ctx.globalAlpha = mark.beat === 1 ? 1 : .5;

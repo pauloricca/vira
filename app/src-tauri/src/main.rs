@@ -1,4 +1,16 @@
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(position) = std::env::args().position(|arg| arg == "--audio-device-check") {
+        let name = std::env::args().nth(position + 1);
+        match vira::check_audio_device(name.as_deref()) {
+            Ok(report) => println!("{}", report),
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // Native, UI-independent metadata smoke test; no media tools run on the Mac.
     let args: Vec<String> = std::env::args().collect();
     if let Some(position) = args.iter().position(|arg| {

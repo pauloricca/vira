@@ -265,7 +265,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                     track_id = body.get("track_id") if isinstance(body, dict) else None
                     keys = set(body) if isinstance(body, dict) else set()
                     allowed = ({"track_id"}, {"track_id", "audition"}, {"track_id", "deck", "generation"}, {"track_id", "deck", "generation", "audition"}) if self.path == "/v1/prepare" else ({"track_id"},)
-                    if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or keys not in allowed:
+                    if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id) or (keys - {"sample_rate"} if self.path == "/v1/prepare" else keys) not in allowed:
                         raise ValueError("Analysis requires a valid library track ID.")
                     if self.path == "/v1/prepare":
                         deck, generation = body.get("deck"), body.get("generation")
@@ -276,7 +276,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                         if deck is not None and (type(deck) is not int or deck not in (0, 1) or type(generation) is not int or generation < 1):
                             raise ValueError("Invalid deck load request.")
                         try:
-                            result = preparation.prepare(track_id, deck, generation, audition=body.get("audition", False))
+                            result = preparation.prepare(track_id, deck, generation, audition=body.get("audition", False), sample_rate=body.get("sample_rate", 48000))
                         finally:
                             if deck is not None:
                                 preparation.complete(deck, generation)

@@ -1095,9 +1095,13 @@ fn prepare_live(
     }
     let program = validate_prepared(&prepared, generation)?;
     let resources = crate::teia_resources::prepare(root, &prepared)?;
-    let mut instance =
-        Instance::new_with_resources(&program, 48000., crate::decks::PRODUCER_FRAMES, &resources)
-            .map_err(|e| anyhow::anyhow!("Native instance rejected: {e:?}"))?;
+    let mut instance = Instance::new_with_resources(
+        &program,
+        crate::sample_rate::get() as f64,
+        crate::decks::PRODUCER_FRAMES,
+        &resources,
+    )
+    .map_err(|e| anyhow::anyhow!("Native instance rejected: {e:?}"))?;
     instance
         .set_audio_input_routes(&input_routes)
         .map_err(|e| anyhow::anyhow!("Invalid audio input routes: {e:?}"))?;
@@ -1389,7 +1393,7 @@ mod tests {
             master_bpm: 120.,
             ..Frame::default()
         }; PRODUCER_FRAMES];
-        for _ in 0..3 {
+        for _ in 0..crate::sample_rate::fine_frames().div_ceil(PRODUCER_FRAMES) + 1 {
             plan.render_block(&mut block, &mut drivers);
         }
         assert!((block[127].samples[0] - 0.2).abs() < 1e-6);
@@ -1592,7 +1596,7 @@ mod tests {
         assert_ne!(recovered["generation"], generation);
         assert_eq!(
             recovered["record"]["runtime_snapshots"]["buffer"]["sampleCount"],
-            4800
+            crate::sample_rate::get() / 10
         );
         assert!(fixture.host.read("Buffer.json").unwrap()["document"]["buffers"].is_null());
         let mut command = fixture.command(&session, 0, "capture save");
@@ -1602,7 +1606,8 @@ mod tests {
         let captured = fixture.host.request(command, None).unwrap();
         assert_eq!(captured["status"], "captured");
         let snapshot = &captured["capturedDocument"]["buffers"]["buffer"];
-        assert_eq!(snapshot["sampleCount"], 4800);
+        assert_eq!(snapshot["sampleCount"], crate::sample_rate::get() / 10);
+        assert_eq!(snapshot["sampleRate"], crate::sample_rate::get() as f64);
         assert!(fixture.host.read("Buffer.json").unwrap()["document"]["buffers"].is_null());
         let mut save = fixture.command(&session, 0, "save");
         save["document"] = captured["capturedDocument"].clone();

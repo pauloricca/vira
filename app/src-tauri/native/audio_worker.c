@@ -22,15 +22,17 @@ typedef struct {
     os_workgroup_join_token_s token;
     mach_timebase_info_data_t timebase;
     unsigned int period;
+    unsigned int rate;
     int joined;
     int interval;
 } vira_worker;
 
-void *vira_worker_create(unsigned int frames, int *error) {
+void *vira_worker_create(unsigned int frames, unsigned int rate, int *error) {
     vira_worker *w = calloc(1, sizeof(*w));
     if (!w) { *error = -1; return NULL; }
+    w->rate = rate;
     mach_timebase_info(&w->timebase);
-    w->period = (uint64_t)frames * 1000000000 / 48000 * w->timebase.denom / w->timebase.numer;
+    w->period = (uint64_t)frames * 1000000000 / w->rate * w->timebase.denom / w->timebase.numer;
     // This worker runs ahead via a queue, not in lockstep with the I/O callback.
     w->group = AudioWorkIntervalCreate("Vira audio producer", OS_CLOCK_MACH_ABSOLUTE_TIME, NULL);
     if (!w->group) { *error = -2; free(w); return NULL; }
@@ -48,7 +50,7 @@ int vira_worker_activate(vira_worker *w) {
 }
 int vira_worker_begin(vira_worker *w, unsigned int queued_frames) {
     uint64_t now = mach_absolute_time();
-    uint64_t remaining = (uint64_t)queued_frames * 1000000000 / 48000 * w->timebase.denom / w->timebase.numer;
+    uint64_t remaining = (uint64_t)queued_frames * 1000000000 / w->rate * w->timebase.denom / w->timebase.numer;
     int err = os_workgroup_interval_start(w->group, now, now + (remaining ? remaining : w->period), NULL);
     if (!err) w->interval = 1;
     return err;

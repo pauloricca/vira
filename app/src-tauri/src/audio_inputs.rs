@@ -27,7 +27,7 @@ impl Capture {
             return;
         }
         if let Ok(mut reader) = self.reader.try_lock() {
-            reader.render_at_rate(data, 2, self.rate as f64 / 48000.);
+            reader.render_at_rate(data, 2, self.rate as f64 / crate::sample_rate::get() as f64);
         }
     }
 }
@@ -88,8 +88,8 @@ impl Inputs {
                                         | cpal::SampleFormat::U16
                                 )
                         })?;
-                        let rate =
-                            48000u32.clamp(range.min_sample_rate().0, range.max_sample_rate().0);
+                        let rate = (crate::sample_rate::get() as u32)
+                            .clamp(range.min_sample_rate().0, range.max_sample_rate().0);
                         Some((device, range.with_sample_rate(cpal::SampleRate(rate))))
                     })
                     .ok_or_else(|| {

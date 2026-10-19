@@ -39,7 +39,7 @@ mod native {
         pub fn vira_semaphore_signal(sem: u32) -> i32;
         pub fn vira_semaphore_wait(sem: u32) -> i32;
         pub fn vira_semaphore_destroy(sem: u32);
-        pub fn vira_worker_create(frames: u32, error: *mut i32) -> *mut c_void;
+        pub fn vira_worker_create(frames: u32, rate: u32, error: *mut i32) -> *mut c_void;
         pub fn vira_worker_activate(worker: *mut c_void) -> i32;
         pub fn vira_worker_begin(worker: *mut c_void, queued: u32) -> i32;
         pub fn vira_worker_finish(worker: *mut c_void) -> i32;
@@ -117,7 +117,9 @@ impl Realtime {
         #[cfg(target_os = "macos")]
         {
             let mut err = 0;
-            let ptr = unsafe { native::vira_worker_create(frames, &mut err) };
+            let ptr = unsafe {
+                native::vira_worker_create(frames, crate::sample_rate::get() as u32, &mut err)
+            };
             anyhow::ensure!(!ptr.is_null(), "AudioWorkIntervalCreate failed: {err}");
             Ok(Self { ptr })
         }

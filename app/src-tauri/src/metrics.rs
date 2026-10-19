@@ -82,7 +82,7 @@ impl CallbackStats {
         self.max.fetch_max(ns, Relaxed);
         self.min_frames.fetch_min(frames, Relaxed);
         self.max_frames.fetch_max(frames, Relaxed);
-        if ns > frames * 1_000_000_000 / 48000 {
+        if ns > frames * 1_000_000_000 / crate::sample_rate::get() as u64 {
             self.overruns.fetch_add(1, Relaxed);
         }
     }

@@ -204,7 +204,7 @@ impl Driver {
                     self.midi.host.invalidate();
                     self.previous = None;
                     self.from = self.last;
-                    self.transition = 240;
+                    self.transition = crate::sample_rate::fine_frames();
                     self.midi_overflows = 0;
                     self.suspended = false;
                     self.telemetry.reset_generation.store(0, SeqCst);
@@ -243,7 +243,7 @@ impl Driver {
                 self.midi.host.invalidate();
                 self.bypass = bypass;
                 self.from = self.last;
-                self.transition = 240;
+                self.transition = crate::sample_rate::fine_frames();
             }
             Action::Reset(generation) => {
                 if self
@@ -268,7 +268,7 @@ impl Driver {
                 self.midi.host.generation.store(0, SeqCst);
                 self.midi.host.invalidate();
                 self.from = self.last;
-                self.transition = 240;
+                self.transition = crate::sample_rate::fine_frames();
                 self.previous = None;
                 self.telemetry.clock_running.store(false, SeqCst);
                 self.clock_beat = 0.;
@@ -344,7 +344,7 @@ impl Driver {
             if let Some(previous) = self.previous {
                 let expected = previous.beat
                     + if previous.running {
-                        previous.bpm / (60. * 48000.)
+                        previous.bpm / (60. * (crate::sample_rate::get() as f64))
                     } else {
                         0.
                     };
@@ -365,7 +365,8 @@ impl Driver {
             self.previous = Some(segment);
             timeline[i] = segment;
             if running {
-                self.clock_beat = segment.beat + segment.bpm / (60. * 48000.);
+                self.clock_beat =
+                    segment.beat + segment.bpm / (60. * (crate::sample_rate::get() as f64));
             }
         }
         let mut valid = false;
@@ -489,7 +490,7 @@ impl Driver {
                 }
             };
             let alpha = if self.transition > 0 {
-                let alpha = 1. - self.transition as f32 / 240.;
+                let alpha = 1. - self.transition as f32 / crate::sample_rate::fine_frames() as f32;
                 self.transition -= 1;
                 alpha
             } else {

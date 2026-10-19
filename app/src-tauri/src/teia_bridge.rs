@@ -166,9 +166,9 @@ fn capture(host: &Host, generation: u64, prepared: &Prepared, state: u32) -> Res
             identity: program.identity(),
             state,
             data: Capture {
-                samples: vec![0.; 960000],
+                samples: vec![0.; 960000], // Native Buffer capacity is bounded in samples.
                 count: 0,
-                rate: 48000.,
+                rate: (crate::sample_rate::get() as f64),
             },
         },
     )?;
@@ -279,7 +279,9 @@ impl Host {
                 .context("Invalid gesture timestamp")?;
             let render = self.telemetry.render_frame.load(SeqCst).saturating_add(1);
             let origin = state.origin.get_or_insert((timestamp, render));
-            let elapsed = ((timestamp - origin.0).max(0.) * 48.).min(48000.) as u64;
+            let elapsed = ((timestamp - origin.0).max(0.) * crate::sample_rate::get() as f64
+                / 1000.)
+                .min(crate::sample_rate::get() as f64) as u64;
             let frame = (origin.1 + elapsed)
                 .max(render)
                 .max(state.last_frame.saturating_add(1));
@@ -417,14 +419,16 @@ impl Host {
         let program = validate_prepared(&record.prepared, generation)?;
         let replacement = if kind == "restore buffer" {
             let samples: Vec<f32> = serde_json::from_value(command["snapshot"]["samples"].clone())?;
+            let source_rate = command["snapshot"]["sampleRate"]
+                .as_f64()
+                .context("Missing sample rate")?;
+            crate::teia_resources::validate_buffer_rate(samples.len(), source_rate)?;
             BufferReplacement::prepare_resampled(
                 &program,
                 BufferAddress::root(state),
                 &samples,
-                command["snapshot"]["sampleRate"]
-                    .as_f64()
-                    .context("Missing sample rate")?,
-                48000.,
+                source_rate,
+                crate::sample_rate::get() as f64,
             )
         } else if kind == "buffer" && command["action"] == "clear" {
             BufferReplacement::clear(&program, state, 2)

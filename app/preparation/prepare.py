@@ -19,18 +19,26 @@ FEATURE_VERSION = 4
 FINE_FRAMES = 240 # 5 ms source-time buckets; no PCM in the webview
 
 
-def artifact_id(digest):
-    return hashlib.sha256((digest + CONVERSION_VERSION).encode()).hexdigest()
+def conversion_version(sample_rate):
+    return f"ffmpeg-stereo-f32le-{sample_rate}-v1"
 
 
-def spectral_features(path, frames, width, current=lambda: True):
+def fine_frames(sample_rate):
+    return int(sample_rate * .005 + .5)
+
+
+def artifact_id(digest, sample_rate=48000):
+    return hashlib.sha256((digest + conversion_version(sample_rate)).encode()).hexdigest()
+
+
+def spectral_features(path, frames, width, current=lambda: True, sample_rate=48000):
     """Left-channel power spectra at 5 ms hops; bounded FFT batches."""
     import numpy as np
     pcm = np.memmap(path, dtype="<f4", mode="r", shape=(frames, 2))
-    count = math.ceil(frames / FINE_FRAMES)
+    count = math.ceil(frames / fine_frames(sample_rate))
     features = np.zeros((count, 2), dtype=np.float32)
     window = np.hanning(1024)
-    frequencies = np.fft.rfftfreq(1024, 1 / 48000)
+    frequencies = np.fft.rfftfreq(1024, 1 / sample_rate)
     high = frequencies >= 3000
     low = (frequencies >= 40) & (frequencies < 250)
     previous = np.zeros(513)
@@ -39,7 +47,7 @@ def spectral_features(path, frames, width, current=lambda: True):
     for first in range(0, count, 512):
         if not current():
             raise ValueError("Load superseded by a newer selection")
-        centers = np.arange(first, min(first + 512, count)) * FINE_FRAMES
+        centers = np.arange(first, min(first + 512, count)) * fine_frames(sample_rate)
         indices = centers[:, None] + np.arange(1024)[None, :] - 512
         samples = pcm[np.clip(indices, 0, frames - 1), 0].copy()
         samples[(indices < 0) | (indices >= frames)] = 0
@@ -73,7 +81,7 @@ def spectral_features(path, frames, width, current=lambda: True):
             features[index, 1] = scores[index]
             selected[index] = True
     overview = np.zeros((math.ceil(frames / width), 2), dtype=np.float32)
-    buckets = np.minimum(np.arange(count) * FINE_FRAMES // width, len(overview)-1)
+    buckets = np.minimum(np.arange(count) * fine_frames(sample_rate) // width, len(overview)-1)
     np.maximum.at(overview, buckets, features)
     # A full-track pixel covers many attacks: show attack density rather than a white wall.
     totals = np.bincount(buckets, weights=features[:, 1], minlength=len(overview))
@@ -98,19 +106,19 @@ def valid_features(value, info):
     return value.get("waveform_feature_hash") == feature_hash(value)
 
 
-def valid_pcm(value, path):
+def valid_pcm(value, path, sample_rate=48000):
     try:
         length = path.stat().st_size
         return (length > 0 and length % 8 == 0 and value["pcm_bytes"] == length
                 and value["frames"] == length // 8
-                and value["duration_seconds"] == value["frames"] / 48000
+                and value["duration_seconds"] == value["frames"] / sample_rate
                 and isinstance(value["pcm_hash"], str) and len(value["pcm_hash"]) == 64
                 and all(c in "0123456789abcdef" for c in value["pcm_hash"]))
     except (OSError, KeyError, TypeError):
         return False
 
 
-def audio_info(path):
+def audio_info(path, sample_rate=48000):
     """Audition needs PCM integrity and duration, with no waveform or FFT work."""
     import numpy as np
     length = path.stat().st_size
@@ -122,11 +130,11 @@ def audio_info(path):
             if not np.isfinite(np.frombuffer(block, dtype="<f4")).all():
                 raise ValueError("Prepared audio contains non-finite samples.")
             digest.update(block)
-    return dict(frames=length // 8, duration_seconds=length / 8 / 48000,
+    return dict(frames=length // 8, duration_seconds=length / 8 / sample_rate,
                 pcm_bytes=length, pcm_hash=digest.hexdigest())
 
 
-def valid_cached_audio(value, path):
+def valid_cached_audio(value, path, sample_rate=48000):
     """Check the descriptor without rereading or recomputing the prepared PCM."""
     try:
         length = path.stat().st_size
@@ -134,9 +142,9 @@ def valid_cached_audio(value, path):
         width = value["peak_frames"]
         if (not length or length % 8 or value["pcm_bytes"] != length
                 or frames != length // 8 or width != max(1, math.ceil(frames / PEAK_BINS))
-                or value["fine_peak_frames"] != FINE_FRAMES
+                or value["fine_peak_frames"] != fine_frames(sample_rate)
                 or len(value["peaks"]) != math.ceil(frames / width)
-                or len(value["fine_peaks"]) != math.ceil(frames / FINE_FRAMES)
+                or len(value["fine_peaks"]) != math.ceil(frames / fine_frames(sample_rate))
                 or not isinstance(value["pcm_hash"], str) or len(value["pcm_hash"]) != 64
                 or any(c not in "0123456789abcdef" for c in value["pcm_hash"])):
             return False
@@ -147,7 +155,7 @@ def valid_cached_audio(value, path):
         return False
 
 
-def pcm_info(path, include_features=True, current=lambda: True):
+def pcm_info(path, include_features=True, current=lambda: True, sample_rate=48000):
     import numpy as np
     length = path.stat().st_size
     if not length or length % 8:
@@ -155,7 +163,7 @@ def pcm_info(path, include_features=True, current=lambda: True):
     frames = length // 8
     width = max(1, math.ceil(frames / PEAK_BINS))
     peaks = np.zeros((math.ceil(frames / width), 2), dtype=np.float32)
-    fine = np.zeros((math.ceil(frames / FINE_FRAMES), 2), dtype=np.float32)
+    fine = np.zeros((math.ceil(frames / fine_frames(sample_rate)), 2), dtype=np.float32)
     digest = hashlib.sha256()
     position = 0
     with path.open("rb") as handle:
@@ -168,12 +176,12 @@ def pcm_info(path, include_features=True, current=lambda: True):
                 raise ValueError("Prepared audio contains non-finite samples.")
             buckets = (np.arange(len(values)) + position) // width
             np.maximum.at(peaks, buckets, np.abs(values))
-            np.maximum.at(fine, (np.arange(len(values)) + position) // FINE_FRAMES, np.abs(values))
+            np.maximum.at(fine, (np.arange(len(values)) + position) // fine_frames(sample_rate), np.abs(values))
             position += len(values)
-    info = {"frames": frames, "duration_seconds": frames / 48000,
-            "peak_frames": width, "peaks": peaks.tolist(), "fine_peak_frames": FINE_FRAMES, "fine_peaks": fine.tolist(), "pcm_hash": digest.hexdigest(), "pcm_bytes": length}
+    info = {"frames": frames, "duration_seconds": frames / sample_rate,
+            "peak_frames": width, "peaks": peaks.tolist(), "fine_peak_frames": fine_frames(sample_rate), "fine_peaks": fine.tolist(), "pcm_hash": digest.hexdigest(), "pcm_bytes": length}
     if include_features:
-        fine_features, features = spectral_features(path, frames, width, current)
+        fine_features, features = spectral_features(path, frames, width, current, sample_rate)
         info.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
         info["waveform_feature_hash"] = feature_hash(info)
     return info
@@ -198,7 +206,11 @@ class Preparation:
             if self.requests[deck] == generation:
                 self.requests[deck] = 0
 
-    def prepare(self, track_id, deck=None, generation=None, audition=False):
+    def prepare(self, track_id, deck=None, generation=None, audition=False, sample_rate=48000):
+        if type(sample_rate) is not int or not 44100 <= sample_rate <= 192000:
+            raise ValueError("Sample rate must be an integer between 44100 and 192000 Hz.")
+        version = conversion_version(sample_rate)
+        settings = {**SETTINGS, "sample_rate": sample_rate}
         if deck is not None:
             with self.requests_lock:
                 if generation < self.requests[deck]:
@@ -219,20 +231,20 @@ class Preparation:
                 raise ValueError("Load superseded by a newer selection")
             # Resolve content once on use, restoring saved analysis before timing is read.
             row = self.jobs.identify(track_id)
-            identity = artifact_id(row["source_hash"])
+            identity = artifact_id(row["source_hash"], sample_rate)
             directory = self.root / identity
             manifest = directory / "manifest.json"
             cached = None
             try:
                 value = json.loads(manifest.read_text())
-                if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == CONVERSION_VERSION and value["source_hash"] == row["source_hash"] and value["settings"] == SETTINGS:
-                    if valid_pcm(value, directory / "audio.f32"):
+                if value["schema_version"] == 1 and value["artifact_id"] == identity and value["conversion_version"] == version and value["source_hash"] == row["source_hash"] and value["settings"] == settings:
+                    if valid_pcm(value, directory / "audio.f32", sample_rate):
                         cached = value
-                        if not audition and not valid_cached_audio(value, directory / "audio.f32"):
-                            cached.update(pcm_info(directory / "audio.f32", current=current))
+                        if not audition and not valid_cached_audio(value, directory / "audio.f32", sample_rate):
+                            cached.update(pcm_info(directory / "audio.f32", current=current, sample_rate=sample_rate))
                             atomic_json(manifest, cached)
                         if not audition and not valid_features(value, value):
-                            fine_features, features = spectral_features(directory / "audio.f32", value["frames"], value["peak_frames"], current)
+                            fine_features, features = spectral_features(directory / "audio.f32", value["frames"], value["peak_frames"], current, sample_rate)
                             cached.update(waveform_feature_version=FEATURE_VERSION, fine_features=fine_features, features=features)
                             cached["waveform_feature_hash"] = feature_hash(cached)
                             atomic_json(manifest, cached)
@@ -254,7 +266,7 @@ class Preparation:
                         raise ValueError("Load superseded by a newer selection")
                     try:
                         command = ["ffmpeg", "-v", "error", "-protocol_whitelist", "file", "-i", str(snapshot),
-                                   "-f", "f32le", "-ac", "2", "-ar", "48000", str(pcm)]
+                                   "-f", "f32le", "-ac", "2", "-ar", str(sample_rate), str(pcm)]
                         if deck is None:
                             subprocess.run(command, check=True, capture_output=True, timeout=120)
                         else:
@@ -276,9 +288,9 @@ class Preparation:
                         raise ValueError("Audio preparation timed out. Retry loading the file.") from exc
                     except subprocess.CalledProcessError as exc:
                         raise ValueError("Cannot decode this source for playback.") from exc
-                    cached = {"schema_version": 1, "conversion_version": CONVERSION_VERSION,
-                              "settings": SETTINGS, "source_hash": row["source_hash"], "artifact_id": identity,
-                              **(audio_info(pcm) if audition else pcm_info(pcm, current=current))}
+                    cached = {"schema_version": 1, "conversion_version": version,
+                              "settings": settings, "source_hash": row["source_hash"], "artifact_id": identity,
+                              **(audio_info(pcm, sample_rate) if audition else pcm_info(pcm, current=current, sample_rate=sample_rate))}
                     if not current():
                         raise ValueError("Load superseded by a newer selection")
                     self.source_matches(row)
@@ -301,7 +313,7 @@ class Preparation:
             raise ValueError("Invalid prepared audio ID.")
         directory = self.root / identity
         value = json.loads((directory / "manifest.json").read_text())
-        if value["artifact_id"] != identity or value["conversion_version"] != CONVERSION_VERSION:
+        if value["artifact_id"] != identity or value["conversion_version"] != conversion_version(value["settings"]["sample_rate"]):
             raise ValueError("Prepared audio version mismatch.")
         path = directory / "audio.f32"
         if path.stat().st_size != value["pcm_bytes"]:

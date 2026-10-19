@@ -27,6 +27,34 @@ class PreparationTests(unittest.TestCase):
         self.jobs.close()
         self.temp.cleanup()
 
+    def test_device_rates_have_separate_reusable_caches_and_matching_waveforms(self):
+        from preparation.prepare import artifact_id, fine_frames
+        identities = set()
+        for rate in (44100, 48000, 96000):
+            with self.subTest(rate=rate):
+                playback = self.prepare.prepare(self.track_id, audition=True, sample_rate=rate)
+                self.assertEqual(playback["frames"], rate * 2)
+                self.assertEqual(playback["duration_seconds"], 2)
+                self.assertEqual(playback["settings"]["sample_rate"], rate)
+                self.assertEqual(playback["artifact_id"], artifact_id(playback["source_hash"], rate))
+                identities.add(playback["artifact_id"])
+                with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Rate cache must reuse PCM")):
+                    complete = self.prepare.prepare(self.track_id, sample_rate=rate)
+                self.assertEqual(complete["pcm_hash"], playback["pcm_hash"])
+                self.assertEqual(complete["fine_peak_frames"], fine_frames(rate))
+                self.assertAlmostEqual(len(complete["fine_peaks"]) * fine_frames(rate) / rate, 2, delta=.006)
+                import numpy as np
+                pcm = np.fromfile(self.prepare.audio_path(complete["artifact_id"]), dtype="<f4").reshape(-1, 2)
+                # Preparing at another rate must preserve pitch as well as duration.
+                frequency = np.fft.rfftfreq(len(pcm), 1 / rate)[np.abs(np.fft.rfft(pcm[:, 0])).argmax()]
+                self.assertAlmostEqual(frequency, 440, delta=.5)
+                with patch("preparation.prepare.subprocess.run", side_effect=AssertionError("Cache must survive service restart")), patch("preparation.prepare.pcm_info", side_effect=AssertionError("Matching waveforms must be reused")):
+                    self.assertEqual(Preparation(self.jobs).prepare(self.track_id, sample_rate=rate), complete)
+        self.assertEqual(len(identities), 3)
+        for invalid in (0, 22050, 192001, True, "44100", 44100.0):
+            with self.assertRaisesRegex(ValueError, "Sample rate"):
+                self.prepare.prepare(self.track_id, sample_rate=invalid)
+
     def test_audition_skips_waveforms_and_deck_upgrade_reuses_pcm(self):
         with patch("preparation.prepare.pcm_info", side_effect=AssertionError("Audition must not calculate waveforms")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Audition must not run FFT")):
             preview = self.prepare.prepare(self.track_id, audition=True)

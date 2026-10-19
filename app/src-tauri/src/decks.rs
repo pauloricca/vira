@@ -129,8 +129,8 @@ impl Voice {
             jog: None,
             transition: 0,
             transition_from: [0.; 2],
-            jump_tail: vec![[0.; 2]; 4800],
-            jump_scratch: vec![[0.; 2]; 4800],
+            jump_tail: vec![[0.; 2]; crate::sample_rate::get() / 10],
+            jump_scratch: vec![[0.; 2]; crate::sample_rate::get() / 10],
             jump_length: 0,
             jump_read: 0,
             last_sample: [0.; 2],
@@ -162,7 +162,7 @@ impl Voice {
         }
     }
     pub fn set_start(&mut self, seconds: f64) {
-        self.start = (seconds * 48000.).round() as usize;
+        self.start = (seconds * (crate::sample_rate::get() as f64)).round() as usize;
         self.start = self.start.min(self.source.len().saturating_sub(1));
         self.cue_position = self.start;
         self.seek(self.start);
@@ -193,7 +193,7 @@ impl Voice {
         };
         self.slip_position =
             (self.slip_enabled && self.loop_end.is_some()).then_some(self.position as f64);
-        self.transition = 240;
+        self.transition = crate::sample_rate::fine_frames();
         self.transition_from = self.last_sample;
         self.pad = self.dsp.padding();
         self.skip = self.dsp.delay();
@@ -242,7 +242,7 @@ impl Voice {
         self.clock
             .at(self.output)
             .clamp(self.start as f64, self.source.len() as f64)
-            / 48000.
+            / (crate::sample_rate::get() as f64)
     }
     fn loop_point(&self, snap: bool) -> usize {
         let seconds = self.seconds();
@@ -252,7 +252,10 @@ impl Voice {
         } else {
             seconds
         };
-        ((seconds * 48000.).round().max(0.) as usize).max(self.start)
+        ((seconds * (crate::sample_rate::get() as f64))
+            .round()
+            .max(0.) as usize)
+            .max(self.start)
     }
     pub fn pitch(&mut self, semitones: f64) -> Result<()> {
         if !semitones.is_finite() || !(-6.0..=6.0).contains(&semitones) || semitones.fract() != 0. {
@@ -318,7 +321,7 @@ impl Voice {
             // Publish the requested value immediately for controller pickup; the
             // render clock and stretcher follow it together over 80 ms.
             self.target_bpm = target;
-            self.tempo_ramp = Some((speed, 3840));
+            self.tempo_ramp = Some((speed, crate::sample_rate::get() * 80 / 1000));
         }
         self.timing_error = 0;
         Ok(())
@@ -370,7 +373,7 @@ impl Voice {
                 self.clear_jog();
                 return;
             }
-            let wanted = remaining / 3840.;
+            let wanted = remaining / (crate::sample_rate::get() as f64 * 0.08);
             let velocity = (velocity + (wanted - velocity) * 0.12)
                 .clamp((0.05 - base).max(-base * 0.8), (20. - base).min(base * 0.8));
             self.clock = Transport {
@@ -397,14 +400,17 @@ impl Voice {
             let (base, remaining, velocity) = self.jog.unwrap_or((self.clock.speed, 0., 0.));
             self.jog = Some((
                 base,
-                (remaining + seconds * 48000.).clamp(-480000., 480000.),
+                (remaining + seconds * (crate::sample_rate::get() as f64)).clamp(
+                    -10. * crate::sample_rate::get() as f64,
+                    10. * crate::sample_rate::get() as f64,
+                ),
                 velocity,
             ));
         } else {
-            let from = self.seconds() * 48000.;
+            let from = self.seconds() * (crate::sample_rate::get() as f64);
             let (position, target, velocity, envelope) =
                 self.wheel_scrub.unwrap_or((from, from, 0., 0.));
-            let target = (target + seconds * 48000.).clamp(
+            let target = (target + seconds * (crate::sample_rate::get() as f64)).clamp(
                 self.start as f64,
                 self.source.len().saturating_sub(1) as f64,
             );
@@ -497,7 +503,7 @@ impl Voice {
                 let offset = self
                     .loop_phase_offset
                     .unwrap_or(global_beat - grid.beat(self.seconds()));
-                let out_phase = grid.beat(end as f64 / 48000.) + offset;
+                let out_phase = grid.beat(end as f64 / (crate::sample_rate::get() as f64)) + offset;
                 self.loop_release_beat.get_or_insert_with(|| {
                     let quantum = f64::from(quantum);
                     out_phase + ((global_beat - out_phase - 1e-9) / quantum).ceil() * quantum
@@ -522,7 +528,8 @@ impl Voice {
             if let (Some(grid), Some(end)) = (self.grid, self.loop_end) {
                 // Account only for the fraction of a sample past the deadline,
                 // never for the time the track spent looping.
-                let position = end as f64 + (now - release).max(0.) * 60. / grid.bpm * 48000.;
+                let position = end as f64
+                    + (now - release).max(0.) * 60. / grid.bpm * (crate::sample_rate::get() as f64);
                 self.clear_loop();
                 self.seek(position.round().max(0.) as usize);
             }
@@ -544,12 +551,16 @@ impl Voice {
         if let Some((position, target, velocity, envelope)) = self.wheel_scrub {
             // Critically damped motion retains velocity between MIDI packets.
             // Fade with the movement, including a quiet stop at the destination.
-            let velocity = velocity + ((target - position) / 1920. - velocity) / 480.;
+            let velocity = velocity
+                + ((target - position) / (crate::sample_rate::get() as f64 * 0.04) - velocity)
+                    / (crate::sample_rate::get() as f64 * 0.01);
             let position = (position + velocity).clamp(
                 self.start as f64,
                 self.source.len().saturating_sub(1) as f64,
             );
-            let envelope = envelope + ((velocity.abs() / 0.05).min(1.) as f32 - envelope) / 96.;
+            let envelope = envelope
+                + ((velocity.abs() / 0.05).min(1.) as f32 - envelope)
+                    / (crate::sample_rate::get() as f32 * 0.002);
             let index = position.floor() as usize;
             let next = (index + 1).min(self.source.len() - 1);
             let fraction = (position - position.floor()) as f32;
@@ -580,12 +591,15 @@ impl Voice {
             }
             // Traverse only the pointer's displacement, including backwards.
             // Ease each bounded segment, then stay silent at its destination.
-            let progress = (1921 - remaining) as f64 / 1920.;
+            let progress = (crate::sample_rate::get() / 25 + 1 - remaining) as f64
+                / (crate::sample_rate::get() as f64 * 0.04);
             let position = from + (target - from) * progress * progress * (3. - 2. * progress);
             let index = (position.floor() as usize).min(self.source.len() - 1);
             let next = (index + 1).min(self.source.len() - 1);
             let fraction = (position - position.floor()) as f32;
-            let envelope = ((1920 - remaining).min(remaining) as f32 / 96.).min(1.);
+            let envelope = ((crate::sample_rate::get() / 25 - remaining).min(remaining) as f32
+                / (crate::sample_rate::get() as f32 * 0.002))
+                .min(1.);
             let sample = [&self.source.left, &self.source.right].map(|channel| {
                 (channel[index] + (channel[next] - channel[index]) * fraction) * envelope
             });
@@ -627,7 +641,9 @@ impl Voice {
                 self.slip_position = slip_position;
             }
         }
-        for _ in 0..4096 {
+        // Startup delay grows with sample rate. Allow the reported discard
+        // frames as well as the fixed bounded decoding work.
+        for _ in 0..self.skip.saturating_add(4096) {
             if self.read < self.available {
                 let mut value = [self.left[self.read], self.right[self.read]];
                 self.read += 1;
@@ -654,7 +670,8 @@ impl Voice {
                     }
                 }
                 if self.transition > 0 {
-                    let mix = 1. - self.transition as f32 / 240.;
+                    let mix =
+                        1. - self.transition as f32 / crate::sample_rate::fine_frames() as f32;
                     for (sample, previous) in value.iter_mut().zip(self.transition_from) {
                         *sample = previous * (1. - mix) + *sample * mix;
                     }
@@ -791,17 +808,22 @@ impl Audition {
             return;
         }
         let beats = self.bars as f64 * 4.;
-        let start = self.source.len() as f64 - beats * 60. / a.bpm * 48000.;
+        let start =
+            self.source.len() as f64 - beats * 60. / a.bpm * (crate::sample_rate::get() as f64);
         if start <= self.position as f64 {
             return;
         }
         // Match the incoming grid phase at the exact source-time overlap boundary.
-        let phase = a.beat(start / 48000.).rem_euclid(4.);
+        let phase = a
+            .beat(start / (crate::sample_rate::get() as f64))
+            .rem_euclid(4.);
         let incoming = b.seconds(phase);
-        if incoming + beats * 60. / b.bpm >= next.source.len() as f64 / 48000. {
+        if incoming + beats * 60. / b.bpm
+            >= next.source.len() as f64 / (crate::sample_rate::get() as f64)
+        {
             return;
         }
-        next.position = (incoming * 48000.).round() as usize;
+        next.position = (incoming * (crate::sample_rate::get() as f64)).round() as usize;
         next.voice.seek(next.position);
         next.voice.playing = true;
         next.stretched = true;
@@ -836,7 +858,7 @@ impl Audition {
         }
     }
     fn sample(&mut self) -> Result<[f32; 2]> {
-        self.level = (self.level + 1. / 240.).min(1.);
+        self.level = (self.level + 1. / crate::sample_rate::fine_frames() as f32).min(1.);
         let sample = if self.stretched {
             self.voice.playing = true;
             let sample = self.voice.next()?;
@@ -908,7 +930,7 @@ impl Audition {
             }
             let a = self.sample()?;
             let b = self.queued.as_mut().unwrap().sample()?;
-            self.mixed_beats += bpm / (60. * 48000.);
+            self.mixed_beats += bpm / (60. * (crate::sample_rate::get() as f64));
             // Linear fades keep correlated material below the sum of two full-level tracks.
             let fades = transition_fades_at(
                 progress,
@@ -1176,18 +1198,19 @@ impl Decks {
         // Cue is an explicit, sample-accurate launch point. Do not replace it
         // with a nearby beat-phase position when starting an automatic transition.
         let incoming_start = b.cue_position.max(b.start);
-        let incoming = incoming_start as f64 / 48000.;
-        let incoming_length = b.source.len() as f64 / 48000.;
+        let incoming = incoming_start as f64 / (crate::sample_rate::get() as f64);
+        let incoming_length = b.source.len() as f64 / (crate::sample_rate::get() as f64);
         anyhow::ensure!(
             incoming_start < b.source.len(),
             "Incoming cue is at the end of the track"
         );
-        let length = a.source.len() as f64 / 48000.;
+        let length = a.source.len() as f64 / (crate::sample_rate::get() as f64);
         let position = a.seconds();
         let cue_beat = bg.beat(incoming);
         // A loaded cue is rounded to a source frame. Treat a boundary rounded
         // within half a frame as exact, without moving an intentional manual cue.
-        let cue_beat = if (cue_beat - cue_beat.round()).abs() <= bg.bpm / (60. * 48000. * 2.) + 1e-9
+        let cue_beat = if (cue_beat - cue_beat.round()).abs()
+            <= bg.bpm / (60. * (crate::sample_rate::get() as f64) * 2.) + 1e-9
         {
             cue_beat.round()
         } else {
@@ -1277,7 +1300,7 @@ impl Decks {
         let outgoing = self.voices[auto.from].as_ref().unwrap();
         let grid = outgoing.grid.unwrap();
         let position = outgoing.seconds();
-        let length = outgoing.source.len() as f64 / 48000.;
+        let length = outgoing.source.len() as f64 / (crate::sample_rate::get() as f64);
         self.global_beat = grid.beat(position);
         // A seek before the planned overlap leaves it valid. Preserve every
         // anchor, including manually chosen outgoing transition points.
@@ -1384,14 +1407,15 @@ impl Decks {
             let voice = self.voices[d].as_ref().unwrap();
             let start = auto.guide_start[d];
             let end = start + auto.beats * 60. / voice.grid.unwrap().bpm;
-            if start < voice.start as f64 / 48000. - 1e-6
-                || end > voice.source.len() as f64 / 48000. + 1e-6
+            if start < voice.start as f64 / (crate::sample_rate::get() as f64) - 1e-6
+                || end > voice.source.len() as f64 / (crate::sample_rate::get() as f64) + 1e-6
             {
                 return;
             }
         }
         auto.start_seconds = auto.guide_start[auto.from];
-        auto.incoming_start = (auto.guide_start[1 - auto.from] * 48000.).round() as usize;
+        auto.incoming_start =
+            (auto.guide_start[1 - auto.from] * (crate::sample_rate::get() as f64)).round() as usize;
         self.auto = Some(auto);
     }
     fn advance_auto(&mut self) {
@@ -1410,7 +1434,10 @@ impl Decks {
         // A loop may repeat source positions, but must not repeat or postpone AUTO's
         // timeline. Lock the launch boundary to the continuing master beat clock.
         let launch_beat = a.grid.unwrap().beat(auto.start_seconds);
-        if !auto.started && self.global_beat + self.master_bpm / (60. * 48000.) >= launch_beat {
+        if !auto.started
+            && self.global_beat + self.master_bpm / (60. * (crate::sample_rate::get() as f64))
+                >= launch_beat
+        {
             // Capture the outgoing level at the musical boundary, including changes
             // made while waiting.
             auto.starting_gains[auto.from] = a.gain;
@@ -1483,7 +1510,7 @@ impl Decks {
         self.crossfader_target = crossfader_gains(self.crossfader, self.crossfader_enabled);
         self.crossfader_current = self.crossfader_target;
         self.crossfader_ramp = 0;
-        auto.mixed_beats += self.master_bpm / (60. * 48000.);
+        auto.mixed_beats += self.master_bpm / (60. * (crate::sample_rate::get() as f64));
         if progress >= 1. {
             let voice = self.voices[auto.from].as_mut().unwrap();
             voice.playing = false;
@@ -1495,7 +1522,7 @@ impl Decks {
             }
             self.auto = None;
             self.crossfader_target = crossfader_gains(self.crossfader, self.crossfader_enabled);
-            self.crossfader_ramp = 240;
+            self.crossfader_ramp = crate::sample_rate::fine_frames() as u32;
         } else {
             self.auto = Some(auto);
         }
@@ -1543,8 +1570,8 @@ impl Decks {
                         } else {
                             original
                         };
-                        let start = start as f64 / 48000.;
-                        let end = end as f64 / 48000.;
+                        let start = start as f64 / (crate::sample_rate::get() as f64);
+                        let end = end as f64 / (crate::sample_rate::get() as f64);
                         if position >= end && end > start {
                             return start + (position - start).rem_euclid(end - start);
                         }
@@ -1605,8 +1632,8 @@ impl Decks {
             Some(grid.align_quantum_from(
                 voice.seconds(),
                 self.global_beat,
-                voice.start as f64 / 48000.,
-                voice.source.len() as f64 / 48000.,
+                voice.start as f64 / (crate::sample_rate::get() as f64),
+                voice.source.len() as f64 / (crate::sample_rate::get() as f64),
                 f64::from(self.sync_quantum),
             )?)
         } else {
@@ -1620,7 +1647,7 @@ impl Decks {
         }
         if let Some(position) = position {
             voice.reposition_seconds = position - voice.seconds();
-            voice.seek((position * 48000.).round() as usize);
+            voice.seek((position * (crate::sample_rate::get() as f64)).round() as usize);
         }
         voice.timing_error = 0;
         Ok(())
@@ -1643,8 +1670,8 @@ impl Decks {
             grid.align_quantum_from(
                 voice.seconds(),
                 self.global_beat,
-                voice.start as f64 / 48000.,
-                voice.source.len() as f64 / 48000.,
+                voice.start as f64 / (crate::sample_rate::get() as f64),
+                voice.source.len() as f64 / (crate::sample_rate::get() as f64),
                 quantum,
             )
             .ok()
@@ -1664,7 +1691,7 @@ impl Decks {
         }
         if let Some(position) = immediate_position {
             voice.reposition_seconds = position - voice.seconds();
-            voice.seek((position * 48000.).round() as usize);
+            voice.seek((position * (crate::sample_rate::get() as f64)).round() as usize);
             voice.timing_error = 0;
             return Ok(());
         }
@@ -1853,19 +1880,20 @@ impl Decks {
             Command::Routing(mut plan) => {
                 plan.inherit(&mut self.routing);
                 self.route_from = self.route_last;
-                self.route_transition = 240;
+                self.route_transition = crate::sample_rate::fine_frames() as u32;
                 return Some(Retired::Routing(std::mem::replace(&mut self.routing, plan)));
             }
             Command::HeadphoneCue(deck, enabled) => self.headphone_cue[deck] = enabled,
             Command::Crossfader(position) => {
                 self.crossfader = position;
                 self.crossfader_target = crossfader_gains(position, self.crossfader_enabled);
-                self.crossfader_ramp = 240; // 5 ms at 48 kHz; avoid gain discontinuities.
+                self.crossfader_ramp = crate::sample_rate::fine_frames() as u32;
+                // 5 ms; avoid gain discontinuities.
             }
             Command::CrossfaderEnabled(enabled) => {
                 self.crossfader_enabled = enabled;
                 self.crossfader_target = crossfader_gains(self.crossfader, enabled);
-                self.crossfader_ramp = 240;
+                self.crossfader_ramp = crate::sample_rate::fine_frames() as u32;
             }
             Command::Install {
                 deck,
@@ -1920,15 +1948,17 @@ impl Decks {
                             v.playing = false;
                             v.seek(v.cue_position);
                         } else {
-                            let position = (v.seconds() * 48000.).round() as usize;
+                            let position =
+                                (v.seconds() * (crate::sample_rate::get() as f64)).round() as usize;
                             if position.abs_diff(v.cue_position) > 1 {
                                 let seconds = if v.synced {
                                     v.grid.map_or(v.seconds(), |grid| {
                                         grid.align_quantum_from(
                                             v.seconds(),
                                             0.,
-                                            v.start as f64 / 48000.,
-                                            v.source.len() as f64 / 48000.,
+                                            v.start as f64 / (crate::sample_rate::get() as f64),
+                                            v.source.len() as f64
+                                                / (crate::sample_rate::get() as f64),
                                             f64::from(self.sync_quantum),
                                         )
                                         .unwrap_or(v.seconds())
@@ -1936,7 +1966,10 @@ impl Decks {
                                 } else {
                                     v.seconds()
                                 };
-                                v.cue_position = ((seconds * 48000.).round().max(0.) as usize)
+                                v.cue_position = ((seconds * (crate::sample_rate::get() as f64))
+                                    .round()
+                                    .max(0.)
+                                    as usize)
                                     .clamp(v.start, v.source.len().saturating_sub(1));
                                 v.seek(v.cue_position);
                             } else {
@@ -2091,22 +2124,28 @@ impl Decks {
                         if v.loop_end.is_some() && v.loop_length == Some(beats) {
                             v.request_loop_release(self.global_beat, self.sync_quantum);
                         } else if let Some(grid) = v.grid {
-                            let now = (v.seconds() * 48000.).round() as usize;
+                            let now =
+                                (v.seconds() * (crate::sample_rate::get() as f64)).round() as usize;
                             let (start, end) = if align {
                                 let first_beat = (grid.beat(v.seconds()) / beats).floor() * beats;
                                 // Track time zero is the earliest loop start. If the
                                 // containing grid segment begins outside the source,
                                 // move the whole loop forward, preserving its length.
-                                let first_seconds =
-                                    grid.seconds(first_beat).max(v.start as f64 / 48000.);
-                                let first = (first_seconds * 48000.).round() as usize;
-                                let last = ((first_seconds + beats * 60. / grid.bpm) * 48000.)
+                                let first_seconds = grid
+                                    .seconds(first_beat)
+                                    .max(v.start as f64 / (crate::sample_rate::get() as f64));
+                                let first = (first_seconds * (crate::sample_rate::get() as f64))
+                                    .round() as usize;
+                                let last = ((first_seconds + beats * 60. / grid.bpm)
+                                    * (crate::sample_rate::get() as f64))
                                     .round() as usize;
                                 (first, last.min(v.source.len()))
                             } else {
                                 let first = v.loop_start.unwrap_or(now);
-                                let frames =
-                                    (beats * 60. / grid.bpm * 48000.).round().max(1.) as usize;
+                                let frames = (beats * 60. / grid.bpm
+                                    * (crate::sample_rate::get() as f64))
+                                    .round()
+                                    .max(1.) as usize;
                                 (first, first.saturating_add(frames).min(v.source.len()))
                             };
                             if end > start {
@@ -2137,17 +2176,19 @@ impl Decks {
                             // Resolve against the deck's current phase at the render boundary.
                             let target = if let Some(grid) = v.grid {
                                 match grid.align_quantum_from(
-                                    p as f64 / 48000.,
+                                    p as f64 / (crate::sample_rate::get() as f64),
                                     if looping && v.synced {
                                         self.global_beat
                                     } else {
                                         grid.beat(v.seconds())
                                     },
-                                    v.start as f64 / 48000.,
-                                    v.source.len() as f64 / 48000.,
+                                    v.start as f64 / (crate::sample_rate::get() as f64),
+                                    v.source.len() as f64 / (crate::sample_rate::get() as f64),
                                     f64::from(self.sync_quantum),
                                 ) {
-                                    Ok(seconds) => (seconds * 48000.).round() as usize,
+                                    Ok(seconds) => (seconds * (crate::sample_rate::get() as f64))
+                                        .round()
+                                        as usize,
                                     Err(_) => return None,
                                 }
                             } else {
@@ -2179,7 +2220,9 @@ impl Decks {
                         .flatten()
                         .filter(|v| v.loop_end.is_none())
                         .map(|v| {
-                            ((v.source.len() as f64 / 48000. - v.seconds()) * v.grid.unwrap().bpm
+                            ((v.source.len() as f64 / (crate::sample_rate::get() as f64)
+                                - v.seconds())
+                                * v.grid.unwrap().bpm
                                 / 60.)
                                 .max(0.)
                         })
@@ -2226,8 +2269,12 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g && !v.playing && v.scrub.is_some() {
                         if moving {
-                            let from = v.seconds() * 48000.;
-                            v.scrub = Some((from, p.clamp(v.start, v.source.len()) as f64, 1920));
+                            let from = v.seconds() * (crate::sample_rate::get() as f64);
+                            v.scrub = Some((
+                                from,
+                                p.clamp(v.start, v.source.len()) as f64,
+                                crate::sample_rate::get() / 25,
+                            ));
                             v.position_epoch += 1;
                         } else {
                             v.seek(p);
@@ -2274,7 +2321,10 @@ impl Decks {
             }
             Command::Grid(d, g, grid) => {
                 if self.voices[d].as_ref().is_some_and(|v| {
-                    v.generation == g && grid.validate(v.source.len() as f64 / 48000.).is_ok()
+                    v.generation == g
+                        && grid
+                            .validate(v.source.len() as f64 / (crate::sample_rate::get() as f64))
+                            .is_ok()
                 }) {
                     self.clear_sync(d);
                     self.voices[d].as_mut().unwrap().apply_grid(grid);
@@ -2290,7 +2340,9 @@ impl Decks {
                         && v.playing
                         && v.launch_beat.is_none()
                         && v.grid.is_some_and(|old| old.bpm == grid.bpm)
-                        && grid.validate(v.source.len() as f64 / 48000.).is_ok()
+                        && grid
+                            .validate(v.source.len() as f64 / (crate::sample_rate::get() as f64))
+                            .is_ok()
                 }) {
                     let beat = grid.beat(v.seconds());
                     let delta = beat - self.global_beat;
@@ -2311,7 +2363,10 @@ impl Decks {
             }
             Command::ReinterpretGrid(d, g, grid) => {
                 if let Some(v) = self.voices[d].as_mut().filter(|v| {
-                    v.generation == g && grid.validate(v.source.len() as f64 / 48000.).is_ok()
+                    v.generation == g
+                        && grid
+                            .validate(v.source.len() as f64 / (crate::sample_rate::get() as f64))
+                            .is_ok()
                 }) {
                     let ratio = v.grid.map_or(1., |old| grid.bpm / old.bpm);
                     // Only reinterpret the beat count: leave the transport, prepared
@@ -2407,7 +2462,7 @@ impl Decks {
                 }
             }
             Command::JumpCrossfade(frames) => {
-                self.jump_crossfade = frames.min(4800);
+                self.jump_crossfade = frames.min(crate::sample_rate::get() / 10);
             }
             Command::SyncQuantum(quantum) => {
                 if quantum == 1 || quantum == 4 {
@@ -2487,7 +2542,7 @@ impl Decks {
                     .and_then(|d| self.voices[d].as_ref()?.grid.map(|g| g.bpm))
             });
             if let Some(target) = target {
-                let step = self.drift_rate / 48000.;
+                let step = self.drift_rate / (crate::sample_rate::get() as f64);
                 let next = if (target - self.master_bpm).abs() <= step {
                     target
                 } else {
@@ -2523,7 +2578,7 @@ impl Decks {
             .any(|v| v.playing && v.launch_beat.is_none())
             || patterns_running
         {
-            self.global_beat += self.master_bpm / (60. * 48000.);
+            self.global_beat += self.master_bpm / (60. * (crate::sample_rate::get() as f64));
         }
         frame.global_beat = self.global_beat;
         frame.master_bpm = self.master_bpm;
@@ -2550,7 +2605,10 @@ impl Decks {
         let mut players = [[0.; 2]; 2];
         for (d, voice) in self.voices.iter_mut().enumerate() {
             let target = if self.headphone_cue[d] { 1. } else { 0. };
-            self.cue_current[d] += (target - self.cue_current[d]).clamp(-1. / 240., 1. / 240.);
+            self.cue_current[d] += (target - self.cue_current[d]).clamp(
+                -1. / crate::sample_rate::fine_frames() as f32,
+                1. / crate::sample_rate::fine_frames() as f32,
+            );
             if let Some(voice) = voice {
                 if voice
                     .launch_beat
@@ -2574,7 +2632,10 @@ impl Decks {
                         voice.timing_error = 2;
                     }
                 }
-                voice.finish_loop_release(self.global_beat, self.master_bpm / (60. * 48000.));
+                voice.finish_loop_release(
+                    self.global_beat,
+                    self.master_bpm / (60. * (crate::sample_rate::get() as f64)),
+                );
                 let sample = if routed {
                     voice.next_mode::<true>()?
                 } else {
@@ -2649,7 +2710,8 @@ impl Decks {
     }
     fn finish_routing(&mut self, frame: &mut Frame) {
         if self.route_transition > 0 {
-            let blend = 1. - self.route_transition as f32 / 240.;
+            let blend =
+                1. - self.route_transition as f32 / crate::sample_rate::fine_frames() as f32;
             for (output, previous) in [&mut frame.samples, &mut frame.cue_samples]
                 .into_iter()
                 .zip(self.route_from)
@@ -2712,6 +2774,59 @@ impl Decks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sample_rate_contract_preserves_duration_pitch_beats_and_seek() {
+        let rate = crate::sample_rate::get();
+        let pcm: Vec<_> = (0..rate * 4)
+            .map(|i| (i as f32 * 440. * std::f32::consts::TAU / rate as f32).sin() * 0.2)
+            .collect();
+        let source = Arc::new(Source {
+            bass_profile: Default::default(),
+            left: pcm.clone(),
+            right: pcm,
+        });
+        let grid = Grid {
+            bpm: 120.,
+            downbeat_seconds: 0.,
+            reviewed: true,
+        };
+        for speed in [1., 1.25] {
+            let mut voice = Voice::new(source.clone(), 1);
+            voice.apply_grid(grid);
+            voice.tempo(120. * speed).unwrap();
+            voice.play();
+            let mut frames = 0;
+            let mut crossings = 0;
+            let mut previous = 0.;
+            while voice.playing {
+                let sample = voice.next().unwrap()[0];
+                if (rate..rate * 2).contains(&frames) && previous <= 0. && sample > 0. {
+                    crossings += 1;
+                }
+                previous = sample;
+                frames += 1;
+            }
+            assert!((frames as f64 - 4. * rate as f64 / speed).abs() <= 1.);
+            assert!(
+                (crossings as i32 - 440).abs() <= 3,
+                "pitch changed at {rate} Hz: {crossings}"
+            );
+            voice.seek(rate * 2);
+            assert!((voice.seconds() - 2.).abs() <= 1. / rate as f64);
+        }
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source);
+        decks.voices[0].as_mut().unwrap().apply_grid(grid);
+        decks.command(Command::MasterTempo(120.), [1, 1]);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        let start = decks.global_beat;
+        for _ in 0..rate {
+            decks.next().unwrap();
+        }
+        assert!((decks.global_beat - start - 2.).abs() < 1e-8);
+        assert!((decks.voices[0].as_ref().unwrap().seconds() - 1.).abs() <= 1. / rate as f64);
+    }
+
     #[test]
     fn master_numeric_target_uses_drift_rate_and_stops_exactly() {
         let mut decks = Decks::new();
@@ -6756,10 +6871,12 @@ mod audition_sequence_tests {
     }
     #[test]
     fn unusable_grids_fall_back_to_consecutive_playback() {
+        // Large valid tempo ratios are supported; only invalid grids/targets
+        // should force consecutive playback.
         for (a, b) in [
             (None, Some(120.)),
             (Some(120.), None),
-            (Some(60.), Some(180.)),
+            (Some(60.), Some(601.)),
         ] {
             let decks = sequence(1, a, b);
             assert_eq!(decks.audition.as_ref().unwrap().overlap_start, usize::MAX);

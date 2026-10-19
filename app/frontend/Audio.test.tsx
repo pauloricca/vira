@@ -53,3 +53,19 @@ test('manual refresh updates connected devices without replacing pending output 
   expect(screen.getByRole('option', { name: 'Headphones · disconnected' })).toBeTruthy();
   expect(invoke).not.toHaveBeenCalledWith('set_audio_devices', expect.anything());
 });
+
+test('44.1 kHz selection explains restart and only permits cue devices at the same rate', async () => {
+  invoke.mockResolvedValue({ ...inventory, sample_rate: 48000, devices: [
+    { id: 'Speakers', name: 'Speakers', supported: true, sample_rate: 48000, rate_ranges: [[2, 44100, 96000]] },
+    { id: 'Starlight', name: 'DJControl Starlight', supported: true, sample_rate: 44100, rate_ranges: [[4, 44100, 44100]] },
+    { id: '48 only', name: '48 only', supported: true, sample_rate: 48000, rate_ranges: [[2, 48000, 48000]] },
+  ] });
+  render(<Audio audio={{ ...audio, telemetry: { sample_rate: 48000 } }} />);
+  const master = screen.getByLabelText('Master out device');
+  await screen.findAllByRole('option', { name: 'DJControl Starlight · 44.1 kHz' });
+  fireEvent.change(master, { target: { value: 'Starlight' } });
+  expect(screen.getByText(/Changing to 44.1 kHz restarts VIRA/)).toBeTruthy();
+  expect((screen.getByRole('option', { name: '48 only · unavailable at 44.1 kHz' }) as HTMLOptionElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: null }));
+});
