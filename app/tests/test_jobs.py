@@ -340,3 +340,46 @@ class BaselineTests(unittest.TestCase):
             estimate = json.loads(output.read_text())
             self.assertEqual(estimate["flags"], ["silence_or_too_short"])
             self.assertEqual(sorted(p.name for p in root.iterdir()), ["estimate.json", "silence.wav"])
+
+class MetadataEditTests(unittest.TestCase):
+    setUp = JobTests.setUp
+    tearDown = JobTests.tearDown
+    manager = JobTests.manager
+    row = JobTests.row
+    track = JobTests.track
+
+    def test_edits_survive_refresh_restart_and_reanalysis_without_changing_audio(self):
+        manager = self.manager()
+        original = self.row()
+        manager.reconcile([original])
+        track_id = self.track(manager)["id"]
+        audio = (self.music / original["filename"]).read_bytes()
+        saved = manager.save_metadata(track_id, {"title": "Edited title", "artist": "Edited artist", "key": "F# minor"})["tracks"][0]
+        self.assertEqual(saved["metadata_key"], "F# minor")
+        self.assertEqual(saved["analysis"]["state"], "not_analysed")
+        self.assertEqual(manager.rows[track_id]["analysis"]["result"], None)
+        manager.request(track_id)
+        manager.pending.join()
+        self.assertEqual(self.track(manager)["metadata_key"], "F# minor")
+        self.assertEqual(manager.rows[track_id]["analysis"]["result"]["keys"][0]["key"], "C major")
+        manager.reconcile([self.row()])
+        restarted = self.manager()
+        restarted.seed([self.row()])
+        restored = self.track(restarted)
+        self.assertEqual((restored["title"], restored["artist"]), ("Edited title", "Edited artist"))
+        self.assertEqual(restored["metadata_key"], "F# minor")
+        self.assertEqual(restored["duration_seconds"], original["duration_seconds"])
+        self.assertEqual((self.music / original["filename"]).read_bytes(), audio)
+
+    def test_metadata_validation_and_title_only_save_preserve_key(self):
+        manager = self.manager()
+        manager.reconcile([self.row()])
+        track_id = self.track(manager)["id"]
+        for edits in ({"title": "", "artist": "a"}, {"title": "x", "artist": "a", "key": "H major"}, {"title": "x", "artist": "a", "bpm": 120}):
+            with self.assertRaises(ValueError):
+                manager.save_metadata(track_id, edits)
+        manager.save_metadata(track_id, {"title": "Title", "artist": "", "key": "D major"})
+        manager.save_metadata(track_id, {"title": "Renamed", "artist": "Artist"})
+        self.assertEqual(self.track(manager)["metadata_key"], "D major")
+        manager.save_metadata(track_id, {"title": "Renamed", "artist": "Artist", "key": ""})
+        self.assertEqual(self.track(manager)["metadata_key"], "")

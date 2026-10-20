@@ -3603,6 +3603,57 @@ mod tests {
         assert_eq!(audition.overlap_start, 48000 * 66);
     }
     #[test]
+    fn automatic_transitions_follow_shifted_yellow_phrases_on_either_deck() {
+        for from in 0..2 {
+            for end in [false, true] {
+                // At 120 BPM a four-beat backward shift wraps the anchor to 6s.
+                // Cover shifted outgoing and incoming grids, plus a cue before
+                // the incoming yellow beat and one directly on it.
+                for (out_anchor, in_anchor, cue, now_start, end_start) in [
+                    (6., 0., 0., 6., 30.),
+                    (0., 6., 0., 2., 26.),
+                    (6., 2., 2., 6., 30.),
+                    (6., 2., 0., 4., 28.),
+                ] {
+                    let mut decks = auto_decks(from, 4, false);
+                    for (d, anchor) in [(from, out_anchor), (1 - from, in_anchor)] {
+                        decks.voices[d].as_mut().unwrap().apply_grid(Grid {
+                            bpm: 120.,
+                            downbeat_seconds: anchor,
+                            reviewed: false,
+                        });
+                    }
+                    decks.voices[1 - from].as_mut().unwrap().cue_position = (cue * 48000.) as usize;
+                    decks.arm_auto(from, [1, 1], end).unwrap();
+                    let auto = decks.auto.unwrap();
+                    assert_eq!(auto.start_seconds, if end { end_start } else { now_start });
+                    assert_eq!(auto.beats, 16.);
+                    assert_eq!(auto.incoming_start, (cue * 48000.) as usize);
+                    decks.global_beat = decks.voices[from]
+                        .as_ref()
+                        .unwrap()
+                        .grid
+                        .unwrap()
+                        .beat(auto.start_seconds);
+                    decks.voices[from]
+                        .as_mut()
+                        .unwrap()
+                        .seek((auto.start_seconds * 48000.) as usize);
+                    for _ in 0..480 {
+                        let frame = decks.next().unwrap();
+                        assert!(frame.playing.iter().all(|playing| *playing));
+                        let outgoing = decks.voices[from].as_ref().unwrap();
+                        let incoming = decks.voices[1 - from].as_ref().unwrap();
+                        let phase = (outgoing.grid.unwrap().beat(outgoing.seconds())
+                            - incoming.grid.unwrap().beat(incoming.seconds()))
+                        .rem_euclid(16.);
+                        assert!(phase.min(16. - phase) < 0.001);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn automatic_end_ignores_partial_phrases_at_eof_and_matches_the_incoming_cue_phase() {
         for from in 0..2 {
             for cue_beats in [0., 5.25] {

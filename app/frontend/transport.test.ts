@@ -50,6 +50,24 @@ test('display playhead wraps inside an active loop',()=>{
   clock.update({...state,position_seconds:10.1,position_epoch:1,loop_in_seconds:10,loop_out_seconds:10.5},200);
   expect(clock.at(200)).toBeCloseTo(10.1);
 });
+test('fast position feedback follows playing jogs continuously with short correction latency', () => {
+  const clock = new DisplayPosition();
+  clock.update(state, 0);
+  let previous = clock.at(0);
+  for (let frame = 1; frame <= 60; frame++) {
+    const now = frame * 1000 / 60;
+    // Audio is moving at 1.5x during a forward jog; the selected tempo stays 1x.
+    clock.update({ ...state, position_seconds: 10 + now / 1000 * 1.5 }, now, now, .025);
+    const value = clock.at(now);
+    expect(value).toBeGreaterThan(previous);
+    expect(value - previous).toBeLessThan(.03);
+    previous = value;
+  }
+  expect(previous).toBeGreaterThan(11.47);
+  // Releasing the jog and pausing still anchors to the real stopped position.
+  clock.update({ ...state, playing: false, position_seconds: 11.5 }, 1017, 1017, .025);
+  expect(clock.at(2000)).toBe(11.5);
+});
 test('max pyramid preserves narrow peaks at every zoom without resampling the full song',()=>{
   const peaks: [number,number][] = [[.1,.2],[.8,.1],[.3,.4],[.2,.95],[.1,.1]];
   const levels=peakLevels(peaks);

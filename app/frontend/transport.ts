@@ -7,7 +7,7 @@ export class DisplayPosition {
   private correction = 0;
   private deadline = 0;
   private smoothing = .35;
-  update(next: PositionSnapshot, received: number, sampled = received) {
+  update(next: PositionSnapshot, received: number, sampled = received, smoothing = .35) {
     const current = this.at(received);
     const speed = next.speed ?? 1;
     const target = next.position_seconds + (next.playing ? Math.max(0, received - sampled) / 1000 * speed : 0);
@@ -15,7 +15,7 @@ export class DisplayPosition {
       || this.state.playing !== next.playing || Math.abs(target - current) / Math.max(speed, this.state.speed ?? 1) > .15;
     this.origin = discontinuity || !next.playing ? target : current;
     this.correction = discontinuity || !next.playing ? 0 : target - current;
-    this.smoothing = Math.max(.35, -this.correction / speed * 2);
+    this.smoothing = Math.max(smoothing, -this.correction / speed * 2);
     this.atTime = received;
     this.deadline = Math.max(received, sampled + 500);
     this.state = next;

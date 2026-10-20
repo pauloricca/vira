@@ -132,6 +132,7 @@ test('native automatic unlocks update the saved deck lock', async () => {
 test('controls send independent deck commands and waveform supports pointer/keyboard seeks', () => {
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={state} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   fireEvent.click(screen.getByRole('button', { name: 'Play deck A' }));
   expect(screen.queryByRole('button', { name: 'Stop deck A' })).toBeNull();
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck A' }), { target: { value: '.4' } });
@@ -141,18 +142,29 @@ test('controls send independent deck commands and waveform supports pointer/keyb
   fireEvent.keyDown(wave, { key: 'ArrowRight' });
   expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[0, 'play_pause'], [0, 'gain', .4], [0, 'seek', 0], [0, 'seek', 5]]);
 });
-test('deck keeps transport and loop controls above the always-visible timing panel', async () => {
+test('clock swaps loop and time controls for compact timing tools and keeps transport available', async () => {
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={{ ...state, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} trackKey="A minor" running loading={false} error={null} load={vi.fn()} control={control} />);
   const deck = screen.getByRole('article', { name: 'Deck A' });
+  const toggle = screen.getByRole('button', { name: 'Timing controls deck A' });
   expect(deck.querySelector('.deck-header .deck-key')?.textContent).toContain('A minor');
-  expect(deck.querySelector('.deck-actions .cue-button')).toBeTruthy();
-  expect(deck.querySelector('.deck-actions .play-button')).toBeTruthy();
-  expect(deck.textContent).not.toContain('FULL TRACK');
+  expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByRole('spinbutton', { name: 'Track BPM' })).toBeNull();
   expect(Array.from(deck.querySelectorAll('.loop-controls button'), button => button.textContent)).toEqual(['IN', '1/32', '1/16', '1/8', '1/4', '1/2', 'SLIP', 'OUT', '1', '2', '4', '8', '16']);
-  expect(deck.querySelector('details, summary')).toBeNull();
-  expect(deck.querySelector('.deck-actions .timing-controls')).toBeNull();
-  expect(deck.querySelector('.deck-actions + .deck-settings .timing-controls')).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-pressed')).toBe('true');
+  expect(screen.queryByRole('button', { name: 'AUTO NOW deck A' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Loop IN deck A' })).toBeNull();
+  expect(screen.getByLabelText('Time deck A').hidden).toBe(true);
+  expect(screen.getByRole('spinbutton', { name: 'Track BPM' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Cue deck A' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Play deck A' })).toBeTruthy();
+  expect(Array.from(deck.querySelectorAll('.deck-settings button'), button => button.textContent).join(' ')).not.toContain('BPM');
+  expect(deck.textContent).not.toMatch(/Analysis:|Speed |supported 15|pitch preserved|Source 120/);
+  fireEvent.click(toggle);
+  expect(screen.getByRole('button', { name: 'Loop IN deck A' })).toBeTruthy();
+  expect(screen.getByLabelText('Time deck A').hidden).toBe(false);
+  expect(screen.queryByRole('spinbutton', { name: 'Track BPM' })).toBeNull();
   await waitFor(() => expect(control).toHaveBeenCalledWith(0, 'click_panel', 1));
 });
 test('loop controls toggle lengths and show in/out on the overview', () => {
@@ -287,21 +299,23 @@ test('animation updates playhead and time without React commits for each frame',
 test('timing BPM controls correct the source instead of changing playback tempo',()=>{
   const control=vi.fn().mockResolvedValue(undefined);
   render(<Deck state={{...state,grid:{bpm:118.999072,downbeat_seconds:0,reviewed:false}}} running loading={false} error={null} load={vi.fn()} control={control} />);
-  fireEvent.click(screen.getByText('Half BPM')); fireEvent.click(screen.getByText('Double BPM'));
-  fireEvent.click(screen.getByText('Original BPM'));
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Half BPM' })); fireEvent.click(screen.getByRole('button', { name: 'Double BPM' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Original BPM' }));
   const input = screen.getByRole('spinbutton', { name: 'Track BPM' });
   expect((input as HTMLInputElement).value).toBe('118.999072');
   fireEvent.change(input, { target: { value: '125' } });
-  fireEvent.click(screen.getByText('Set BPM'));
+  fireEvent.click(screen.getByRole('button', { name: 'Set BPM' }));
   expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[0,'detected_bpm',118.999072*.5],[0,'detected_bpm',118.999072*2],[0,'original_bpm'],[0,'detected_bpm',125]]);
   expect(input.getAttribute('min')).toBe('30');
   expect(input.getAttribute('max')).toBe('300');
   const buttons = screen.getAllByRole('button').map(button => button.textContent);
-  expect(buttons.indexOf('Double BPM')).toBeLessThan(buttons.indexOf('Original BPM'));
+  expect(buttons.indexOf('×2')).toBeLessThan(buttons.indexOf('Original'));
 });
 test('click is enabled while the deck is mounted without changing its volume', async () => {
   const control = vi.fn().mockResolvedValue(undefined);
   const { unmount } = render(<Deck state={{ ...state, click_gain: .6, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   await waitFor(() => expect(control).toHaveBeenCalledWith(0, 'click_panel', 1));
   expect((screen.getByRole('slider', { name: /Click volume/ }) as HTMLInputElement).value).toBe('0.6');
   unmount();
@@ -310,6 +324,7 @@ test('click is enabled while the deck is mounted without changing its volume', a
 test('reference button uses the playhead and removes the clear deck button', () => {
   const control = vi.fn().mockResolvedValue(undefined);
   render(<Deck state={{ ...state, position_seconds: 23.75, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   expect(screen.queryByRole('button', { name: 'Clear deck A' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Set reference beat' }));
   expect(control).toHaveBeenCalledWith(0, 'reference_beat', 23.75);
@@ -319,6 +334,7 @@ test.each(['needs_review', 'stale'])('%s analysis approval works while playing; 
   const approveAnalysis = vi.fn();
   const grid = { bpm: 120, downbeat_seconds: 0, reviewed: false };
   const { rerender } = render(<Deck state={{ ...state, playing: true, grid }} running loading={false} error={null} load={vi.fn()} control={control} analysisState={analysisState} approveAnalysis={approveAnalysis} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   for (const name of ['Set reference beat', 'Shift bar start back one beat on deck A', 'Shift bar start forward one beat on deck A']) {
     expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
   }
@@ -371,6 +387,7 @@ test('manual track BPM creates and applies a grid without analysis', async () =>
     return <Deck state={decks.audio.decks[0]} running={decks.audio.running} loading={false} error={decks.errors[0]} load={decks.load} control={decks.control} />;
   }
   render(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   const input = screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement;
   await waitFor(() => expect(input.disabled).toBe(false));
   expect(input.value).toBe('');
@@ -395,6 +412,7 @@ test('manual track BPM creates and applies a grid without analysis', async () =>
 test('track BPM entry is available while playing and unavailable without a loaded track', () => {
   const props = { running: true, loading: false, error: null, load: vi.fn(), control: vi.fn() };
   const { rerender } = render(<Deck state={{ ...state, playing: true }} {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(false);
   rerender(<Deck state={{ ...state, track: null }} {...props} />);
   expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).disabled).toBe(true);
@@ -414,13 +432,14 @@ test('BPM correction and original reset persist and apply the grid with its exis
     return <Deck state={decks.audio.decks[0]} otherPlaying={false} running={decks.audio.running} loading={false} error={null} load={decks.load} control={decks.control} />;
   }
   render(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   const input = await screen.findByRole('spinbutton', { name: 'Track BPM' });
   await waitFor(() => expect((input as HTMLInputElement).value).toBe('120'));
   fireEvent.change(input, { target: { value: '125' } });
-  fireEvent.click(screen.getByText('Set BPM'));
+  fireEvent.click(screen.getByRole('button', { name: 'Set BPM' }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 125, reviewed: false }, preserveSpeed: true }));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { ...grid, bpm: 125, reviewed: false }, referenceBeats: [10] });
-  fireEvent.click(screen.getByText('Original BPM'));
+  fireEvent.click(screen.getByRole('button', { name: 'Original BPM' }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { ...grid, bpm: 118.999072, reviewed: false }, preserveSpeed: true }));
   expect(invoke.mock.calls.some(([command, args]) => command === 'deck_control' && args.action !== 'click_panel')).toBe(false);
 });
@@ -438,12 +457,18 @@ test.each([false, true])('bar start buttons retain speed, lock and reference fla
     return <Deck state={decks.audio.decks[0]} otherPlaying={false} running={decks.audio.running} loading={false} error={null} load={decks.load} control={decks.control} />;
   }
   render(<Harness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Shift bar start forward one beat on deck A' }) as HTMLButtonElement).disabled).toBe(false));
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Shift bar start forward one beat on deck A' })));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { bpm: 120, downbeat_seconds: .5, reviewed: false }, preserveSpeed: true, ...(playing ? { followClock: true } : {}) }));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 120, downbeat_seconds: .5, reviewed: false }, referenceBeats: [10] });
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Shift bar start back one beat on deck A' })));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false }, preserveSpeed: true, ...(playing ? { followClock: true } : {}) }));
+  for (let i = 0; i < 4; i++) {
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Shift bar start back one beat on deck A' })));
+  }
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid: { bpm: 120, downbeat_seconds: 6, reviewed: false }, preserveSpeed: true, ...(playing ? { followClock: true } : {}) }));
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 120, downbeat_seconds: 6, reviewed: false }, referenceBeats: [10] });
 });
 
 test.each([true, false])('rolling waveform references work with timing open, existing BPM: %s', hasBpm => {
@@ -463,6 +488,7 @@ test('deck lock lives beside BPM and disables manual tempo while locked', () => 
   const control = vi.fn().mockResolvedValue(undefined);
   const reviewed = { ...state, target_bpm: 120, grid: { bpm: 120, downbeat_seconds: 0, reviewed: false } };
   const { rerender } = render(<Deck state={reviewed} running loading={false} error={null} load={vi.fn()} control={control} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   expect((screen.getByRole('button', { name: 'Lock deck A to master tempo' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Lock deck A to master tempo' }));
   expect(control).toHaveBeenCalledWith(0, 'sync', 1);
@@ -873,13 +899,14 @@ test('grid edits survive polling, cancel restores the original, and save persist
   try {
     mockGridAudio();
     render(<GridEditHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
     await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     expect(screen.queryByText('Edit grid')).toBeNull();
     await act(async () => { dragGridMark(85, 90); });
-    expect(screen.getByText(/^Drag anywhere/).textContent).toContain('120.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('120.00');
     await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'get_audio_state').length).toBeGreaterThan(1));
-    expect(screen.getByText(/^Drag anywhere/).textContent).toContain('120.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('120.00');
     await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
     expect(screen.getByText('Edit grid')).toBeTruthy();
     expect(invoke.mock.calls.filter(([c, args]) => c === 'apply_timing' || c === 'track_timing' && args.grid)).toHaveLength(0);
@@ -896,12 +923,13 @@ test('grid edits survive polling, cancel restores the original, and save persist
 test('failed grid saves retain the editable draft and replacing the track discards it', async () => {
   const native = mockGridAudio();
   render(<GridEditHarness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
   await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
   invoke.mockImplementation((command: string) => command === 'track_timing' ? Promise.reject('Storage unavailable') : Promise.resolve(command === 'get_audio_state' ? native : {}));
   await act(async () => { fireEvent.click(screen.getByText('Save grid')); });
   expect(screen.getByRole('alert').textContent).toBe('Storage unavailable');
-  expect(invoke).toHaveBeenLastCalledWith('apply_timing', { deck: 0, generation: 1, grid: native.decks[0].grid, preserveSpeed: true });
+  expect(invoke.mock.calls.filter(([command]) => command === 'apply_timing').at(-1)).toEqual(['apply_timing', { deck: 0, generation: 1, grid: native.decks[0].grid, preserveSpeed: true }]);
   expect((screen.getByText('Save grid') as HTMLButtonElement).disabled).toBe(false);
   native.decks[0] = { ...native.decks[0], generation: 2 };
   await waitFor(() => expect(screen.getByText('Edit grid')).toBeTruthy());
@@ -912,6 +940,7 @@ test('Command-click pins any beat for scaling; repinning, unpinning and cancel r
   try {
     mockGridAudio();
     render(<GridEditHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
     await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
@@ -923,7 +952,7 @@ test('Command-click pins any beat for scaling; repinning, unpinning and cancel r
     fireEvent.pointerMove(wave, { clientX: 82.5 }); // Between beat marks.
     expect(wave.style.cursor).toBe('ew-resize');
     await act(async () => { dragGridMark(112.5, 117.5); });
-    expect(screen.getByText(/^Drag anywhere/).textContent).toContain('120.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('120.00');
     await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     const commandClick = async (x: number) => {
@@ -941,18 +970,18 @@ test('Command-click pins any beat for scaling; repinning, unpinning and cancel r
     fireEvent.pointerMove(wave, { clientX: 85 });
     expect(wave.style.cursor).toBe('not-allowed');
     await act(async () => { dragGridMark(85, 95); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('120.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('120.00');
     fireEvent.pointerMove(wave, { clientX: 112.5 });
     expect(wave.style.cursor).toBe('ew-resize');
     await act(async () => { dragGridMark(112.5, 140); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('60.00');
     expect(screen.getByLabelText('Pinned beat deck A').style.left).toBe('53.125%');
     await commandClick(75); // Repin to source time 7.5 after scaling.
     expect(screen.getByLabelText('Pinned beat deck A').style.left).toBe('46.875%');
     await commandClick(75); // Clicking the same beat again returns to shifting.
     expect(screen.queryByLabelText('Pinned beat deck A')).toBeNull();
     await act(async () => { dragGridMark(110, 115); });
-    expect(screen.getByText(/^Drag anywhere/).textContent).toContain('60.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('60.00');
     await act(async () => { fireEvent.click(screen.getByText('Save grid')); });
     expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 60, downbeat_seconds: 8, reviewed: false }, referenceBeats: [] });
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
@@ -968,6 +997,7 @@ test('scaling a stopped deck beyond the tempo limits holds the limit and recover
   try {
     mockGridAudio();
     render(<GridEditHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
     await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
@@ -978,11 +1008,11 @@ test('scaling a stopped deck beyond the tempo limits holds the limit and recover
     });
     await act(async () => { fireEvent.pointerDown(wave, { button: 0, clientX: 85 }); });
     await act(async () => { fireEvent.pointerMove(wave, { clientX: 110 }); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('30.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('30.00');
     await act(async () => { fireEvent.pointerMove(wave, { clientX: 75 }); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('300.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('300.00');
     await act(async () => { fireEvent.pointerUp(wave, { clientX: 90 }); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('60.00');
     expect(screen.getByLabelText('Pinned beat deck A').style.left).toBe('50%');
   } finally { vi.unstubAllGlobals(); }
 });
@@ -991,6 +1021,7 @@ test('reference beats and an audio poll do not cancel a grid drag between pointe
   try {
     mockGridAudio(); // Includes two saved reference beats.
     render(<GridEditHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
     await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
@@ -1006,7 +1037,7 @@ test('reference beats and an audio poll do not cancel a grid drag between pointe
     const during = polls();
     await waitFor(() => expect(polls()).toBeGreaterThan(during));
     await act(async () => { fireEvent.pointerMove(wave, { clientX: 100 }); });
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('60.00');
     await act(async () => { fireEvent.pointerUp(wave, { clientX: 100 }); });
     await act(async () => { fireEvent.click(screen.getByText('Save grid')); });
     expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 60, downbeat_seconds: 8, reviewed: false }, referenceBeats: [] });
@@ -1022,6 +1053,7 @@ test('grid editing survives listen-adjust cycles, blocks gestures during playbac
       return Promise.resolve(command === 'get_audio_state' ? native : command === 'track_timing' ? { grid: native.decks[0].grid, reference_beats: [] } : {});
     });
     render(<GridEditHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
     await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
     await act(async () => { dragGridMark(85, 90); });
@@ -1036,7 +1068,7 @@ test('grid editing survives listen-adjust cycles, blocks gestures during playbac
     const applied = invoke.mock.calls.findIndex(([command]) => command === 'apply_timing');
     const played = invoke.mock.calls.findIndex(([command, args]) => command === 'deck_control' && args.action === 'play_pause');
     expect(applied).toBeLessThan(played);
-    expect(screen.getByText(/^Listening to draft/)).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Rolling waveform deck A' }).closest('.grid-listening')).toBeTruthy();
     expect(screen.getByLabelText('Pinned beat deck A')).toBeTruthy();
     const count = invoke.mock.calls.filter(([c]) => c === 'apply_timing').length;
     await act(async () => {
@@ -1049,11 +1081,11 @@ test('grid editing survives listen-adjust cycles, blocks gestures during playbac
     expect(invoke.mock.calls.filter(([c]) => c === 'apply_timing')).toHaveLength(count);
     expect(native.decks[0].grid).toEqual({ bpm: 120, downbeat_seconds: .5, reviewed: false });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Pause deck A' })); });
-    await waitFor(() => expect(screen.getByText(/^Drag to scale/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Rolling waveform deck A' }).closest('.grid-listening')).toBeNull());
     await act(async () => { dragGridMark(110, 130); }); // Scale about the pinned source-time beat at 9 seconds.
-    expect(screen.getByText(/^Drag to scale/).textContent).toContain('60.00 BPM');
+    expect((screen.getByRole('spinbutton', { name: 'Track BPM' }) as HTMLInputElement).value).toBe('60.00');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Play deck A' })); });
-    await waitFor(() => expect(screen.getByText(/^Listening to draft/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Rolling waveform deck A' }).closest('.grid-listening')).toBeTruthy());
     expect(native.decks[0].grid?.bpm).toBe(60);
     expect(invoke.mock.calls.filter(([c, args]) => c === 'track_timing' && args.grid)).toHaveLength(0);
     await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
@@ -1062,7 +1094,7 @@ test('grid editing survives listen-adjust cycles, blocks gestures during playbac
     expect(native.decks[0].playing).toBe(true);
     expect(screen.queryByLabelText('Pinned beat deck A')).toBeNull();
     await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
-    expect(screen.getByText(/^Listening to draft/)).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Rolling waveform deck A' }).closest('.grid-listening')).toBeTruthy();
   } finally { vi.unstubAllGlobals(); }
 });
 test('direct grid commands cannot change or pin the draft while the deck is playing', async () => {
@@ -1085,6 +1117,7 @@ test('direct grid commands cannot change or pin the draft while the deck is play
 
 test.each([[126, '↑ 5.0%'], [114, '↓ 5.0%'], [120, '↔ 0.0%']])('deck header compares source BPM with %s BPM', (target, indication) => {
   render(<Deck state={{ ...state, target_bpm: target as number, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   expect(screen.getByLabelText('Original BPM deck A').textContent).toBe('120.0');
   expect(screen.getByLabelText('BPM deck A').textContent).toBe(Number(target).toFixed(1));
   expect(screen.getByLabelText('Tempo bias deck A').textContent).toBe(indication);
@@ -1095,6 +1128,7 @@ test('original BPM resets playback without changing the source grid; only curren
   const grid = { bpm: 118.999072, downbeat_seconds: 0, reviewed: true };
   const props = { running: true, loading: false, error: null, load: vi.fn(), control };
   const { rerender } = render(<Deck {...props} state={{ ...state, grid, target_bpm: 124, synced: true }} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   await act(async () => { fireEvent.doubleClick(screen.getByLabelText('Original BPM deck A')); });
   expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[0, 'sync', 0], [0, 'tempo', grid.bpm]]);
   control.mockClear();
@@ -1151,6 +1185,7 @@ test('tempo slider learns a percentage range and follows the current track sourc
 
 test.each(['analysed', 'needs_review', 'stale'])('no BPM hides approval for %s tracks and allows references', analysisState => {
   render(<Deck state={{ ...state, grid: null }} running loading={false} error={null} load={vi.fn()} control={vi.fn()} analysisState={analysisState} approveAnalysis={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   expect(screen.queryByRole('button', { name: 'Approve grid deck A' })).toBeNull();
   expect((screen.getByRole('button', { name: 'Set reference beat' }) as HTMLButtonElement).disabled).toBe(false);
 });

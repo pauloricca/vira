@@ -88,6 +88,10 @@ pub struct MixerDsp {
     remaining: usize,
     filter_tick: usize,
     filter_position: Option<f64>,
+    eq_running: bool,
+    filter_running: bool,
+    eq_startup: usize,
+    filter_startup: usize,
 }
 impl Default for MixerDsp {
     fn default() -> Self {
@@ -102,6 +106,10 @@ impl Default for MixerDsp {
             remaining: 0,
             filter_tick: 0,
             filter_position: None,
+            eq_running: false,
+            filter_running: false,
+            eq_startup: 0,
+            filter_startup: 0,
         }
     }
 }
@@ -139,76 +147,119 @@ impl MixerDsp {
         self.remaining = ramp();
     }
     pub fn reset(&mut self) {
-        self.low = Crossover::new(250.);
-        self.upper = Crossover::new(2500.);
-        self.low_phase = Crossover::new(2500.);
+        self.reset_eq();
         for f in &mut self.filter {
             f.state = [[0.; 2]; 2];
         }
+        self.eq_running = false;
+        self.filter_running = false;
     }
-    // Separate processors for editable graph stages. Each owns independent state.
-    pub fn process_stage(&mut self, input: [f32; 2], stage: u8) -> [f32; 2] {
+    fn reset_eq(&mut self) {
+        for crossover in [&mut self.low, &mut self.upper, &mut self.low_phase] {
+            for f in crossover.low.iter_mut().chain(crossover.high.iter_mut()) {
+                f.state = [[0.; 2]; 2];
+            }
+        }
+    }
+    fn advance_controls(&mut self) {
         if self.remaining > 0 {
             for i in 0..6 {
                 self.current[i] += (self.target[i] - self.current[i]) / self.remaining as f64;
             }
             self.remaining -= 1;
-        }
-        let [trim, lo, mid, hi, position, wet] = self.current;
-        if stage == 2 && self.filter_tick == 0 {
-            self.tune_filter(position);
-        }
-        self.filter_tick = (self.filter_tick + 1) % 16;
-        std::array::from_fn(|channel| {
-            let x = input[channel] as f64;
-            match stage {
-                0 => (x * trim) as f32,
-                1 => {
-                    let [low, upper] = self.low.split(x, channel);
-                    let [middle, high] = self.upper.split(upper, channel);
-                    let low = self.low_phase.split(low, channel).iter().sum::<f64>();
-                    (x * (1. - wet) + (low * lo + middle * mid + high * hi) * wet) as f32
-                }
-                _ => {
-                    let mut filtered = x;
-                    for f in &mut self.filter {
-                        filtered = f.process(filtered, channel);
-                    }
-                    let blend = (position.abs() / 0.04).min(1.);
-                    (x * (1. - blend) + filtered * blend) as f32
-                }
+            if self.remaining == 0 {
+                // Land exactly on neutral so processing can be bypassed.
+                self.current = self.target;
             }
-        })
+        }
     }
-    pub fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
-        if self.remaining > 0 {
-            for i in 0..6 {
-                self.current[i] += (self.target[i] - self.current[i]) / self.remaining as f64;
-            }
-            self.remaining -= 1;
+    fn startup_blend(remaining: &mut usize) -> f64 {
+        let blend = 1. - *remaining as f64 / ramp() as f64;
+        *remaining = remaining.saturating_sub(1);
+        blend
+    }
+    fn prepare_eq(&mut self, wet: f64) -> f64 {
+        if wet == 0. {
+            self.eq_running = false;
+            return 0.;
         }
-        let [trim, lo, mid, hi, position, wet] = self.current;
-        // Sample moving controls every 16 frames; stationary controls retain
-        // their coefficients and filter history.
+        if !self.eq_running {
+            self.reset_eq();
+            self.eq_startup = ramp();
+            self.eq_running = true;
+        }
+        wet * Self::startup_blend(&mut self.eq_startup)
+    }
+    fn prepare_filter(&mut self, position: f64) -> f64 {
+        if position == 0. {
+            self.filter_running = false;
+            return 0.;
+        }
+        if !self.filter_running {
+            for f in &mut self.filter {
+                f.state = [[0.; 2]; 2];
+            }
+            self.filter_tick = 0;
+            self.filter_startup = ramp();
+            self.filter_running = true;
+        }
         if self.filter_tick == 0 {
             self.tune_filter(position);
         }
         self.filter_tick = (self.filter_tick + 1) % 16;
+        // Fade fresh filter history into the dry signal over 10 ms.
+        (position.abs() / 0.04).min(1.) * Self::startup_blend(&mut self.filter_startup)
+    }
+    fn eq_sample(&mut self, x: f64, channel: usize, wet: f64) -> f64 {
+        if !self.eq_running {
+            return x;
+        }
+        let [_, lo, mid, hi, _, _] = self.current;
+        let [low, upper] = self.low.split(x, channel);
+        let [middle, high] = self.upper.split(upper, channel);
+        let low = self.low_phase.split(low, channel).iter().sum::<f64>();
+        x * (1. - wet) + (low * lo + middle * mid + high * hi) * wet
+    }
+    fn filter_sample(&mut self, x: f64, channel: usize, blend: f64) -> f64 {
+        if !self.filter_running {
+            return x;
+        }
+        let mut filtered = x;
+        for f in &mut self.filter {
+            filtered = f.process(filtered, channel);
+        }
+        x * (1. - blend) + filtered * blend
+    }
+    // Separate processors for editable graph stages. Each owns independent state.
+    pub fn process_stage(&mut self, input: [f32; 2], stage: u8) -> [f32; 2] {
+        self.advance_controls();
+        let wet = if stage == 1 {
+            self.prepare_eq(self.current[5])
+        } else {
+            0.
+        };
+        let blend = if stage >= 2 {
+            self.prepare_filter(self.current[4])
+        } else {
+            0.
+        };
         std::array::from_fn(|channel| {
-            let dry = input[channel] as f64 * trim;
-            // Linkwitz-Riley 24 dB/oct crossovers, with phase compensation on low.
-            let [low, upper] = self.low.split(dry, channel);
-            let [middle, high] = self.upper.split(upper, channel);
-            let low = self.low_phase.split(low, channel).iter().sum::<f64>();
-            let eq = low * lo + middle * mid + high * hi;
-            let x = dry * (1. - wet) + eq * wet;
-            let mut filtered = x;
-            for f in &mut self.filter {
-                filtered = f.process(filtered, channel);
+            let x = input[channel] as f64;
+            match stage {
+                0 => (x * self.current[0]) as f32,
+                1 => self.eq_sample(x, channel, wet) as f32,
+                _ => self.filter_sample(x, channel, blend) as f32,
             }
-            // Small center transition keeps exact bypass at zero without a jump.
-            let blend = (position.abs() / 0.04).min(1.);
-            (x * (1. - blend) + filtered * blend) as f32
+        })
+    }
+    pub fn process(&mut self, input: [f32; 2]) -> [f32; 2] {
+        self.advance_controls();
+        let wet = self.prepare_eq(self.current[5]);
+        let blend = self.prepare_filter(self.current[4]);
+        std::array::from_fn(|channel| {
+            let dry = input[channel] as f64 * self.current[0];
+            let x = self.eq_sample(dry, channel, wet);
+            self.filter_sample(x, channel, blend) as f32
         })
     }
 }
@@ -216,6 +267,95 @@ impl MixerDsp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn render(dsp: &mut MixerDsp, input: [f32; 2], stage: Option<u8>) -> [f32; 2] {
+        match stage {
+            Some(stage) => dsp.process_stage(input, stage),
+            None => dsp.process(input),
+        }
+    }
+    fn histories(dsp: &MixerDsp) -> Vec<[[f64; 2]; 2]> {
+        [&dsp.low, &dsp.upper, &dsp.low_phase]
+            .into_iter()
+            .flat_map(|c| c.low.iter().chain(c.high.iter()))
+            .chain(dsp.filter.iter())
+            .map(|f| f.state)
+            .collect()
+    }
+    #[test]
+    fn neutral_bypasses_preserve_samples_and_freeze_histories() {
+        for stage in [None, Some(1), Some(2)] {
+            let mut dsp = MixerDsp::default();
+            dsp.set(Settings {
+                eq: [0.7, 0.2, 0.8],
+                filter: -0.6,
+                ..Settings::default()
+            });
+            for _ in 0..ramp() * 3 {
+                render(&mut dsp, [0.3, -0.2], stage);
+            }
+            dsp.set(Settings::default());
+            for _ in 0..ramp() {
+                render(&mut dsp, [0.3, -0.2], stage);
+            }
+            assert!(!dsp.eq_running && !dsp.filter_running);
+            let before = histories(&dsp);
+            let coefficients = dsp.filter_position;
+            for i in 0..ramp() * 3 {
+                let input = [(i as f32 * 0.13).sin(), (i as f32 * 0.07).cos()];
+                assert_eq!(render(&mut dsp, input, stage), input);
+            }
+            assert_eq!(
+                histories(&dsp),
+                before,
+                "bypassed DSP must do no filter work"
+            );
+            assert_eq!(dsp.filter_position, coefficients);
+        }
+    }
+    #[test]
+    fn reactivation_discards_old_history_and_fades_from_dry() {
+        for stage in [None, Some(1), Some(2)] {
+            for position in [-0.8, 0.8] {
+                let active = Settings {
+                    eq: [0.2, 0.7, 0.9],
+                    filter: position,
+                    ..Settings::default()
+                };
+                let mut used = MixerDsp::default();
+                used.set(active);
+                for _ in 0..ramp() * 3 {
+                    render(&mut used, [0.8, -0.7], stage);
+                }
+                used.set(Settings::default());
+                for _ in 0..ramp() * 3 {
+                    render(&mut used, [-0.4, 0.6], stage);
+                }
+                let mut fresh = MixerDsp::default();
+                used.set(active);
+                fresh.set(active);
+                let input = [0.3, -0.2];
+                let mut previous = input;
+                for i in 0..ramp() * 3 {
+                    let actual = render(&mut used, input, stage);
+                    assert_eq!(actual, render(&mut fresh, input, stage));
+                    if i == 0 {
+                        assert_eq!(actual, input);
+                    }
+                    for channel in 0..2 {
+                        assert!(actual[channel].is_finite());
+                        assert!(
+                            (actual[channel] - previous[channel]).abs() < 0.02,
+                            "reactivation step: {:?} -> {:?}",
+                            previous,
+                            actual
+                        );
+                    }
+                    previous = actual;
+                }
+            }
+        }
+    }
+
     #[test]
     fn cached_filter_matches_recomputed_coefficients_during_sweeps_and_resets() {
         for stage in [false, true] {

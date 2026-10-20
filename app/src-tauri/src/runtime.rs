@@ -325,6 +325,27 @@ mod tests {
     }
     #[test]
     #[cfg(not(target_os = "macos"))]
+    fn display_positions_follow_stopped_audio_without_taking_metadata_or_meter_peaks() {
+        let engine = EngineHandle::new();
+        engine.shared.running.store(true, Release);
+        engine.shared.generations[0].store(7, Relaxed);
+        engine.shared.position_epochs[0].store(3, Relaxed);
+        engine.shared.positions[0].store(crate::sample_rate::get() as u64, Relaxed);
+        engine.shared.meter_decks[0].store(0.8_f32.to_bits() as u64, Relaxed);
+        // This feed must not need the metadata mutex held by track operations.
+        let _metadata = engine.metadata.lock().unwrap();
+        let positions = engine.deck_positions();
+        assert_eq!(positions.as_array().unwrap().len(), 2);
+        assert_eq!(positions[0]["generation"], 7);
+        assert_eq!(positions[0]["position_epoch"], 3);
+        assert_eq!(positions[0]["position_seconds"], 1.);
+        assert_eq!(positions[0]["playing"], false);
+        engine.shared.positions[0].store(2 * crate::sample_rate::get() as u64, Relaxed);
+        assert_eq!(engine.deck_positions()[0]["position_seconds"], 2.);
+        assert_eq!(engine.audio_levels().decks[0], 0.8);
+    }
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn compact_telemetry_sends_metadata_only_for_a_new_generation() {
         let engine = EngineHandle::new();
         let prepared: Prepared = serde_json::from_value(json!({
@@ -1470,6 +1491,25 @@ impl EngineHandle {
     pub fn audio_levels(&self) -> AudioLevels {
         self.shared.take_levels()
     }
+    /// Display telemetry only: no track metadata lock or waveform serialization.
+    pub fn deck_positions(&self) -> Value {
+        let frame = self.shared.audible();
+        let rate = crate::sample_rate::get() as f64;
+        let running = self.shared.running.load(Acquire);
+        Value::Array(
+            (0..2)
+                .map(|deck| serde_json::json!({
+                    "generation": frame.generations[deck],
+                    "position_epoch": frame.position_epochs[deck],
+                    "position_seconds": frame.positions[deck] as f64 / rate,
+                    "playing": running && frame.playing[deck] && !frame.launch_pending[deck],
+                    "speed": frame.grids[deck].map_or(1., |grid| frame.targets[deck] / grid.bpm),
+                    "loop_in_seconds": frame.loop_starts[deck].map(|p| p as f64 / rate),
+                    "loop_out_seconds": frame.loop_ends[deck].map(|p| p as f64 / rate),
+                }))
+                .collect(),
+        )
+    }
     pub fn waveform_for_generation(&self, deck: usize, generation: u64) -> Result<Waveform> {
         ensure!(deck < 2, "Deck must be A or B");
         ensure!(
@@ -2062,6 +2102,10 @@ fn native_output(
         let mut cue_valid_before = false;
         let mut cue_shared_before = false;
         let mut cue_retry = Instant::now() - Duration::from_secs(2);
+        let mut device_probe_at = Instant::now() - Duration::from_millis(500);
+        let mut probed_routes = None;
+        let mut current_device = None;
+        let mut cue_available = false;
         while !shared.cancel.load(Acquire) {
             let frames = shared.stats.frames.load(Relaxed);
             if frames != previous_frames {
@@ -2074,18 +2118,28 @@ fn native_output(
             }
             let device_errors = shared.stats.device_errors.load(Relaxed);
             let routes = shared.routes.lock().unwrap().clone();
-            let current_device = crate::audio_devices::resolve(&host, routes.master.as_deref())
-                .ok()
-                .and_then(|d| d.name().ok());
             let next_cue_errors = shared.cue_device_errors.load(Relaxed);
+            // Keep progress/error checks at 20 ms, but avoid enumerating device
+            // names 50 times a second. Route edits and errors probe immediately.
+            if device_probe_at.elapsed() >= Duration::from_millis(500)
+                || probed_routes.as_ref() != Some(&routes)
+                || device_errors != previous_errors
+                || next_cue_errors != cue_errors
+            {
+                current_device = crate::audio_devices::resolve(&host, routes.master.as_deref())
+                    .ok()
+                    .and_then(|d| d.name().ok());
+                cue_available = routes
+                    .cue
+                    .as_deref()
+                    .and_then(|name| crate::audio_devices::resolve(&host, Some(name)).ok())
+                    .is_some();
+                probed_routes = Some(routes.clone());
+                device_probe_at = Instant::now();
+            }
             let cue_shared = routes.shared_device(current_device.as_deref());
             let cue_valid = routes.validate(current_device.as_deref()).is_ok();
             let next_cue_name = routes.cue.clone().map(|name| (name, routes.cue_channels));
-            let cue_available = routes
-                .cue
-                .as_deref()
-                .and_then(|name| crate::audio_devices::resolve(&host, Some(name)).ok())
-                .is_some();
             if cue_shared != cue_shared_before
                 || cue_name != next_cue_name
                 || next_cue_errors != cue_errors
@@ -2150,7 +2204,7 @@ fn native_output(
                     Err(e) => {
                         *shared.error.lock().unwrap() =
                             Some(format!("Waiting for audio output: {e:#}"));
-                        device_name = current_device;
+                        device_name = current_device.clone();
                         thread::sleep(Duration::from_millis(500));
                         continue;
                     }

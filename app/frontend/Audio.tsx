@@ -8,7 +8,7 @@ type Device = { id: string; name: string; supported: boolean; sample_rate?: numb
 type Pair = [number, number];
 type Inventory = { sample_rate?: number; devices: Device[]; default_device: string | null; routes: { working_rate?: number | null; master: string | null; cue: string | null; master_channels?: Pair; cue_channels?: Pair } };
 
-export function Audio({ audio }: { audio: AudioState }) {
+export function Audio({ audio, active = true }: { audio: AudioState; active?: boolean }) {
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [master, setMaster] = useState('');
   const [cue, setCue] = useState('');
@@ -19,10 +19,11 @@ export function Audio({ audio }: { audio: AudioState }) {
   const [scanError, setScanError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshDevices = useRef<() => Promise<void>>(async () => {});
+  const initial = useRef(true);
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let initial = true;
     let scanning = false;
     async function refresh() {
       if (scanning) return;
@@ -32,7 +33,7 @@ export function Audio({ audio }: { audio: AudioState }) {
         const value = await invoke<Inventory>('get_audio_devices');
         if (!cancelled) {
           setInventory(value);
-          if (initial) { setWorkingRate(value.routes.working_rate?.toString() ?? ''); setMaster(value.routes.master ?? ''); setCue(value.routes.cue ?? ''); setMasterPair(value.routes.master_channels ?? [1, 2]); setCuePair(value.routes.cue_channels ?? [1, 2]); initial = false; }
+          if (initial.current) { setWorkingRate(value.routes.working_rate?.toString() ?? ''); setMaster(value.routes.master ?? ''); setCue(value.routes.cue ?? ''); setMasterPair(value.routes.master_channels ?? [1, 2]); setCuePair(value.routes.cue_channels ?? [1, 2]); initial.current = false; }
           setScanError(null);
         }
       } catch (e) { if (!cancelled) setScanError(String(e)); }
@@ -41,8 +42,8 @@ export function Audio({ audio }: { audio: AudioState }) {
     }
     refreshDevices.current = refresh;
     void refresh();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
+    return () => { cancelled = true; clearTimeout(timer); refreshDevices.current = async () => {}; };
+  }, [active]);
   const sameDevice = !!cue && cue === (master || inventory?.default_device);
   const overlap = sameDevice && masterPair.some(channel => cuePair.includes(channel));
   const missing = (id: string) => !!id && !inventory?.devices.some(device => device.id === id);

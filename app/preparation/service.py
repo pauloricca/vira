@@ -240,6 +240,21 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
             if self.path == "/v1/load-priority":
                 priority_request(self, priority)
                 return
+            if self.path == "/v1/metadata/save":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 4096 or self.headers.get("Transfer-Encoding"):
+                        raise ValueError("Invalid metadata request.")
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict) or set(body) != {"track_id", "metadata"}:
+                        raise ValueError("Invalid metadata request.")
+                    track_id = body["track_id"]
+                    if not isinstance(track_id, str) or len(track_id) != 64 or any(c not in "0123456789abcdef" for c in track_id):
+                        raise ValueError("Metadata requires a valid library track ID.")
+                    self.respond(200, jobs.save_metadata(track_id, body["metadata"]))
+                except (ValueError, OSError) as exc:
+                    self.respond(400, {"error": str(exc)})
+                return
             if self.path in ("/v1/timing/get", "/v1/timing/save"):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -436,12 +451,12 @@ def make_collections_handler(collections, generated):
                 else:
                     self.respond(200, value)
                 return
-            if self.path not in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save"):
+            if self.path not in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save", "/v1/metadata/save"):
                 self.respond(404, {"error": "Unknown endpoint."})
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
+                if not 0 < length <= 4096 or self.headers.get("Transfer-Encoding"):
                     raise ValueError("Invalid track request.")
                 raw = self.rfile.read(length)
                 body = json.loads(raw)

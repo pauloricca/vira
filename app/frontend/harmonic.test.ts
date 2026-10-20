@@ -32,3 +32,12 @@ test('offers the source mode, recommends the same or relative key, and uses the 
   expect(keyChoices('unknown', 'C major')).toEqual([]);
   expect(keyChoices('C major', null).some(choice => choice.recommended)).toBe(false);
 });
+
+test('manual metadata keys override estimates and can explicitly mark a key unknown', async () => {
+  const { metadataKey } = await import('./harmonic');
+  const track = { analysis: { result: { keys: [{ key: 'C major' }] } } };
+  expect(metadataKey(track)).toBe('C major');
+  expect(metadataKey({ ...track, metadata_key: 'D minor' })).toBe('D minor');
+  expect(metadataKey({ ...track, metadata_key: '' })).toBeUndefined();
+  expect(metadataKey({ metadata_key: 'F# minor', analysis: { result: null } })).toBe('F# minor');
+});

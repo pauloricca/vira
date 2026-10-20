@@ -51,12 +51,14 @@ export type TimingRecord = { grid: Grid | null; suggestion: Grid | null; state: 
 export function validGrid(grid: Grid, duration: number) {
   return Number.isFinite(grid.bpm) && grid.bpm >= 30 && grid.bpm <= 300 && Number.isFinite(grid.downbeat_seconds) && grid.downbeat_seconds >= 0 && grid.downbeat_seconds < duration;
 }
-/** Reassign the bar downbeat to an adjacent beat without moving beat positions. */
+/** Shift bar/phrase numbering by one beat without moving beat positions. */
 export function shiftBarStart(grid: Grid, direction: -1 | 1, duration: number): Grid {
   const beat = 60 / grid.bpm;
   let downbeat_seconds = grid.downbeat_seconds + direction * beat;
-  if (downbeat_seconds < 0) downbeat_seconds += 4 * beat;
-  if (downbeat_seconds >= duration) downbeat_seconds -= 4 * beat;
+  // The anchor is also the yellow four-bar phrase start. Wrapping by just
+  // one bar loses its phrase phase and makes some yellow positions unreachable.
+  if (downbeat_seconds < 0) downbeat_seconds += 16 * beat;
+  if (downbeat_seconds >= duration) downbeat_seconds -= 16 * beat;
   const shifted = { ...grid, downbeat_seconds, reviewed: false };
   if (!validGrid(shifted, duration)) throw new Error('No shifted bar start lies within this track');
   return shifted;

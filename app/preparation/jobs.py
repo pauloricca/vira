@@ -200,6 +200,12 @@ class LibraryJobs:
         self.content = content if content is not None else ContentStore(generated)
         self.lock = threading.RLock()
         self.rows = {}
+        try:
+            self.metadata = json.loads((generated / "metadata.json").read_text())
+            if not isinstance(self.metadata, dict):
+                self.metadata = {}
+        except (OSError, ValueError):
+            self.metadata = {}
         self.revision = 0
         self.instance_id = uuid.uuid4().hex
         self.scan_pending = False
@@ -350,11 +356,43 @@ class LibraryJobs:
             self.revision += 1
             return self.state()
 
+    def metadata_row(self, original):
+        row = copy.deepcopy(original)
+        edits = self.metadata.get(row.get("_local_id", row["id"]), {})
+        for field in ("title", "artist"):
+            if field in edits:
+                row[field] = edits[field]
+        if "key" in edits:
+            row["metadata_key"] = edits["key"]
+        return row
+
+    def save_metadata(self, track_id, edits):
+        if not isinstance(edits, dict) or set(edits) not in ({"title", "artist"}, {"title", "artist", "key"}):
+            raise ValueError("Invalid metadata fields.")
+        if any(not isinstance(value, str) or len(value) > 300 for value in edits.values()):
+            raise ValueError("Metadata fields must be text of at most 300 characters.")
+        edits = {field: value.strip() for field, value in edits.items()}
+        if not edits["title"]:
+            raise ValueError("Title is required.")
+        keys = {f"{root} {mode}" for root in ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B") for mode in ("major", "minor")}
+        if "key" in edits and edits["key"] not in keys | {""}:
+            raise ValueError("Choose a valid major or minor key.")
+        with self.lock:
+            row = self.rows.get(track_id)
+            if row is None:
+                raise ValueError("Track is unavailable. Refresh the library.")
+            identity = row.get("_local_id", row["id"])
+            updated = {**self.metadata, identity: {**self.metadata.get(identity, {}), **edits}}
+            atomic_json(self.generated / "metadata.json", updated)
+            self.metadata = updated
+            self.revision += 1
+            return self.state()
+
     def state(self):
         with self.lock:
             return {"schema_version": LIBRARY_SCHEMA, "revision": self.revision, "instance_id": self.instance_id,
                     "scan_pending": self.scan_pending, "scan_error": self.scan_error,
-                    "tracks": copy.deepcopy(list(self.rows.values()))}
+                    "tracks": [self.metadata_row(row) for row in self.rows.values()]}
 
     def source(self, track_id):
         """Resolve an opaque current track ID without accepting a caller-supplied path."""
@@ -362,7 +400,7 @@ class LibraryJobs:
             row = self.rows.get(track_id)
             if not row or row["status"] != "ready":
                 raise ValueError("Track is unavailable or has changed. Refresh the library.")
-            return copy.deepcopy(row), self.music / row["filename"]
+            return self.metadata_row(row), self.music / row["filename"]
 
     def request(self, track_id, key_only=False):
         with self.lock:

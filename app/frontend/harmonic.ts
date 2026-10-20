@@ -56,3 +56,9 @@ export function keyHarmony(key: string | null | undefined): { key: number; scale
   const parsed = camelotKey(key); if (!parsed) return null;
   return { key: (parsed.letter === 'A' ? minorWheel : majorWheel)[parsed.number - 1], scale: parsed.letter === 'A' ? 1 : 0 };
 }
+
+// A saved correction takes precedence, including an explicitly unknown key.
+export function metadataKey(track?: { metadata_key?: string | null; analysis: { result: { keys: { key: string }[] } | null } }): string | undefined {
+  if (track?.metadata_key != null) return track.metadata_key || undefined;
+  return track?.analysis.result?.keys[0]?.key;
+}

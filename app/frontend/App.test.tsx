@@ -11,6 +11,45 @@ const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', 
   duration_seconds: 125.4, size_bytes: 100, modified_ns: '123', status: 'ready', error: null,
   source_hash: 'hash', analysis: { state: 'not_analysed', result: null, error: null },
 }] };
+test('workspace visibility can be hidden, restored and retained across launches', async () => {
+  invoke.mockResolvedValue(library);
+  const areas = [['patches', 'patches panel'], ['routing', 'routing tab'], ['patterns', 'patterns tab'], ['instruments', 'instruments tab']] as const;
+  const style = document.createElement('style');
+  const { readFileSync } = await vi.importActual<{ readFileSync(path: string, encoding: 'utf8'): string }>('node:fs');
+  style.textContent = readFileSync('frontend/style.css', 'utf8');
+  document.head.append(style);
+  try {
+    render(<App />);
+    await screen.findByText('Unknown artist');
+    const patches = document.querySelector('.performance-slots')!;
+    fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+    for (const [area, label] of areas) {
+      expect((screen.getByRole('checkbox', { name: `Show ${label}` }) as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(screen.getByRole('checkbox', { name: `Show ${label}` }));
+      expect(localStorage.getItem(`vira.show-${area}`)).toBe('false');
+    }
+    for (const [area] of areas.slice(1)) expect(screen.queryByRole('button', { name: area.toUpperCase() })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
+    expect(document.querySelector('.performance-slots')).toBe(patches);
+    expect(getComputedStyle(patches).display).toBe('none');
+    expect(getComputedStyle(document.querySelector('.lower-panels')!).gridTemplateColumns).toBe('minmax(0,1fr)');
+    cleanup();
+    render(<App />);
+    await screen.findByText('Unknown artist');
+    for (const [area] of areas.slice(1)) expect(screen.queryByRole('button', { name: area.toUpperCase() })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+    for (const [, label] of areas) {
+      expect((screen.getByRole('checkbox', { name: `Show ${label}` }) as HTMLInputElement).checked).toBe(false);
+      fireEvent.click(screen.getByRole('checkbox', { name: `Show ${label}` }));
+    }
+    for (const [area] of areas.slice(1)) expect(screen.getByRole('button', { name: area.toUpperCase() })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
+    expect(getComputedStyle(document.querySelector('.performance-slots')!).display).not.toBe('none');
+  } finally {
+    style.remove();
+    for (const [area] of areas) localStorage.removeItem(`vira.show-${area}`);
+  }
+}, 20000);
 test('header output volumes control master and cue independently without loaded decks', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -503,9 +542,19 @@ test('library selection follows arrows, scrolls into view and follows filtered r
   await screen.findByText('Gamma');
   await waitFor(() => expect(screen.getByText('Alpha').closest('tr')?.getAttribute('aria-selected')).toBe('true'));
 
+  const table = document.querySelector('.collection-table')!;
+  expect(table.hasAttribute('data-keyboard-navigation')).toBe(false);
   fireEvent.keyDown(window, { key: 'ArrowDown' });
   await waitFor(() => expect(screen.getByText('Beta').closest('tr')?.getAttribute('aria-selected')).toBe('true'));
   expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+  expect(table.getAttribute('data-keyboard-navigation')).toBe('true');
+  fireEvent.pointerMove(window, { clientX: 20, clientY: 30 });
+  expect(table.hasAttribute('data-keyboard-navigation')).toBe(false);
+  expect(screen.getByText('Beta').closest('tr')?.getAttribute('aria-selected')).toBe('true');
+  fireEvent.keyDown(window, { key: 'ArrowUp' });
+  expect(table.getAttribute('data-keyboard-navigation')).toBe('true');
+  fireEvent.pointerDown(window);
+  expect(table.hasAttribute('data-keyboard-navigation')).toBe(false);
 
   fireEvent.keyDown(window, { key: 'g' });
   const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
@@ -538,6 +587,7 @@ test('typing BPM in either deck or the master field keeps focus and leaves libra
   const search = screen.getByRole('searchbox', { name: 'Search music library' }) as HTMLInputElement;
   fireEvent.change(search, { target: { value: 'Filename' } });
   for (const name of ['A', 'B']) {
+    fireEvent.click(screen.getByRole('button', { name: `Timing controls deck ${name}` }));
     const panel = screen.getByRole('region', { name: `Timing & tempo deck ${name}` });
     const input = panel.querySelector<HTMLInputElement>('input[type="number"]')!;
     await waitFor(() => expect(input.disabled).toBe(false));
@@ -1659,6 +1709,7 @@ test.each(['Save grid', 'Cancel'])('unsaved grid disables approval everywhere un
   render(<App />);
   const approveA = await screen.findByRole('button', { name: 'Approve grid deck A' });
   const approveB = screen.getByRole('button', { name: 'Approve grid deck B' });
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
   const panel = screen.getByRole('region', { name: 'Timing & tempo deck A' });
   fireEvent.click(within(panel).getByRole('button', { name: 'Edit grid' }));
   await waitFor(() => expect((approveA as HTMLButtonElement).disabled).toBe(true));
@@ -1736,4 +1787,33 @@ test.each(['false', 'true'])('BPM shift migrates the saved tempo preference %s',
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   expect(screen.getByRole<HTMLInputElement>('slider', { name: 'Automatic transition BPM shift' }).value).toBe(saved === 'false' ? '0' : '100');
   localStorage.removeItem('vira.auto-tempo');
+});
+
+test('track menu edits title, artist and all musical keys, retains errors and updates the table', async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.setAttribute('open', ''); } });
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByText('Edit metadata'));
+  const dialog = screen.getByRole('dialog', { name: 'Edit metadata' });
+  expect(within(dialog).queryByLabelText(/BPM|Length/i)).toBeNull();
+  expect(within(dialog).getAllByRole('option')).toHaveLength(25);
+  fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Correct title' } });
+  fireEvent.change(within(dialog).getByLabelText('Artist'), { target: { value: 'Correct artist' } });
+  fireEvent.change(within(dialog).getByLabelText('Key'), { target: { value: 'F# minor' } });
+  invoke.mockRejectedValueOnce('Cannot save metadata');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  await within(dialog).findByRole('alert');
+  expect((within(dialog).getByLabelText('Title') as HTMLInputElement).value).toBe('Correct title');
+  invoke.mockResolvedValue({ ...library, revision: 2, tracks: [{ ...library.tracks[0], title: 'Correct title', artist: 'Correct artist', metadata_key: 'F# minor', analysis: { ...library.tracks[0].analysis, result: { grid: null, keys: [{ key: 'F# minor', correlation: 1 }], beats_seconds: [], window_keys: [], flags: [] } } }] });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(invoke).toHaveBeenCalledWith('save_track_metadata', { trackId: 'one', metadata: { title: 'Correct title', artist: 'Correct artist', key: 'F# minor' } });
+  expect(screen.getByText('Correct title')).toBeTruthy();
+  expect(screen.getByText('Correct artist')).toBeTruthy();
+  expect(screen.getByText('11A / F#min')).toBeTruthy();
+  fireEvent.click(screen.getByText('Edit metadata'));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
 });

@@ -66,6 +66,8 @@ pub struct Track {
     pub source_hash: Option<String>,
     #[serde(default)]
     pub timing_bpm: Option<f64>,
+    #[serde(default)]
+    pub metadata_key: Option<String>,
     pub analysis: Analysis,
     #[serde(default)]
     pub artwork_available: bool,
@@ -394,6 +396,17 @@ pub fn run() {
             .map_err(|e| format!("Key analysis request worker failed: {e}"))?
     }
     #[tauri::command]
+    async fn save_track_metadata(track_id: String, metadata: serde_json::Value) -> Result<Library, String> {
+        if !valid_id(&track_id) {
+            return Err("Metadata requires a library track ID.".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || service_request(
+            "/v1/metadata/save",
+            Some(serde_json::json!({"track_id": track_id, "metadata": metadata})),
+            true,
+        )).await.map_err(|e| format!("Metadata worker failed: {e}"))?
+    }
+    #[tauri::command]
     async fn approve_track_analysis(track_id: String) -> Result<Library, String> {
         tauri::async_runtime::spawn_blocking(move || approve_analysis(&track_id))
             .await
@@ -554,6 +567,12 @@ pub fn run() {
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<runtime::AudioLevels, String> {
         Ok(state.audio_levels())
+    }
+    #[tauri::command]
+    async fn get_deck_positions(
+        state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
+    ) -> Result<serde_json::Value, String> {
+        Ok(state.deck_positions())
     }
     #[tauri::command]
     async fn audition_track(
@@ -837,6 +856,7 @@ pub fn run() {
             get_library_state,
             analyse_track,
             approve_track_analysis,
+            save_track_metadata,
             analyse_track_key,
             get_track_artwork,
             get_audio_state,
@@ -850,6 +870,7 @@ pub fn run() {
             set_routing_graph,
             set_routing_parameters,
             get_audio_levels,
+            get_deck_positions,
             get_audio_devices,
             set_audio_devices,
             load_track,
@@ -914,6 +935,14 @@ mod tests {
         assert_eq!(decoded.tracks[0].timing_bpm, Some(171.93946));
         let frontend_payload = serde_json::to_value(decoded).unwrap();
         assert_eq!(frontend_payload["tracks"][0]["timing_bpm"], 171.93946);
+    }
+    #[test]
+    fn library_preserves_manual_key_without_analysis() {
+        let mut value = library("test.wav");
+        value.tracks[0].metadata_key = Some("F# minor".into());
+        let payload = serde_json::to_value(value.validate().unwrap()).unwrap();
+        assert_eq!(payload["tracks"][0]["metadata_key"], "F# minor");
+        assert!(payload["tracks"][0]["analysis"]["result"].is_null());
     }
     #[test]
     fn validates_identity_and_configured_bin() {

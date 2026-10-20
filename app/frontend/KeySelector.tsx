@@ -47,7 +47,6 @@ export function KeySelector({ deck, generation, original, other, semitones, disa
         <span>{choice.key}</span><span className="key-markers">
           {choice.original && <span className="key-original-marker">Original</span>}
           {choice.recommended && <span className="key-match-marker">Best match</span>}
-          <span className="key-selected" aria-hidden="true">{choice.semitones === semitones ? '✓' : ''}</span>
         </span>
       </button>)}
     </div>, document.body)}

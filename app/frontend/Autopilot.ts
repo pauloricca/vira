@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import type { Track } from './App';
 import type { AudioState } from './Decks';
 import type { Tag } from './Tags';
-import { camelotKey, shiftedKey } from './harmonic';
+import { metadataKey, camelotKey, shiftedKey } from './harmonic';
 
 export type AutopilotWeights = { bpm: number; tags: number; harmonic: number; direction: number; randomness: number };
 export type AutopilotSelection = 'automatic' | 'list';
@@ -24,7 +24,7 @@ export function chooseAutopilotTrack(tracks: Track[], reference: Track | undefin
   const candidates = tracks.filter(track => eligibleForAutopilot(track) && !played.has(track.id) && track.id !== reference?.id);
   if (!reference) return candidates[Math.floor(random() * candidates.length)];
   const bpm = reference.analysis.result?.grid?.bpm;
-  const key = camelotKey(shiftedKey(reference.analysis.result?.keys[0]?.key, pitch));
+  const key = camelotKey(shiftedKey(metadataKey(reference), pitch));
   const referenceTags = tags.filter(tag => tag.tracks.includes(reference.id));
   let best = -Infinity;
   let choices: Track[] = [];
@@ -33,7 +33,7 @@ export function chooseAutopilotTrack(tracks: Track[], reference: Track | undefin
     // A ten percent tempo difference scores zero; missing metadata scores zero.
     const tempo = bpm && candidateBpm ? Math.max(0, 1 - Math.abs(candidateBpm - bpm) / (bpm * .1)) : 0;
     const common = referenceTags.filter(tag => tag.tracks.includes(track.id)).length / Math.max(1, referenceTags.length);
-    const candidateKey = camelotKey(track.analysis.result?.keys[0]?.key);
+    const candidateKey = camelotKey(metadataKey(track));
     const distance = key && candidateKey ? Math.min(Math.abs(key.number - candidateKey.number), 12 - Math.abs(key.number - candidateKey.number)) : null;
     const harmonic = key && candidateKey && (distance === 0 || distance === 1 && key.letter === candidateKey.letter) ? 1 : 0;
     const direction = lastDirection && bpm && candidateBpm && Math.sign(candidateBpm - bpm) === lastDirection ? 1 : 0;

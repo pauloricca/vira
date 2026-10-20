@@ -30,7 +30,7 @@ test('shifting a bar start changes beat numbers without moving beat lines', () =
   const forward = shiftBarStart(original, 1, 100);
   const back = shiftBarStart(original, -1, 100);
   expect(forward).toEqual({ bpm: 120, downbeat_seconds: .5, reviewed: false });
-  expect(back.downbeat_seconds).toBeCloseTo(1.5);
+  expect(back.downbeat_seconds).toBeCloseTo(7.5);
   const originalMarkers = markers(original, 0, 2);
   for (const shifted of [forward, back]) {
     expect(markers(shifted, 0, 2).map(marker => marker.seconds)).toEqual(originalMarkers.map(marker => marker.seconds));
@@ -38,6 +38,30 @@ test('shifting a bar start changes beat numbers without moving beat lines', () =
   expect(markers(forward, 0, 2).find(marker => marker.seconds === .5)?.beat).toBe(1);
   expect(markers(back, 0, 2).find(marker => marker.seconds === 1.5)?.beat).toBe(1);
   expect(shiftBarStart(forward, -1, 100).downbeat_seconds).toBe(0);
+});
+test('bar shifts reach every yellow phrase position across either source boundary', () => {
+  for (const direction of [-1, 1] as const) {
+    for (const downbeat_seconds of [.125, 32.125]) {
+      const original = { bpm: 120, downbeat_seconds, reviewed: true };
+      let shifted = original;
+      const phases = new Set<number>();
+      for (let step = 1; step <= 16; step++) {
+        shifted = shiftBarStart(shifted, direction, 32.25);
+        const yellow = markers(shifted, 0, 8).filter(m => m.beat === 1 && (m.bar - 1) % 4 === 0);
+        expect(yellow).toHaveLength(1);
+        const expected = .125 + ((direction * step % 16 + 16) % 16) * .5;
+        expect(yellow[0].seconds).toBeCloseTo(expected);
+        phases.add(yellow[0].seconds);
+        expect(markers(shifted, 0, 8).map(m => m.seconds)).toEqual(markers(original, 0, 8).map(m => m.seconds));
+      }
+      expect(phases.size).toBe(16);
+    }
+  }
+  // Four backward presses move the yellow beat a bar earlier, not back to zero.
+  let shifted = { bpm: 120, downbeat_seconds: 0, reviewed: false };
+  for (let i = 0; i < 4; i++) shifted = shiftBarStart(shifted, -1, 100);
+  expect(shifted.downbeat_seconds).toBe(6);
+  expect(markers(shifted, 0, 8).filter(m => m.beat === 1 && (m.bar - 1) % 4 === 0).map(m => m.seconds)).toEqual([6]);
 });
 test('reset clears reviewed assertion; saving never applies to another deck', async () => {
   const record = { grid, state: 'reviewed', suggestion: { ...grid, bpm: 100, reviewed: false }, source_hash: 'c'.repeat(64) };

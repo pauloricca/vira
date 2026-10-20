@@ -145,6 +145,16 @@ class MetadataTests(unittest.TestCase):
             self.assertEqual(len(tracks), 2)
             self.assertNotEqual(tracks[0]["id"], tracks[1]["id"])
             self.assertEqual([row["collection"] for row in tracks], health["music_folders"])
+            edited = post("/v1/metadata/save", {"track_id": tracks[1]["id"], "metadata": {"title": "New title é", "artist": "New artist", "key": "D minor"}})
+            self.assertEqual(edited["tracks"][1]["title"], "New title é")
+            self.assertEqual(edited["tracks"][1]["metadata_key"], "D minor")
+            self.assertEqual(edited["tracks"][0]["title"], tracks[0]["title"])
+            self.assertIsNone(edited["tracks"][1]["analysis"]["result"])
+            refreshed = post("/v1/library/scan")
+            self.assertEqual(refreshed["tracks"][1]["metadata_key"], "D minor")
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post("/v1/metadata/save", {"track_id": tracks[1]["id"], "metadata": {"title": "Invalid", "artist": "Artist", "bpm": 140}})
+            self.assertEqual(rejected.exception.code, 400)
             grid = {"bpm": 120, "downbeat_seconds": .1, "reviewed": True}
             post("/v1/timing/save", {"track_id": tracks[1]["id"], "grid": grid})
             self.assertEqual(post("/v1/timing/get", {"track_id": tracks[1]["id"]})["grid"], grid)

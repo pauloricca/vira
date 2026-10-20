@@ -248,3 +248,11 @@ test('existing saved weights keep their values and get defaults for the new fact
   const hook = setup(audio([null, null], [false, false]));
   expect(hook.result.current.weights).toEqual({ bpm: 20, tags: 40, harmonic: 60, direction: 50, randomness: 0 });
 });
+
+test('harmonic Autopilot uses corrected keys for both reference and candidates', () => {
+  const weights = { bpm: 0, tags: 0, harmonic: 100, direction: 0, randomness: 0 };
+  const correctedSource = { ...source, metadata_key: 'F# major' };
+  const correctedCandidate = { ...track('corrected', 120, 'C major'), metadata_key: 'F# major' };
+  const estimatedMatch = track('estimated', 120, 'C major');
+  expect(chooseAutopilotTrack([estimatedMatch, correctedCandidate], correctedSource, new Set(), [], weights, 0, () => 0)).toBe(correctedCandidate);
+});

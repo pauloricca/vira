@@ -31,7 +31,7 @@ const shortcutCategories = [
     ['Cmd + N', 'Toggle selected library track in the planned Play Next order; Autopilot gives new choices priority', 'Decks page; readable track selected; outside text fields; key and collection dropdowns closed'],
     ['Cmd + ←', 'Load selected library track onto deck A', 'Decks page; readable track; deck stopped or deck fader at 0'],
     ['Cmd + →', 'Load selected library track onto deck B', 'Decks page; readable track; deck stopped or deck fader at 0'],
-    ['↑ / ↓', 'Select previous / next library track in the selected categories', 'Decks page; collection selector closed'],
+    ['↑ / ↓', 'Select previous / next library track in the selected categories; suppress row hover until the pointer moves or clicks', 'Decks page; collection selector closed'],
     ['Type text', 'Focus library search and append to query', 'Decks page; outside typing fields; without Cmd, Ctrl or Alt; collection selector closed'],
   ] },
   { title: 'Track timing & analysis', shortcuts: [
@@ -41,7 +41,7 @@ const shortcutCategories = [
     ['Drag the rolling waveform', 'Move the entire grid; with a pinned beat, drag away from the pin to scale around it (30–300 BPM)', 'Stopped track; Edit grid enabled; hand cursor over unpinned beat marks; with a pin, resize cursor away from it and unavailable cursor over the fixed pin'],
     ['Command-click a beat mark', 'Pin any beat as the scaling centre (green); click another beat to move the pin, or the same beat to unpin', 'Stopped track; Edit grid enabled; Save grid commits changes, Cancel discards them'],
     ['Cmd + B', 'Set reference beat at the playhead; without BPM, set two references to estimate timing from bar starts', 'Decks page; active loaded deck, or first loaded deck; stopped; grid editing closed'],
-    ['Cmd + Shift + ← / →', 'Shift bar start one beat earlier / later; while playing, master clock follows and tempo lock is preserved', 'Decks page; active loaded deck, or first loaded deck; timing grid required; stopped or the only playing deck; grid editing closed'],
+    ['Cmd + Shift + ← / →', 'Shift bar and yellow four-bar phrase starts one beat earlier / later; all 16 phrase positions are reachable. While playing, master clock follows and tempo lock is preserved', 'Decks page; active loaded deck, or first loaded deck; timing grid required; stopped or the only playing deck; grid editing closed'],
     ['Cmd + Shift + A', 'Approve track analysis', 'Decks page; active loaded deck, or first loaded deck; timing grid required; no unsaved grid edits on either loaded copy; analysed, needs review, or stale with saved analysis; also available while playing'],
     ['← / →', 'Move timing cursor backward / forward 10 ms', 'Timing editor waveform receives keyboard input'],
     ['Shift + ← / →', 'Move timing cursor backward / forward 1 second', 'Timing editor waveform receives keyboard input'],

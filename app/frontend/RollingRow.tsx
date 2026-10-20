@@ -5,6 +5,7 @@ import { useScrub } from './scrub';
 import { useTransitionDrag } from './transitionDrag';
 import type { DeckState } from './Decks';
 import { DisplayPosition, animate } from './transport';
+import { subscribePositions } from './positionFeed';
 import { WaveTiles, gridGeometry, trackSampleRate } from './waveform';
 import { drawTransitionGuides, transitionMarkers, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
@@ -59,6 +60,7 @@ export function RollingRow({ state, running, window, control, transition, master
   }
   const firstClick = useRef<{ anchor: number; at: number } | null>(null);
   const clock = useRef(new DisplayPosition());
+  const positionSample = useRef({ generation: -1, sampled: -Infinity });
   const tiles = useRef(new WaveTiles());
   const size = useRef({width:0,height:100,dpr:1});
   const [visible,setVisible]=useState(true);
@@ -123,9 +125,30 @@ export function RollingRow({ state, running, window, control, transition, master
   useLayoutEffect(() => {
     latest.current={state,running,window,timingOpen,transition,masterBpm};
     const received=state.received_at ?? performance.now();
-    clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0,start_seconds:state.track?.start_seconds},received,state.sampled_at ?? received);
+    const sampled = state.sampled_at ?? received;
+    // A full-state request can have started before the most recent fast sample.
+    // Still accept its metadata, but do not rewind the display to that position.
+    if (!running || positionSample.current.generation !== state.generation || sampled > positionSample.current.sampled) {
+      clock.current.update({...state,playing:state.playing && !state.launch_pending && running,duration:state.track?.duration_seconds ?? 0,start_seconds:state.track?.start_seconds},received,sampled);
+      positionSample.current = { generation: state.generation, sampled };
+    }
     paint.current(performance.now());
   },[state,running,window,timingOpen,transition,masterBpm]);
+  useEffect(() => {
+    if (!running || !visible || !state.track) return;
+    return subscribePositions((positions, received, sampled) => {
+      const current = latest.current.state;
+      const position = positions[current.deck];
+      if (!latest.current.running || !current.track || position.generation !== current.generation
+        || positionSample.current.generation === position.generation && sampled < positionSample.current.sampled) return;
+      const before = clock.current.at(received);
+      positionSample.current = { generation: position.generation, sampled };
+      clock.current.update({ ...position, duration: current.track?.duration_seconds ?? 0, start_seconds: current.track?.start_seconds }, received, sampled, .025);
+      // Stopped jogs are actual audio positions, sampled at display cadence.
+      // No prediction from MIDI deltas: direction changes and seeks stay exact.
+      if ((!current.playing || current.launch_pending) && clock.current.at(received) !== before) paint.current(received);
+    });
+  }, [running, visible, state.generation, !!state.track]);
   useEffect(() => {
     const element=canvas.current; if (!element) return;
     function resize() {

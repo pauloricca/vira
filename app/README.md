@@ -565,12 +565,14 @@ estimate, not physical speaker timing or measured end-to-end latency. The output
 status exposes starvation and device errors during development. Scheduling/output
 failure is explicit; automatic device/sleep recovery remains deferred.
 
-Full-track preloading is capped at **about 11.65 minutes per source**, independent
-of output sample rate (256 MiB stereo PCM at 48 kHz, 512 MiB at 96 kHz).
+Full-track preloading is capped at **4 hours per source**, independent
+of output sample rate. Stereo float PCM uses about 1.29 GiB per hour at 48 kHz
+and 2.57 GiB per hour at 96 kHz; available memory can limit practical track length.
+Failed audio-buffer reservations return an actionable memory error.
 Larger sources fail with an actionable limit message. The
 native cache holds weak references; source buffers are released after the last
 voice/preparation owner retires. Temporary replacement buffers can increase
-memory above the two active sources. Streaming, cache eviction and larger files
+memory above the two active sources. Streaming and larger files
 remain later work.
 
 ```sh

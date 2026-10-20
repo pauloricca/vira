@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { Audio } from './Audio';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-afterEach(() => { cleanup(); invoke.mockReset(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); });
 const inventory = { devices: [{ id: 'Speakers', name: 'Speakers', supported: true }, { id: 'Headphones', name: 'Headphones', supported: true }], default_device: 'Speakers', routes: { master: null, cue: null } };
 const audio = { running: true, error: null, telemetry: {}, decks: [] };
 test('restores output selections, prevents speaker sharing and applies separate devices', async () => {
@@ -125,4 +125,23 @@ test('returning to native mode saves the preference even when the engine rate st
   fireEvent.change(rate, { target: { value: '' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: null, masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
+});
+
+test('only scans while Settings is visible and preserves unapplied selections', async () => {
+  vi.useFakeTimers();
+  invoke.mockResolvedValue(inventory);
+  const page = render(<Audio audio={audio} active={false} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(invoke).not.toHaveBeenCalled();
+  page.rerender(<Audio audio={audio} active />);
+  await act(async () => {});
+  expect(invoke).toHaveBeenCalledTimes(1);
+  fireEvent.change(screen.getByRole('combobox', {name: 'Cue headphones device'}), {target: {value: 'Headphones'}});
+  page.rerender(<Audio audio={audio} active={false} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(invoke).toHaveBeenCalledTimes(1);
+  page.rerender(<Audio audio={audio} active />);
+  await act(async () => {});
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect((screen.getByRole('combobox', {name: 'Cue headphones device'}) as HTMLSelectElement).value).toBe('Headphones');
 });

@@ -6,10 +6,12 @@ use std::{io::Read, sync::Arc};
 
 pub const AUDITION_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
-// Preserve the original ~11.65-minute capacity at every device sample rate.
+const MAX_SOURCE_SECONDS: usize = 4 * 60 * 60;
+
+// Allow extended tracks and mixes at every device sample rate.
 // The audition retention budget stays fixed independently of active sources.
 fn max_source_frames(sample_rate: usize) -> usize {
-    (256 * 1024 * 1024 / 8) * sample_rate / 48000
+    MAX_SOURCE_SECONDS * sample_rate
 }
 
 pub(crate) struct LoadPriority(String);
@@ -117,10 +119,12 @@ impl Prepared {
             "Unsupported prepared PCM settings"
         );
         ensure!(
-            self.frames > 0
-                && self.frames <= max_source_frames(crate::sample_rate::get())
-                && self.frames.checked_mul(8) == Some(self.pcm_bytes),
-            "Full-track preload exceeds the per-source development limit (about 11.65 minutes at every output sample rate)"
+            self.frames > 0 && self.frames.checked_mul(8) == Some(self.pcm_bytes),
+            "Invalid prepared PCM frame count or byte length"
+        );
+        ensure!(
+            self.frames <= max_source_frames(crate::sample_rate::get()),
+            "Track exceeds the 4-hour per-source playback limit"
         );
         ensure!(
             self.duration_seconds.is_finite()
@@ -179,8 +183,14 @@ impl Prepared {
             response.content_length() == Some(self.pcm_bytes as u64),
             "Prepared PCM download length mismatch"
         );
-        let mut left = Vec::with_capacity(self.frames);
-        let mut right = Vec::with_capacity(self.frames);
+        ensure!(current(), "Load superseded by a newer selection");
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        left.try_reserve_exact(self.frames)
+            .map_err(|_| anyhow::anyhow!("Not enough memory to load this track's audio"))?;
+        right
+            .try_reserve_exact(self.frames)
+            .map_err(|_| anyhow::anyhow!("Not enough memory to load this track's audio"))?;
         let mut buffer = [0_u8; 65536];
         let mut remaining = self.pcm_bytes;
         let mut hash = Sha256::new();
@@ -279,12 +289,20 @@ mod rate_tests {
             "pcm_hash":"c".repeat(64),"pcm_bytes":frames*8
         })).unwrap();
         prepared.validate(&track, &hash).unwrap();
-        // Ya Mahla is ~6:54: its 96 kHz PCM exceeds the old fixed byte limit.
+        // Real long tracks and multi-hour mixes must work at every output rate.
         for sample_rate in [44100, 48000, 96000, 192000] {
             assert!(sample_rate * 414 <= max_source_frames(sample_rate));
-            assert!(sample_rate * 700 > max_source_frames(sample_rate));
+            assert!(sample_rate * 777 <= max_source_frames(sample_rate));
+            assert!(sample_rate * 3 * 60 * 60 <= max_source_frames(sample_rate));
+            assert_eq!(max_source_frames(sample_rate), sample_rate * 4 * 60 * 60);
         }
         let original_frames = prepared.frames;
+        for seconds in [777, 60 * 60, 3 * 60 * 60] {
+            prepared.frames = rate * seconds;
+            prepared.pcm_bytes = prepared.frames * 8;
+            prepared.duration_seconds = seconds as f64;
+            prepared.validate_audio(&track, &hash).unwrap();
+        }
         prepared.frames = max_source_frames(rate);
         prepared.pcm_bytes = prepared.frames * 8;
         prepared.duration_seconds = prepared.frames as f64 / rate as f64;
