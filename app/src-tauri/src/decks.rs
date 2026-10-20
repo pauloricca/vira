@@ -50,6 +50,7 @@ fn bass_swap_due(beats: f64, length: f64, bpm: f64) -> bool {
 
 pub struct Voice {
     dsp: Dsp,
+    direct_playback: bool,
     pub mixer: crate::mixer::MixerDsp,
     scrub: Option<(f64, f64, usize)>,
     wheel_scrub: Option<(f64, f64, f64, f32)>,
@@ -103,10 +104,9 @@ impl Voice {
     // Construction and buffer reservation occur on the ordinary preparation thread.
     pub fn new(source: Arc<Source>, generation: u64) -> Self {
         let dsp = Dsp::new(3, 1.0, 0.0);
-        let pad = dsp.padding();
-        let skip = dsp.delay();
         Self {
             dsp,
+            direct_playback: true,
             mixer: crate::mixer::MixerDsp::default(),
             scrub: None,
             wheel_scrub: None,
@@ -152,8 +152,8 @@ impl Voice {
             gain: 0.8,
             generation,
             position_epoch: 0,
-            pad,
-            skip,
+            pad: 0,
+            skip: 0,
             tail: 0,
             left: [0.; CHUNK],
             right: [0.; CHUNK],
@@ -197,6 +197,11 @@ impl Voice {
         self.transition_from = self.last_sample;
         self.pad = self.dsp.padding();
         self.skip = self.dsp.delay();
+        self.direct_playback = self.clock.speed == 1. && self.pitch_semitones == 0.;
+        if self.direct_playback {
+            self.pad = 0;
+            self.skip = 0;
+        }
         self.tail = 0;
         self.read = 0;
         self.available = 0;
@@ -634,6 +639,22 @@ impl Voice {
         }
         self.advance_tempo_ramp();
         self.advance_jog();
+        if self.direct_playback && (self.clock.speed != 1. || self.pitch_semitones != 0.) {
+            // A smooth tempo/jog change does not seek. Start the stretcher at
+            // the current audible source position, discarding only direct-path
+            // read-ahead, and blend using the existing 5 ms transition.
+            self.direct_playback = false;
+            self.dsp.reset();
+            self.input =
+                (self.clock.at(self.output).round() as usize).clamp(self.start, self.source.len());
+            self.read = 0;
+            self.available = 0;
+            self.pad = self.dsp.padding();
+            self.skip = self.dsp.delay();
+            self.tail = 0;
+            self.transition = crate::sample_rate::fine_frames();
+            self.transition_from = self.last_sample;
+        }
         if let (Some(start), Some(end)) = (self.loop_start, self.loop_end) {
             if self.clock.at(self.output) >= end as f64 {
                 let slip_position = self.slip_position;
@@ -704,7 +725,18 @@ impl Voice {
                 // The timing reference click retains its independent volume.
                 return Ok(value.map(|v| v * if ROUTED { 1. } else { self.gain } + click));
             }
-            if self.dsp.available() > 0 {
+            if self.direct_playback {
+                let n = CHUNK.min(self.source.len() - self.input);
+                if n == 0 {
+                    self.playing = false;
+                    return Ok([0.; 2]);
+                }
+                self.left[..n].copy_from_slice(&self.source.left[self.input..self.input + n]);
+                self.right[..n].copy_from_slice(&self.source.right[self.input..self.input + n]);
+                self.input += n;
+                self.read = 0;
+                self.available = n;
+            } else if self.dsp.available() > 0 {
                 self.available = self.dsp.retrieve(&mut self.left, &mut self.right);
                 self.read = 0;
             } else if self.pad > 0 {
@@ -1001,7 +1033,7 @@ pub enum Command {
     FastAutoTransition(usize, [u64; 2], bool, u8),
     EditAuto(usize, [u64; 2], u8, f64),
     AutoBars(u8),
-    AutoTempo(bool),
+    AutoTempo(f64),
     AutoStyle(u8),
     MasterTempo(f64),
     MasterTarget(f64),
@@ -1097,7 +1129,7 @@ pub struct Decks {
     pub note_lanes: [crate::deck_notes::Lane; 2],
     auto: Option<AutoTransition>,
     auto_bars: u8,
-    auto_tempo: bool,
+    auto_tempo: f64,
     auto_bass_swap: bool,
     auto_smart: bool,
     audition: Option<Box<Audition>>,
@@ -1129,7 +1161,7 @@ impl Decks {
             note_lanes: std::array::from_fn(|_| crate::deck_notes::Lane::new()),
             auto: None,
             auto_bars: 8,
-            auto_tempo: true,
+            auto_tempo: 1.,
             auto_bass_swap: false,
             auto_smart: false,
             audition: None,
@@ -1186,11 +1218,7 @@ impl Decks {
         let bg = b
             .grid
             .ok_or_else(|| anyhow::anyhow!("Both decks need timing grids"))?;
-        let target = if self.auto_tempo {
-            bg.bpm
-        } else {
-            self.master_bpm
-        };
+        let target = self.master_bpm + (bg.bpm - self.master_bpm) * self.auto_tempo;
         for grid in [ag, bg] {
             grid.speed(self.master_bpm)?;
             grid.speed(target)?;
@@ -1758,7 +1786,7 @@ impl Decks {
                     self.auto_bars = bars;
                 }
             }
-            Command::AutoTempo(enabled) => self.auto_tempo = enabled,
+            Command::AutoTempo(amount) => self.auto_tempo = amount.clamp(0., 1.),
             Command::AutoStyle(style) => {
                 self.auto_bass_swap = style != 0;
                 self.auto_smart = style == 2;
@@ -2490,7 +2518,16 @@ impl Decks {
         None
     }
     pub fn next(&mut self) -> Result<Frame> {
+        self.prepare_notes();
         self.next_inner(false)
+    }
+    fn prepare_notes(&mut self) {
+        for d in 0..2 {
+            let (generation, pitch) = self.voices[d]
+                .as_ref()
+                .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
+            self.note_lanes[d].prepare(generation, pitch);
+        }
     }
     fn next_inner(&mut self, deferred: bool) -> Result<Frame> {
         for d in 0..2 {
@@ -2536,7 +2573,8 @@ impl Decks {
                 voice.launch_beat = None;
             }
         }
-        if self.drift_target.is_some() || self.tempo_target.is_some() {
+        let master_ramping = self.drift_target.is_some() || self.tempo_target.is_some();
+        if master_ramping {
             let target = self.tempo_target.or_else(|| {
                 self.drift_target
                     .and_then(|d| self.voices[d].as_ref()?.grid.map(|g| g.bpm))
@@ -2595,12 +2633,6 @@ impl Decks {
             }
             self.crossfader_ramp -= 1;
         }
-        for d in 0..2 {
-            let (generation, pitch) = self.voices[d]
-                .as_ref()
-                .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
-            self.note_lanes[d].prepare(generation, pitch);
-        }
         let routed = !self.routing.conventional;
         let mut players = [[0.; 2]; 2];
         for (d, voice) in self.voices.iter_mut().enumerate() {
@@ -2626,7 +2658,15 @@ impl Decks {
                     && (voice.target_bpm - self.master_bpm).abs() > update_delta
                 {
                     if voice.grid.is_some_and(|g| g.speed(self.master_bpm).is_ok()) {
-                        let _ = voice.tempo(self.master_bpm);
+                        if master_ramping {
+                            // Gradual master changes follow the same continuous
+                            // ratio path as automatic transitions. Re-seeking
+                            // every 0.05 BPM repeatedly re-primes the stretcher
+                            // and fades the audio on the real-time producer.
+                            voice.continuous_tempo(self.master_bpm);
+                        } else {
+                            let _ = voice.tempo(self.master_bpm);
+                        }
                     } else {
                         voice.synced = false;
                         voice.timing_error = 2;
@@ -2739,12 +2779,11 @@ impl Decks {
         block: &mut [Frame; PRODUCER_FRAMES],
         drivers: &mut [crate::teia_audio::Driver],
     ) -> Result<()> {
-        for d in 0..2 {
-            let (generation, pitch) = self.voices[d]
-                .as_ref()
-                .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
-            self.note_lanes[d].prepare(generation, pitch);
-        }
+        // Drain incoming MIDI and inspect route cancellation once per block.
+        // Repeating preparation per sample resets the 2,048-slot release scan,
+        // even when idle. Timestamped events are still applied by next_inner at
+        // their exact frame within this block.
+        self.prepare_notes();
         let routed = !self.routing.conventional;
         for frame in block.iter_mut() {
             *frame = self.next_inner(routed)?;
@@ -2774,6 +2813,65 @@ impl Decks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_tempo_and_key_play_source_samples_without_stretching() {
+        let pcm: Vec<_> = (0..2049).map(|i| (i as f32 * 0.13).sin() * 0.2).collect();
+        let source = Arc::new(Source {
+            bass_profile: Default::default(),
+            left: pcm.clone(),
+            right: pcm.iter().map(|x| -x).collect(),
+        });
+        let mut voice = Voice::new(source, 1);
+        voice.gain = 1.;
+        voice.play();
+        for (i, sample) in pcm.iter().enumerate() {
+            let value = voice.next().unwrap();
+            if i >= crate::sample_rate::fine_frames() {
+                assert_eq!(value, [*sample, -*sample]);
+            }
+            assert_eq!(voice.position, i + 1);
+        }
+        assert!(!voice.playing);
+        assert_eq!(voice.dsp.calls.count, 0);
+    }
+
+    #[test]
+    fn direct_playback_enters_stretcher_on_smooth_tempo_and_jog_changes() {
+        for jog in [false, true] {
+            let mut voice = Voice::new(source(), 1);
+            voice.apply_grid(Grid {
+                bpm: 120.,
+                downbeat_seconds: 0.,
+                reviewed: true,
+            });
+            voice.play();
+            for _ in 0..1000 {
+                voice.next().unwrap();
+            }
+            let epoch = voice.position_epoch;
+            let position = voice.seconds();
+            if jog {
+                voice.jog_by(0.03);
+            } else {
+                voice.smooth_tempo(132.).unwrap();
+            }
+            for _ in 0..crate::sample_rate::get() / 5 {
+                assert!(voice.next().unwrap().iter().all(|x| x.is_finite()));
+            }
+            assert!(!voice.direct_playback);
+            assert!(voice.dsp.calls.count > 0);
+            assert_eq!(voice.position_epoch, epoch);
+            assert!(voice.seconds() > position + 0.18 && voice.seconds() < position + 0.25);
+            voice.tempo(120.).unwrap();
+            assert!(voice.direct_playback);
+            let calls = voice.dsp.calls.count;
+            for _ in 0..1024 {
+                voice.next().unwrap();
+            }
+            assert_eq!(voice.dsp.calls.count, calls);
+        }
+    }
+
     #[test]
     fn sample_rate_contract_preserves_duration_pitch_beats_and_seek() {
         let rate = crate::sample_rate::get();
@@ -2825,6 +2923,35 @@ mod tests {
         }
         assert!((decks.global_beat - start - 2.).abs() < 1e-8);
         assert!((decks.voices[0].as_ref().unwrap().seconds() - 1.).abs() <= 1. / rate as f64);
+    }
+
+    #[test]
+    fn gradual_master_tempo_does_not_repeatedly_fade_or_reprime_playback() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        let voice = decks.voices[0].as_mut().unwrap();
+        voice.apply_grid(Grid {
+            bpm: 120.,
+            downbeat_seconds: 0.,
+            reviewed: true,
+        });
+        voice.synced = true;
+        voice.play();
+        decks.command(Command::MasterTempo(120.), [1, 0]);
+        decks.command(Command::DriftRate(2.), [1, 0]);
+        decks.command(Command::MasterTarget(121.), [1, 0]);
+        let mut block = [Frame::default(); PRODUCER_FRAMES];
+        for _ in 0..crate::sample_rate::get().div_ceil(PRODUCER_FRAMES) {
+            decks.next_block(&mut block, &mut []).unwrap();
+            assert!(block
+                .iter()
+                .all(|f| f.samples.iter().all(|x| x.is_finite())));
+            if decks.output_frame > crate::sample_rate::get() as u64 / 10 {
+                assert_eq!(decks.voices[0].as_ref().unwrap().transition, 0);
+            }
+        }
+        assert_eq!(decks.master_bpm, 121.);
+        assert_eq!(decks.voices[0].as_ref().unwrap().target_bpm, 121.);
     }
 
     #[test]
@@ -2907,6 +3034,38 @@ mod tests {
         assert_eq!(block[10].pitches[0], 3.);
         assert_eq!(block[19].pitches[0], 3.);
         assert_eq!(block[20].pitches[0], -1.);
+    }
+    #[test]
+    fn deck_note_blocks_preserve_future_events_and_release_cancelled_routes() {
+        use teia_kernel::hosted::EventKind;
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::Pitch(0, 1, -1.), [1, 0]);
+        let mut block = [Frame::default(); PRODUCER_FRAMES];
+        decks.next_block(&mut block, &mut []).unwrap();
+        let h = decks.note_lanes[0].midi.host.clone();
+        h.anchor(
+            decks.output_frame + PRODUCER_FRAMES as u64 + 17,
+            1_000_000_000,
+        );
+        assert!(h.enqueue_routed_time(
+            1_000_000_000,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 64,
+                velocity: 1.,
+            },
+            3,
+        ));
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(block.iter().all(|frame| frame.pitches[0] == -1.));
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert_eq!(block[16].pitches[0], -1.);
+        assert_eq!(block[17].pitches[0], 3.);
+        assert_eq!(block[PRODUCER_FRAMES - 1].pitches[0], 3.);
+        h.cancel_route(3);
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(block.iter().all(|frame| frame.pitches[0] == -1.));
     }
     #[test]
     fn first_play_establishes_master_once() {
@@ -3344,10 +3503,53 @@ mod tests {
             );
         }
         decks.command(Command::AutoBars(bars), [1, 1]);
-        decks.command(Command::AutoTempo(change_tempo), [1, 1]);
+        decks.command(
+            Command::AutoTempo(if change_tempo { 1. } else { 0. }),
+            [1, 1],
+        );
         decks.command(Command::Play(from, 1), [1, 1]);
         decks
     }
+    #[test]
+    fn auto_bpm_shift_interpolates_up_and_down_and_is_captured_when_armed() {
+        for from in [0, 1] {
+            for initial in [120., 160.] {
+                for amount in [0., 0.25, 0.5, 1.] {
+                    for fast in [false, true] {
+                        let mut decks = auto_decks(from, 1, true);
+                        decks.master_bpm = initial;
+                        decks.command(Command::AutoTempo(amount), [1, 1]);
+                        let command = if fast {
+                            Command::FastAutoTransition(from, [1, 1], false, 1)
+                        } else {
+                            Command::AutoTransition(from, [1, 1], false)
+                        };
+                        decks.command(command, [1, 1]);
+                        let target = initial + (140. - initial) * amount;
+                        assert_eq!(decks.auto.unwrap().target_bpm, target);
+                        // Changing the setting leaves an already armed ramp intact.
+                        decks.command(Command::AutoTempo(1. - amount), [1, 1]);
+                        decks.voices[1 - from].as_mut().unwrap().playing = true;
+                        let auto = decks.auto.as_mut().unwrap();
+                        auto.started = true;
+                        auto.mixed_beats = auto.beats / 2.;
+                        decks.advance_auto();
+                        assert!((decks.master_bpm - (initial + target) / 2.).abs() < 1e-9);
+                        let auto = decks.auto.as_mut().unwrap();
+                        auto.mixed_beats = auto.beats;
+                        decks.advance_auto();
+                        assert!(decks.auto.is_none());
+                        assert!((decks.master_bpm - target).abs() < 1e-9);
+                        assert!(
+                            (decks.voices[1 - from].as_ref().unwrap().target_bpm - target).abs()
+                                < 1e-9
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn fast_auto_uses_its_own_overlap_and_retains_normal_settings() {
         for from in [0, 1] {

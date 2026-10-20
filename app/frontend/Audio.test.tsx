@@ -17,7 +17,7 @@ test('restores output selections, prevents speaker sharing and applies separate 
   expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(cue, { target: { value: 'Headphones' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: 'Headphones', masterChannels: [1,2], cueChannels: [1,2] }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: 'Headphones', masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(true));
 });
 test('keeps disconnected saved devices visible and allows switching cue off', async () => {
@@ -28,7 +28,7 @@ test('keeps disconnected saved devices visible and allows switching cue off', as
   expect(screen.getByRole('alert').textContent).toBe('Device disconnected');
   fireEvent.change(screen.getByRole('combobox', { name: 'Cue headphones device' }), { target: { value: '' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: null, masterChannels: [1,2], cueChannels: [1,2] }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: null, masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
 });
 test('device errors are shown without reporting a successful selection', async () => {
   invoke.mockImplementation(command => command === 'get_audio_devices' ? Promise.resolve(inventory) : Promise.reject('Device disconnected'));
@@ -68,7 +68,7 @@ test('44.1 kHz selection explains restart and keeps separate cue devices availab
   expect(screen.queryByRole('option', { name: /unavailable at/ })).toBeNull();
   expect(screen.getAllByRole('option', { name: '48 only · 48 kHz' }).every(option => !(option as HTMLOptionElement).disabled)).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: null, masterChannels: [1,2], cueChannels: [1,2] }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: null, masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
 });
 
 const multichannel = { ...inventory, sample_rate: 96000, devices: [
@@ -89,7 +89,7 @@ test('Starlight shares one stream with master 1–2 and cue 3–4, rejects overl
   expect(screen.getByRole('alert').textContent).toContain('must not overlap');
   fireEvent.change(screen.getByLabelText('Cue output channels'), { target: { value: '3,4' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: 'Starlight', masterChannels: [1,2], cueChannels: [3,4] }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Starlight', cue: 'Starlight', masterChannels: [1,2], cueChannels: [3,4], workingRate: null }));
 });
 test('96 kHz master can select a 44.1 kHz Starlight cue and restore its saved channels', async () => {
   invoke.mockResolvedValue({ ...multichannel, routes: { master: 'Speakers', cue: 'Starlight', master_channels: [1,2], cue_channels: [3,4] } });
@@ -100,5 +100,29 @@ test('96 kHz master can select a 44.1 kHz Starlight cue and restore its saved ch
   expect(screen.getByText(/Cue uses 44.1 kHz/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Cue output channels'), { target: { value: '1,2' } });
   fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: 'Starlight', masterChannels: [1,2], cueChannels: [1,2] }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: 'Speakers', cue: 'Starlight', masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
+});
+
+
+test('fixed working rate restores, validates hardware support and warns before restarting', async () => {
+  invoke.mockResolvedValue({ ...multichannel, routes: { master: null, cue: null, working_rate: 48000 } });
+  render(<Audio audio={{ ...audio, telemetry: { sample_rate: 48000 } }} />);
+  const rate = screen.getByLabelText('Internal working audio rate') as HTMLSelectElement;
+  await waitFor(() => expect(rate.value).toBe('48000'));
+  expect((screen.getByRole('button', { name: 'Apply outputs' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('option', { name: '192 kHz · unavailable on master' }) as HTMLOptionElement).disabled).toBe(true);
+  fireEvent.change(rate, { target: { value: '44100' } });
+  expect(screen.getByText(/Changing to 44.1 kHz restarts VIRA/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Apply outputs & restart VIRA' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: null, masterChannels: [1,2], cueChannels: [1,2], workingRate: 44100 }));
+});
+
+test('returning to native mode saves the preference even when the engine rate stays the same', async () => {
+  invoke.mockImplementation(command => Promise.resolve(command === 'get_audio_devices' ? { ...multichannel, routes: { master: null, cue: null, working_rate: 96000 } } : undefined));
+  render(<Audio audio={{ ...audio, telemetry: { sample_rate: 96000 } }} />);
+  const rate = screen.getByLabelText('Internal working audio rate') as HTMLSelectElement;
+  await waitFor(() => expect(rate.value).toBe('96000'));
+  fireEvent.change(rate, { target: { value: '' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply outputs' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_audio_devices', { master: null, cue: null, masterChannels: [1,2], cueChannels: [1,2], workingRate: null }));
 });

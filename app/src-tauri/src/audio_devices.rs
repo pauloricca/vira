@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 pub struct Routes {
     pub master: Option<String>,
     pub cue: Option<String>,
+    /// None follows the master device current/default rate.
+    #[serde(default)]
+    pub working_rate: Option<u32>,
     #[serde(default = "default_pair")]
     pub master_channels: [u16; 2],
     #[serde(default = "default_pair")]
@@ -19,6 +22,7 @@ impl Default for Routes {
         Self {
             master: None,
             cue: None,
+            working_rate: None,
             master_channels: default_pair(),
             cue_channels: default_pair(),
         }
@@ -71,7 +75,15 @@ impl Routes {
             .max()
             .unwrap_or(2)
     }
+    pub fn engine_rate(&self, native_rate: u32) -> u32 {
+        self.working_rate.unwrap_or(native_rate)
+    }
     pub fn validate(&self, default: Option<&str>) -> Result<()> {
+        ensure!(
+            self.working_rate
+                .is_none_or(|rate| [44100, 48000, 88200, 96000, 176400, 192000].contains(&rate)),
+            "Choose a working audio rate from 44.1, 48, 88.2, 96, 176.4 or 192 kHz"
+        );
         for pair in [
             Some(self.master_channels),
             self.cue.as_ref().map(|_| self.cue_channels),
@@ -268,6 +280,23 @@ mod tests {
             routes.cue_channels = pair;
             assert!(routes.validate(Some("Starlight")).is_err());
         }
+    }
+    #[test]
+    fn working_rate_defaults_to_native_and_round_trips_fixed_rates() {
+        let mut routes: Routes = serde_json::from_str(r#"{"master":null,"cue":null}"#).unwrap();
+        assert_eq!(routes.working_rate, None);
+        assert_eq!(routes.engine_rate(44100), 44100);
+        for rate in [44100, 48000, 88200, 96000, 176400, 192000] {
+            routes.working_rate = Some(rate);
+            routes.validate(None).unwrap();
+            let restored: Routes =
+                serde_json::from_value(serde_json::to_value(&routes).unwrap()).unwrap();
+            assert_eq!(restored.engine_rate(44100), rate);
+        }
+        routes.working_rate = Some(0);
+        assert!(routes.validate(None).is_err());
+        routes.working_rate = Some(384000);
+        assert!(routes.validate(None).is_err());
     }
     #[test]
     fn channel_mapping_keeps_master_and_cue_isolated_in_one_frame() {

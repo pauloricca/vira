@@ -527,6 +527,7 @@ pub fn run() {
         cue: Option<String>,
         master_channels: Option<[u16; 2]>,
         cue_channels: Option<[u16; 2]>,
+        working_rate: Option<u32>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         let engine = state.inner().clone();
@@ -535,6 +536,7 @@ pub fn run() {
                 .set_audio_devices(crate::audio_devices::Routes {
                     master,
                     cue,
+                    working_rate,
                     master_channels: master_channels.unwrap_or([1, 2]),
                     cue_channels: cue_channels.unwrap_or([1, 2]),
                 })

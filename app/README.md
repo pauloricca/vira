@@ -63,7 +63,8 @@ The shortcut is available on the Decks page, outside text fields and dropdowns.
 
 **Autopilot**, after Play Next, blinks while enabled. It starts a session if needed
 and keeps an unplayed recommendation marked next when no manual plans remain.
-Candidates come from the current collection and selected tags, ignoring search.
+Candidates must be analysed (draft, needs review, or approved) with a usable timing
+grid, and come from the current collection and selected tags, ignoring search.
 Settings → Automatic transitions → Autopilot next track selects Automatic (the
 default, using the weights below) or List order. List order follows the current
 library sort after the playing track, wrapping to remaining unplayed tracks;
@@ -97,6 +98,11 @@ resumes after success or failure, and abandoned service reservations expire.
 
 The workspace uses
 an independent master BPM in the header, unset until the first deck plays. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
+Settings → Automatic transitions → **BPM shift** controls how far master tempo
+moves toward the incoming track’s original BPM, from 0% (keep current tempo) to
+100% (reach incoming BPM, the default). At 50%, 120 → 140 BPM ends at 130 BPM.
+The setting persists and applies to the next transition, including fast transitions
+and Autopilot. Existing keep-tempo preferences become 0%.
 **AUTO NOW / AUTO END**, to the left of the loop controls, transition from the playing
 deck to the loaded, stopped deck. Both tracks need usable timing grids and released
 loops. AUTO NOW waits for the next matching phrase position on the beat grids;
@@ -189,8 +195,8 @@ Arming a transition inspects at most 32 bar boundaries, using the current timing
 grid and cue; the playback path does no PCM analysis or FFT work.
 
 **Settings → Automatic transitions** remembers the overlap (none, 1, 2, 4, 8,
-16 or 32 bars) and whether master BPM moves gradually to the incoming track's original
-BPM across the overlap or stays fixed. Both decks lock when engaged. No overlap
+16 or 32 bars) and the BPM shift percentage toward the incoming track's original
+BPM across the overlap. Both decks lock when engaged. No overlap
 hands off at the end. Settings changes apply to the next transition. Automatic
 fader transitions also work with the manual crossfader hidden. Library Play All uses the
 same overlap setting; change it in Settings → Automatic transitions.
@@ -816,8 +822,11 @@ FFT analysis when frequency features are valid.
 Open **SETTINGS** in the workspace tabs, select **Master out** and **Cue headphones**, then
 click **Apply outputs**. Master defaults to the system output; cue starts off.
 Selections are saved in `~/Library/Application Support/uk.ricca.vira/audio.json`.
-The engine adopts the selected master's current/default sample rate, supporting
-stereo float32 from 44.1 to 192 kHz. Select a stereo channel pair for each output.
+**Internal working audio rate** defaults to **Audio device native rate**, adopting
+the selected master's advertised current/default sample rate. Alternatively select
+44.1, 48, 88.2, 96, 176.4 or 192 kHz; fixed rates also set the master stream rate,
+and options unsupported by the selected master are disabled. The preference is
+saved alongside the output routes. Select a stereo channel pair for each output.
 Master and cue can share a device when their channels do not overlap. For the
 Starlight, select the device for both, master channels **1–2**, and cue channels
 **3–4**. Both mixes are written directly into one four-channel stream at 44.1 kHz.

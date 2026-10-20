@@ -8,10 +8,15 @@ pub fn get() -> usize {
         {
             let host = cpal::default_host();
             let routes = crate::audio_devices::Routes::load();
-            crate::audio_devices::resolve(&host, routes.master.as_deref())
-                .and_then(|device| crate::audio_devices::config(&device))
-                .map(|config| config.sample_rate.0 as usize)
-                .unwrap_or(48000)
+            routes
+                .working_rate
+                .map(|rate| rate as usize)
+                .unwrap_or_else(|| {
+                    crate::audio_devices::resolve(&host, routes.master.as_deref())
+                        .and_then(|device| crate::audio_devices::config(&device))
+                        .map(|config| config.sample_rate.0 as usize)
+                        .unwrap_or(48000)
+                })
         }
         #[cfg(not(target_os = "macos"))]
         {

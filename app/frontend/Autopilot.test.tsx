@@ -17,6 +17,27 @@ const tagged = track('tagged', 135, 'F# major');
 const harmonic = track('harmonic', 135, 'G major');
 const tags = [{ name: 'shared', tracks: ['source', 'tagged'] }];
 
+test.each(['automatic', 'list'])('%s only recommends completed analysis with a usable grid', mode => {
+  const choose = (tracks: Track[], reference?: Track) => mode === 'list'
+    ? chooseNextInList(tracks, reference, new Set())
+    : chooseAutopilotTrack(tracks, reference, new Set(), [], defaultAutopilotWeights, 0, () => 0);
+  const invalid: Track[] = [
+    ...(['not_analysed', 'queued', 'analysing', 'stale', 'failed'] as const).map(state => ({ ...track(state), analysis: { ...source.analysis, state } })),
+    { ...track('missing-result'), analysis: { ...source.analysis, result: null } },
+    { ...track('missing-grid'), analysis: { ...source.analysis, result: { ...source.analysis.result!, grid: null } } },
+    ...[0, -120, NaN, Infinity].map(bpm => track(`invalid-${bpm}`, bpm)),
+  ];
+  expect(choose(invalid)).toBeUndefined();
+  expect(choose(invalid, source)).toBeUndefined();
+  for (const state of ['analysed', 'needs_review', 'approved'] as const) {
+    const valid = { ...tempo, analysis: { ...tempo.analysis, state } };
+    expect(choose([...invalid, valid])).toBe(valid);
+    expect(choose([...invalid, valid], source)).toBe(valid);
+  }
+  const savedGrid = { ...tempo, timing_bpm: 120, analysis: { ...tempo.analysis, result: { ...tempo.analysis.result!, grid: null } } };
+  expect(choose([...invalid, savedGrid])).toBe(savedGrid);
+});
+
 test('list order follows the current track, wraps, and skips played or unreadable tracks', () => {
   const tracks = [tagged, source, { ...harmonic, status: 'unreadable' as const }, tempo];
   expect(chooseNextInList(tracks, source, new Set())).toBe(tempo);
@@ -24,6 +45,22 @@ test('list order follows the current track, wraps, and skips played or unreadabl
   expect(chooseNextInList(tracks, undefined, new Set())).toBe(tagged);
   expect(chooseNextInList(tracks, track('outside'), new Set(['tagged']))).toBe(source);
   expect(chooseNextInList(tracks, source, new Set(['tempo', 'tagged']))).toBeUndefined();
+});
+
+test('replaces an automatic recommendation when its analysis becomes stale', async () => {
+  localStorage.setItem('vira.autopilot-selection', 'list');
+  const load = vi.fn().mockResolvedValue(undefined);
+  const hook = renderHook(({ tracks }) => {
+    const [next, setNext] = useState<string[]>([]);
+    const pilot = useAutopilot({ audio: audio(['source', null], [true, false]), loading: [false, false], tracks, allTracks: [source, ...tracks], tags: [],
+      next, setNext, played: new Set(['source']), startSession: vi.fn(), load, control: vi.fn().mockResolvedValue(undefined) });
+    return { ...pilot, next };
+  }, { initialProps: { tracks: [tempo, tagged] } });
+  act(() => hook.result.current.toggle());
+  await waitFor(() => expect(load).toHaveBeenCalledWith(1, 'tempo'));
+  hook.rerender({ tracks: [{ ...tempo, analysis: { ...tempo.analysis, state: 'stale' } }, tagged] });
+  await waitFor(() => expect(hook.result.current.next).toEqual(['tagged']));
+  await waitFor(() => expect(load).toHaveBeenCalledWith(1, 'tagged'));
 });
 
 test('selection defaults to automatic and persists list order', () => {

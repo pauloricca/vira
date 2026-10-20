@@ -747,7 +747,7 @@ impl EngineHandle {
         let default = host.default_output_device().and_then(|d| d.name().ok());
         routes.validate(default.as_deref())?;
         let device = crate::audio_devices::resolve(&host, routes.master.as_deref())?;
-        let rate = crate::audio_devices::config(&device)?.sample_rate.0;
+        let rate = routes.engine_rate(crate::audio_devices::config(&device)?.sample_rate.0);
         crate::audio_devices::config_channels(
             &device,
             rate,
@@ -1158,10 +1158,10 @@ impl EngineHandle {
             }
             "auto_tempo" => {
                 ensure!(
-                    matches!(value, Some(0.) | Some(1.)),
-                    "Tempo mode must be 0 or 1"
+                    value.is_some_and(|v| v.is_finite() && (0. ..=1.).contains(&v)),
+                    "BPM shift must be between 0 and 1"
                 );
-                Command::AutoTempo(value == Some(1.))
+                Command::AutoTempo(value.unwrap())
             }
             "auto_move" | "auto_start" | "auto_swap" | "auto_finish" => {
                 let seconds =

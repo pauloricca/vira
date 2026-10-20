@@ -87,6 +87,7 @@ pub struct MixerDsp {
     target: [f64; 6],
     remaining: usize,
     filter_tick: usize,
+    filter_position: Option<f64>,
 }
 impl Default for MixerDsp {
     fn default() -> Self {
@@ -100,6 +101,7 @@ impl Default for MixerDsp {
             target: [1., 1., 1., 1., 0., 0.],
             remaining: 0,
             filter_tick: 0,
+            filter_position: None,
         }
     }
 }
@@ -111,6 +113,19 @@ pub fn band_amplitude(value: f32) -> f64 {
     }
 }
 impl MixerDsp {
+    fn tune_filter(&mut self, position: f64) {
+        if self.filter_position == Some(position) {
+            return;
+        }
+        let hz = if position < 0. {
+            20_000. * (30_f64 / 20_000.).powf(-position)
+        } else {
+            20. * (18_000_f64 / 20.).powf(position)
+        };
+        self.filter[0].tune(hz, position > 0.);
+        self.filter[1].coefficients = self.filter[0].coefficients;
+        self.filter_position = Some(position);
+    }
     pub fn set(&mut self, settings: Settings) {
         self.settings = settings;
         self.target = [
@@ -141,14 +156,7 @@ impl MixerDsp {
         }
         let [trim, lo, mid, hi, position, wet] = self.current;
         if stage == 2 && self.filter_tick == 0 {
-            let hz = if position < 0. {
-                20_000. * (30_f64 / 20_000.).powf(-position)
-            } else {
-                20. * (18_000_f64 / 20.).powf(position)
-            };
-            for f in &mut self.filter {
-                f.tune(hz, position > 0.);
-            }
+            self.tune_filter(position);
         }
         self.filter_tick = (self.filter_tick + 1) % 16;
         std::array::from_fn(|channel| {
@@ -180,16 +188,10 @@ impl MixerDsp {
             self.remaining -= 1;
         }
         let [trim, lo, mid, hi, position, wet] = self.current;
-        // Recompute only every 16 frames, outside the native callback.
+        // Sample moving controls every 16 frames; stationary controls retain
+        // their coefficients and filter history.
         if self.filter_tick == 0 {
-            let hz = if position < 0. {
-                20_000. * (30_f64 / 20_000.).powf(-position)
-            } else {
-                20. * (18_000_f64 / 20.).powf(position)
-            };
-            for f in &mut self.filter {
-                f.tune(hz, position > 0.);
-            }
+            self.tune_filter(position);
         }
         self.filter_tick = (self.filter_tick + 1) % 16;
         std::array::from_fn(|channel| {
@@ -214,6 +216,41 @@ impl MixerDsp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_filter_matches_recomputed_coefficients_during_sweeps_and_resets() {
+        for stage in [false, true] {
+            let mut cached = MixerDsp::default();
+            let mut reference = MixerDsp::default();
+            for i in 0..6000 {
+                if i % 1500 == 0 {
+                    let settings = Settings {
+                        filter: [0.7, -0.4, 0., 0.2][i / 1500],
+                        ..Settings::default()
+                    };
+                    cached.set(settings);
+                    reference.set(settings);
+                }
+                if i == 4100 {
+                    cached.reset();
+                    reference.reset();
+                }
+                reference.filter_position = None;
+                let input = [(i as f32 * 0.17).sin(), (i as f32 * 0.03).cos()];
+                let actual = if stage {
+                    cached.process_stage(input, 2)
+                } else {
+                    cached.process(input)
+                };
+                let expected = if stage {
+                    reference.process_stage(input, 2)
+                } else {
+                    reference.process(input)
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
     fn rms(settings: Settings, hz: f64) -> f64 {
         let mut dsp = MixerDsp::default();
         dsp.set(settings);

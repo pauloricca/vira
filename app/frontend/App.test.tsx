@@ -1258,10 +1258,11 @@ test('expanded Play All uses the shared overlap setting without a library select
   expect(screen.queryByText('Play All')).toBeNull();
 });
 
-test('automatic transition settings persist overlap, mode and tempo choice and send them to the engine', async () => {
+test('automatic transition settings persist overlap, mode and BPM shift and send them to the engine', async () => {
   localStorage.removeItem('vira.auto-bars');
   localStorage.removeItem('vira.auto-fast-bars');
   localStorage.removeItem('vira.auto-tempo');
+  localStorage.removeItem('vira.auto-tempo-percent');
   localStorage.removeItem('vira.auto-style');
   invoke.mockResolvedValue(library);
   const view = render(<App />);
@@ -1280,13 +1281,18 @@ test('automatic transition settings persist overlap, mode and tempo choice and s
   fireEvent.change(mode, { target: { value: 'smart' } });
   expect(localStorage.getItem('vira.auto-style')).toBe('smart');
   fireEvent.change(overlap, { target: { value: '4' } });
-  fireEvent.change(screen.getByRole('combobox', { name: 'Automatic transition tempo' }), { target: { value: 'keep' } });
+  const shift = screen.getByRole<HTMLInputElement>('slider', { name: 'Automatic transition BPM shift' });
+  expect(shift.value).toBe('100');
+  expect(shift.min).toBe('0');
+  expect(shift.max).toBe('100');
+  fireEvent.change(shift, { target: { value: '50' } });
+  expect(screen.getByText('50%')).toBeTruthy();
   expect(localStorage.getItem('vira.auto-bars')).toBe('4');
-  expect(localStorage.getItem('vira.auto-tempo')).toBe('false');
+  expect(localStorage.getItem('vira.auto-tempo-percent')).toBe('50');
   await waitFor(() => {
     expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_style', value: 2 }));
     expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_bars', value: 4 }));
-    expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_tempo', value: 0 }));
+    expect(audioInvoke).toHaveBeenCalledWith('deck_control', expect.objectContaining({ action: 'auto_tempo', value: 0.5 }));
   });
   view.unmount();
   render(<App />);
@@ -1295,11 +1301,12 @@ test('automatic transition settings persist overlap, mode and tempo choice and s
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition overlap' }).value).toBe('4');
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Fast transition overlap' }).value).toBe('2');
   localStorage.removeItem('vira.auto-fast-bars');
-  expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition tempo' }).value).toBe('keep');
+  expect(screen.getByRole<HTMLInputElement>('slider', { name: 'Automatic transition BPM shift' }).value).toBe('50');
   expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Automatic transition mode' }).value).toBe('smart');
   localStorage.removeItem('vira.auto-style');
   localStorage.removeItem('vira.auto-bars');
   localStorage.removeItem('vira.auto-tempo');
+  localStorage.removeItem('vira.auto-tempo-percent');
 });
 
 
@@ -1466,7 +1473,7 @@ test.each([0, 1])('playing a planned track on deck %i clears its marker and renu
 });
 
 test('Autopilot follows the collection while ignoring search and marks its choice next', async () => {
-  const current = library.tracks[0];
+  const current = { ...library.tracks[0], analysis: { state: 'analysed' as const, result: estimate, error: null } };
   const hidden = { ...current, id: 'hidden', title: 'Hidden candidate', filename: 'hidden.wav', artist: 'Candidate artist' };
   const other = { ...current, id: 'other-folder', collection: '/elsewhere', title: 'Other folder candidate' };
   invoke.mockImplementation((command: string) => Promise.resolve(command === 'timing_waveform'
@@ -1497,7 +1504,7 @@ test('Autopilot follows the collection while ignoring search and marks its choic
 
 test('list-order Autopilot follows the displayed sort while ignoring search', async () => {
   localStorage.setItem('vira.autopilot-selection', 'list');
-  const current = library.tracks[0];
+  const current = { ...library.tracks[0], analysis: { state: 'analysed' as const, result: estimate, error: null } };
   const candidate = (id: string) => ({ ...current, id, title: id, artist: `${id} artist`, filename: `${id}.wav` });
   invoke.mockResolvedValue({ ...library, tracks: [current, candidate('Bravo'), candidate('Charlie')] });
   audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
@@ -1717,4 +1724,16 @@ test('track menu can request key-only analysis for an unanalysed track with manu
   fireEvent.click(screen.getByRole('button', { name: `Analyse key ${track.title}` }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('analyse_track_key', { trackId: track.id }));
   expect(invoke.mock.calls.some(([command]) => command === 'analyse_track')).toBe(false);
+});
+
+
+test.each(['false', 'true'])('BPM shift migrates the saved tempo preference %s', async saved => {
+  localStorage.removeItem('vira.auto-tempo-percent');
+  localStorage.setItem('vira.auto-tempo', saved);
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+  expect(screen.getByRole<HTMLInputElement>('slider', { name: 'Automatic transition BPM shift' }).value).toBe(saved === 'false' ? '0' : '100');
+  localStorage.removeItem('vira.auto-tempo');
 });

@@ -6,12 +6,13 @@ import type { AudioState } from './Decks';
 
 type Device = { id: string; name: string; supported: boolean; sample_rate?: number; rate_ranges?: [number, number, number][] };
 type Pair = [number, number];
-type Inventory = { sample_rate?: number; devices: Device[]; default_device: string | null; routes: { master: string | null; cue: string | null; master_channels?: Pair; cue_channels?: Pair } };
+type Inventory = { sample_rate?: number; devices: Device[]; default_device: string | null; routes: { working_rate?: number | null; master: string | null; cue: string | null; master_channels?: Pair; cue_channels?: Pair } };
 
 export function Audio({ audio }: { audio: AudioState }) {
   const [inventory, setInventory] = useState<Inventory | null>(null);
   const [master, setMaster] = useState('');
   const [cue, setCue] = useState('');
+  const [workingRate, setWorkingRate] = useState('');
   const [masterPair, setMasterPair] = useState<Pair>([1, 2]);
   const [cuePair, setCuePair] = useState<Pair>([1, 2]);
   const [busy, setBusy] = useState(false);
@@ -31,7 +32,7 @@ export function Audio({ audio }: { audio: AudioState }) {
         const value = await invoke<Inventory>('get_audio_devices');
         if (!cancelled) {
           setInventory(value);
-          if (initial) { setMaster(value.routes.master ?? ''); setCue(value.routes.cue ?? ''); setMasterPair(value.routes.master_channels ?? [1, 2]); setCuePair(value.routes.cue_channels ?? [1, 2]); initial = false; }
+          if (initial) { setWorkingRate(value.routes.working_rate?.toString() ?? ''); setMaster(value.routes.master ?? ''); setCue(value.routes.cue ?? ''); setMasterPair(value.routes.master_channels ?? [1, 2]); setCuePair(value.routes.cue_channels ?? [1, 2]); initial = false; }
           setScanError(null);
         }
       } catch (e) { if (!cancelled) setScanError(String(e)); }
@@ -48,9 +49,10 @@ export function Audio({ audio }: { audio: AudioState }) {
   const unsupported = (id: string) => inventory?.devices.some(device => device.id === id && !device.supported);
   const routesChanged = !!inventory && (master !== (inventory.routes.master ?? '') || cue !== (inventory.routes.cue ?? '') || masterPair.join() !== (inventory.routes.master_channels ?? [1,2]).join() || cuePair.join() !== (inventory.routes.cue_channels ?? [1,2]).join());
   const masterDevice = inventory?.devices.find(device => device.id === (master || inventory.default_device));
-  const selectedRate = masterDevice?.sample_rate ?? audio.telemetry.sample_rate ?? 48000;
+  const nativeRate = masterDevice?.sample_rate ?? audio.telemetry.sample_rate ?? 48000;
+  const selectedRate = workingRate ? Number(workingRate) : nativeRate;
   const restarting = selectedRate !== (audio.telemetry.sample_rate ?? inventory?.sample_rate ?? 48000);
-  const changed = routesChanged || restarting;
+  const changed = routesChanged || restarting || workingRate !== (inventory?.routes.working_rate?.toString() ?? '');
   const cueDevice = inventory?.devices.find(device => device.id === cue);
   const pairs = (device: Device | undefined, rate?: number): Pair[] => {
     const ranges = device?.rate_ranges?.filter(([, low, high]) => rate == null || (low <= rate && rate <= high));
@@ -66,7 +68,7 @@ export function Audio({ audio }: { audio: AudioState }) {
     setMasterPair([1,2]);
     if (cue === (value || inventory?.default_device)) {
       const device = inventory?.devices.find(device => device.id === cue);
-      setCuePair(pairs(device, device?.sample_rate).find(pair => !pair.includes(1) && !pair.includes(2)) ?? [1,2]);
+      setCuePair(pairs(device, workingRate ? Number(workingRate) : device?.sample_rate).find(pair => !pair.includes(1) && !pair.includes(2)) ?? [1,2]);
     }
   }
   function chooseCue(value: string) {
@@ -81,8 +83,8 @@ export function Audio({ audio }: { audio: AudioState }) {
   async function apply() {
     setBusy(true); setError(null);
     try {
-      await invoke('set_audio_devices', { master: master || null, cue: cue || null, masterChannels: masterPair, cueChannels: cuePair });
-      setInventory(previous => previous && { ...previous, routes: { master: master || null, cue: cue || null, master_channels: masterPair, cue_channels: cuePair } });
+      await invoke('set_audio_devices', { master: master || null, cue: cue || null, masterChannels: masterPair, cueChannels: cuePair, workingRate: workingRate ? Number(workingRate) : null });
+      setInventory(previous => previous && { ...previous, routes: { working_rate: workingRate ? Number(workingRate) : null, master: master || null, cue: cue || null, master_channels: masterPair, cue_channels: cuePair } });
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
@@ -92,10 +94,12 @@ export function Audio({ audio }: { audio: AudioState }) {
   return <>
       <SettingsCard className="settings-card"><h3 className="device-list-heading">Output devices<DeviceRefresh label="Refresh audio devices" refresh={() => refreshDevices.current()} /></h3>
         <div className="settings-row"><div><strong><output className={audio.running ? 'settings-live' : undefined}>{audio.running ? 'Running' : 'Unavailable'}</output> · Master out</strong><p>The mix after channel faders and crossfader. Stereo · {(audio.telemetry.sample_rate ?? 48000) / 1000} kHz.{!master && inventory?.default_device && <> System default: {inventory.default_device}.</>}</p></div><select aria-label="Master out device" value={master} disabled={!inventory || busy} onChange={event => chooseMaster(event.target.value)}><option value="">System default</option>{options(master)}</select></div>
+        <div className="settings-row"><div><strong>Internal working audio rate</strong><p>Used for audio processing and prepared tracks. Native follows the rate advertised by the master audio device. Fixed rates also set the master output stream rate.</p></div><select aria-label="Internal working audio rate" value={workingRate} disabled={!inventory || busy} onChange={event => setWorkingRate(event.target.value)}><option value="">Audio device native rate · {nativeRate / 1000} kHz</option>{[44100, 48000, 88200, 96000, 176400, 192000].map(rate => { const available = pairs(masterDevice, rate).length > 0; return <option key={rate} value={rate} disabled={!available}>{rate / 1000} kHz{!available ? ' · unavailable on master' : ''}</option>; })}</select></div>
         <div className="settings-row"><span>Master channels</span><select aria-label="Master output channels" value={masterPair.join(',')} disabled={!inventory || busy} onChange={event => setMasterPair(event.target.value.split(',').map(Number) as Pair)}>{channelOptions(masterPairs, masterPair)}</select></div>
         <div className="settings-row"><div><strong><output className={audio.routing?.cue_running ? 'settings-live' : undefined}>{audio.routing?.cue_running ? 'Running' : audio.routing?.cue ? 'Unavailable' : 'Off'}</output> · Cue headphones</strong><p>Before channel faders and crossfader; follows trim, EQ and filter.{audio.routing?.cue_running && audio.routing.cue_sample_rate != null && <> Stereo · {audio.routing.cue_sample_rate / 1000} kHz.</>}</p></div><select aria-label="Cue headphones device" value={cue} disabled={!inventory || busy} onChange={event => chooseCue(event.target.value)}><option value="">Off</option>{options(cue)}</select></div>
         {!!cue && <div className="settings-row"><span>Cue channels</span><select aria-label="Cue output channels" value={cuePair.join(',')} disabled={!inventory || busy} onChange={event => setCuePair(event.target.value.split(',').map(Number) as Pair)}>{channelOptions(cuePairs, cuePair)}</select></div>}
         <div className="audio-actions"><p className="audio-help">Select A, B or both with the headphone buttons above the channel faders. Use separate channel pairs when sharing a device.</p>
+        {invalidPairs && <p className="settings-error" role="alert">The selected output channels are unavailable at this rate. Choose a supported rate or channel pair.</p>}
         {overlap && <p className="settings-error" role="alert">Master and cue channels must not overlap on the same device.</p>}
         {!!cue && !sameDevice && cueDevice?.sample_rate != null && cueDevice.sample_rate !== selectedRate && <p className="audio-help">Cue uses {cueDevice.sample_rate / 1000} kHz; audio is adapted from the master's {selectedRate / 1000} kHz. Using one device for both outputs keeps them on the same clock.</p>}
         {sameDevice && !overlap && <p className="audio-help">Master and cue share one {selectedRate / 1000} kHz stream.</p>}

@@ -8,14 +8,20 @@ export type AutopilotWeights = { bpm: number; tags: number; harmonic: number; di
 export type AutopilotSelection = 'automatic' | 'list';
 export const defaultAutopilotWeights: AutopilotWeights = { bpm: 50, tags: 50, harmonic: 50, direction: 50, randomness: 0 };
 
+function eligibleForAutopilot(track: Track): boolean {
+  const bpm = track.timing_bpm ?? track.analysis.result?.grid?.bpm;
+  return track.status === 'ready' && ['analysed', 'needs_review', 'approved'].includes(track.analysis.state)
+    && bpm != null && Number.isFinite(bpm) && bpm > 0;
+}
+
 export function chooseNextInList(tracks: Track[], reference: Track | undefined, played: Set<string>): Track | undefined {
   const index = tracks.findIndex(track => track.id === reference?.id);
   const ordered = [...tracks.slice(index + 1), ...tracks.slice(0, index + 1)];
-  return ordered.find(track => track.status === 'ready' && !played.has(track.id) && track.id !== reference?.id);
+  return ordered.find(track => eligibleForAutopilot(track) && !played.has(track.id) && track.id !== reference?.id);
 }
 
 export function chooseAutopilotTrack(tracks: Track[], reference: Track | undefined, played: Set<string>, tags: Tag[], weights: AutopilotWeights, pitch = 0, random = Math.random, lastDirection = 0): Track | undefined {
-  const candidates = tracks.filter(track => track.status === 'ready' && !played.has(track.id) && track.id !== reference?.id);
+  const candidates = tracks.filter(track => eligibleForAutopilot(track) && !played.has(track.id) && track.id !== reference?.id);
   if (!reference) return candidates[Math.floor(random() * candidates.length)];
   const bpm = reference.analysis.result?.grid?.bpm;
   const key = camelotKey(shiftedKey(reference.analysis.result?.keys[0]?.key, pitch));
@@ -112,7 +118,7 @@ export function useAutopilot(options: Options) {
     const excluded = new Set(played ?? []);
     for (const deck of playing) if (deck.track) excluded.add(deck.track.track_id);
     let queued = next.filter(id => !playing.some(deck => deck.track?.track_id === id));
-    if (automatic.current && queued.includes(automatic.current) && (!tracks.some(track => track.id === automatic.current) || excluded.has(automatic.current))) {
+    if (automatic.current && queued.includes(automatic.current) && (!tracks.some(track => track.id === automatic.current && eligibleForAutopilot(track)) || excluded.has(automatic.current))) {
       const old = automatic.current;
       automatic.current = null;
       queued = queued.filter(id => id !== old);
