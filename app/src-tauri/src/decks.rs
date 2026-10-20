@@ -48,12 +48,97 @@ fn bass_swap_due(beats: f64, length: f64, bpm: f64) -> bool {
     swap_due(beats, length / 2., bpm)
 }
 
+/// Pointer targets change at UI rate; retain motion and gain at audio rate.
+#[derive(Clone, Copy)]
+struct ScrubMotion {
+    position: f64,
+    target: f64,
+    reference: f64,
+    reference_step: f64,
+    ramp_remaining: usize,
+    packet_age: usize,
+    velocity: f64,
+    envelope: f32,
+}
+impl ScrubMotion {
+    fn new(position: usize) -> Self {
+        Self {
+            position: position as f64,
+            target: position as f64,
+            reference: position as f64,
+            reference_step: 0.,
+            ramp_remaining: 0,
+            packet_age: 0,
+            velocity: 0.,
+            envelope: 0.,
+        }
+    }
+    fn retarget(&mut self, target: usize) {
+        // Reconstruct motion between UI packets instead of feeding position
+        // steps into the audio follower. A steady drag then has steady speed.
+        // Bound the ramp after a long stationary hold or batched commands.
+        let rate = crate::sample_rate::get();
+        self.ramp_remaining = self.packet_age.clamp(rate / 250, rate / 20);
+        self.target = target as f64;
+        self.reference_step = (self.target - self.reference) / self.ramp_remaining as f64;
+        self.packet_age = 0;
+    }
+    fn advance(&mut self, start: usize, end: usize) {
+        let rate = crate::sample_rate::get() as f64;
+        if self.ramp_remaining > 0 {
+            self.reference += self.reference_step;
+            self.ramp_remaining -= 1;
+            if self.ramp_remaining == 0 {
+                self.reference = self.target;
+            }
+        }
+        // Critically damped follower: about 40 ms behind the reconstructed motion.
+        // This also suppresses small timing variations in delivered UI packets.
+        // No velocity or envelope reset when the next pointer packet arrives.
+        let omega = 1. / (rate * 0.020);
+        self.velocity +=
+            omega * omega * (self.reference - self.position) - 2. * omega * self.velocity;
+        self.position = (self.position + self.velocity).clamp(start as f64, end as f64);
+        if (self.position == start as f64 && self.velocity < 0.)
+            || (self.position == end as f64 && self.velocity > 0.)
+        {
+            self.velocity = 0.;
+        }
+        if self.ramp_remaining == 0
+            && (self.target - self.position).abs() < 0.001
+            && self.velocity.abs() < 0.0001
+        {
+            self.position = self.target;
+            self.velocity = 0.;
+        }
+        let gain = (self.velocity.abs() / 0.05).min(1.) as f32;
+        self.envelope += (gain - self.envelope) / (rate as f32 * 0.002);
+        if gain == 0. && self.envelope < 0.00001 {
+            self.envelope = 0.;
+        }
+    }
+}
+
+/// Four-point Catmull-Rom reconstruction, with repeated edge samples.
+/// Used by scrubbing and the vinyl stop; no allocation or filter setup.
+fn scrub_sample(channel: &[f32], position: f64, start: usize) -> f32 {
+    let end = channel.len() - 1;
+    let index = (position.floor() as usize).clamp(start, end);
+    let t = (position - index as f64) as f32;
+    let a = channel[index.saturating_sub(1).max(start)];
+    let b = channel[index];
+    let c = channel[(index + 1).min(end)];
+    let d = channel[(index + 2).min(end)];
+    b + 0.5 * t * (c - a + t * (2. * a - 5. * b + 4. * c - d + t * (3. * (b - c) + d - a)))
+}
+
 pub struct Voice {
     dsp: Dsp,
     direct_playback: bool,
     pub mixer: crate::mixer::MixerDsp,
-    scrub: Option<(f64, f64, usize)>,
+    scrub: Option<ScrubMotion>,
     wheel_scrub: Option<(f64, f64, f64, f32)>,
+    vinyl_tail: Option<(f64, f64, usize, bool)>, // position, initial speed, frames left, rewind
     pub grid: Option<Grid>,
     pub target_bpm: f64,
     pub pitch_semitones: f64,
@@ -110,6 +195,7 @@ impl Voice {
             mixer: crate::mixer::MixerDsp::default(),
             scrub: None,
             wheel_scrub: None,
+            vinyl_tail: None,
             grid: None,
             target_bpm: 0.,
             pitch_semitones: 0.,
@@ -171,6 +257,7 @@ impl Voice {
         self.seek_inner(position, true);
     }
     fn seek_inner(&mut self, position: usize, reset_mixer: bool) {
+        self.vinyl_tail = None;
         self.jump_length = 0;
         self.jump_read = 0;
         self.clear_jog();
@@ -463,6 +550,9 @@ impl Voice {
         let _ = self.tempo(grid.bpm);
     }
     pub fn play(&mut self) {
+        if self.vinyl_tail.is_some() {
+            self.seek(self.position);
+        }
         self.clear_jog();
         if self.scrub.is_some() || self.wheel_scrub.is_some() {
             self.seek(self.position);
@@ -476,6 +566,25 @@ impl Voice {
         self.playing = false;
         self.loop_release_beat = None;
         self.seek(0);
+    }
+    fn halt(&mut self, vinyl: bool, rewind: bool) {
+        let audible = self.playing && self.launch_beat.is_none() && !self.cue_preview;
+        self.clear_jog();
+        self.playing = false;
+        self.cue_preview = false;
+        self.launch_beat = None;
+        if vinyl && audible {
+            self.tempo_ramp = None;
+            self.scrub = None;
+            self.wheel_scrub = None;
+            let frames = crate::sample_rate::get() * 300 / 1000;
+            self.transition_from = self.last_sample;
+            self.vinyl_tail = Some((self.clock.at(self.output), self.clock.speed, frames, rewind));
+        } else if rewind {
+            self.stop();
+        } else if self.wheel_scrub.is_some() || self.vinyl_tail.is_some() {
+            self.seek(self.position);
+        }
     }
     fn set_slip(&mut self, enabled: bool) {
         self.slip_enabled = enabled;
@@ -553,6 +662,45 @@ impl Voice {
     }
     fn next_mode<const ROUTED: bool>(&mut self) -> Result<[f32; 2]> {
         self.pre_fader = [0.; 2];
+        if let Some((mut position, speed, remaining, rewind)) = self.vinyl_tail {
+            let length = crate::sample_rate::get() * 300 / 1000;
+            let progress = remaining as f64 / length as f64;
+            // Resampling drops pitch with speed, like a platter braking. Bypass
+            // the pitch-preserving stretcher and fade the final 30 ms to silence.
+            let gain = (progress * 10.).min(1.) as f32;
+            let mut sample = [&self.source.left, &self.source.right]
+                .map(|channel| scrub_sample(channel, position, self.start) * gain);
+            // Blend away from the stretcher output over the first 5 ms.
+            let blend =
+                ((length - remaining) as f32 / crate::sample_rate::fine_frames() as f32).min(1.);
+            for (value, previous) in sample.iter_mut().zip(self.transition_from) {
+                *value = previous * (1. - blend) + *value * blend;
+            }
+            position =
+                (position + speed * progress).min(self.source.len().saturating_sub(1) as f64);
+            self.position = position.round() as usize;
+            self.clock.source = position;
+            self.clock.output = self.output;
+            self.last_sample = sample;
+            if !ROUTED {
+                sample = self.mixer.process(sample);
+            }
+            self.pre_fader = sample;
+            if remaining <= 1 {
+                if rewind {
+                    self.stop();
+                } else {
+                    self.seek(self.position);
+                }
+            } else {
+                self.vinyl_tail = Some((position, speed, remaining - 1, rewind));
+            }
+            return Ok(if ROUTED {
+                sample
+            } else {
+                sample.map(|v| v * self.gain)
+            });
+        }
         if let Some((position, target, velocity, envelope)) = self.wheel_scrub {
             // Critically damped motion retains velocity between MIDI packets.
             // Fade with the movement, including a quiet stop at the destination.
@@ -590,28 +738,21 @@ impl Voice {
                 sample.map(|v| v * self.gain)
             });
         }
-        if let Some((from, target, remaining)) = self.scrub {
-            if remaining == 0 || (target - from).abs() < 0.001 {
+        if let Some(mut motion) = self.scrub {
+            motion.packet_age = motion.packet_age.saturating_add(1);
+            if motion.position == motion.target && motion.velocity == 0. && motion.envelope == 0. {
+                self.scrub = Some(motion);
                 return Ok([0.; 2]);
             }
-            // Traverse only the pointer's displacement, including backwards.
-            // Ease each bounded segment, then stay silent at its destination.
-            let progress = (crate::sample_rate::get() / 25 + 1 - remaining) as f64
-                / (crate::sample_rate::get() as f64 * 0.04);
-            let position = from + (target - from) * progress * progress * (3. - 2. * progress);
-            let index = (position.floor() as usize).min(self.source.len() - 1);
-            let next = (index + 1).min(self.source.len() - 1);
-            let fraction = (position - position.floor()) as f32;
-            let envelope = ((crate::sample_rate::get() / 25 - remaining).min(remaining) as f32
-                / (crate::sample_rate::get() as f32 * 0.002))
-                .min(1.);
+            motion.advance(self.start, self.source.len() - 1);
             let sample = [&self.source.left, &self.source.right].map(|channel| {
-                (channel[index] + (channel[next] - channel[index]) * fraction) * envelope
+                scrub_sample(channel, motion.position, self.start) * motion.envelope
             });
-            self.position = position.round() as usize;
-            self.clock.source = position;
+            self.output += 1;
+            self.position = motion.position.round() as usize;
+            self.clock.source = motion.position;
             self.clock.output = self.output;
-            self.scrub = Some((from, target, remaining - 1));
+            self.scrub = Some(motion);
             let sample = if ROUTED {
                 sample
             } else {
@@ -1040,6 +1181,7 @@ pub enum Command {
     Drift(usize, [u64; 2]),
     DriftRate(f64),
     SyncQuantum(u8),
+    VinylStop(bool),
     Crossfader(f32),
     CrossfaderEnabled(bool),
     HeadphoneCue(usize, bool),
@@ -1145,6 +1287,7 @@ pub struct Decks {
     crossfader_target: [f32; 2],
     crossfader_ramp: u32,
     jump_crossfade: usize,
+    vinyl_stop: bool,
     pub voices: [Option<Box<Voice>>; 2],
     pub master_bpm: f64,
     pub master_bpm_set: bool,
@@ -1177,6 +1320,7 @@ impl Decks {
             crossfader_target: crossfader_gains(0., true),
             crossfader_ramp: 0,
             jump_crossfade: 1440,
+            vinyl_stop: true,
             voices: [None, None],
             master_bpm: 120.,
             master_bpm_set: false,
@@ -1781,6 +1925,7 @@ impl Decks {
         }
         let phrase_jump = matches!(&command, Command::PhraseJump(..));
         match command {
+            Command::VinylStop(enabled) => self.vinyl_stop = enabled,
             Command::AutoBars(bars) => {
                 if [0, 1, 2, 4, 8, 16, 32].contains(&bars) {
                     self.auto_bars = bars;
@@ -2071,20 +2216,14 @@ impl Decks {
             Command::Pause(d, g) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
-                        v.clear_jog();
-                        if v.wheel_scrub.is_some() {
-                            v.seek(v.position);
-                        }
-                        v.playing = false;
-                        v.cue_preview = false;
-                        v.launch_beat = None;
+                        v.halt(self.vinyl_stop, false);
                     }
                 }
             }
             Command::Stop(d, g) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g {
-                        v.stop();
+                        v.halt(self.vinyl_stop, true);
                     }
                 }
             }
@@ -2289,7 +2428,7 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g && !v.playing {
                         v.seek(p);
-                        v.scrub = Some((v.position as f64, v.position as f64, 0));
+                        v.scrub = Some(ScrubMotion::new(v.position.min(v.source.len() - 1)));
                     }
                 }
             }
@@ -2297,12 +2436,10 @@ impl Decks {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g && !v.playing && v.scrub.is_some() {
                         if moving {
-                            let from = v.seconds() * (crate::sample_rate::get() as f64);
-                            v.scrub = Some((
-                                from,
-                                p.clamp(v.start, v.source.len()) as f64,
-                                crate::sample_rate::get() / 25,
-                            ));
+                            v.scrub
+                                .as_mut()
+                                .unwrap()
+                                .retarget(p.clamp(v.start, v.source.len() - 1));
                             v.position_epoch += 1;
                         } else {
                             v.seek(p);
@@ -2654,6 +2791,7 @@ impl Decks {
                     0.000001
                 };
                 if self.master_bpm_set
+                    && voice.vinyl_tail.is_none()
                     && voice.synced
                     && (voice.target_bpm - self.master_bpm).abs() > update_delta
                 {
@@ -3443,10 +3581,13 @@ mod tests {
             }
         }
         assert!(power > 1.);
-        // A stopped deck produces no headphone audio, even when selected.
+        // A stopped deck produces no headphone audio after its braking tail.
         for d in 0..2 {
             decks.command(Command::HeadphoneCue(d, true), [1, 1]);
             decks.command(Command::Pause(d, 1), [1, 1]);
+        }
+        for _ in 0..crate::sample_rate::get() * 300 / 1000 {
+            decks.next().unwrap();
         }
         assert_eq!(decks.next().unwrap().cue_samples, [0.; 2]);
     }
@@ -4843,6 +4984,7 @@ mod tests {
                 for bass_swap in [false, true] {
                     for resume in [false, true] {
                         let mut decks = auto_decks(from, 1, change_tempo);
+                        decks.command(Command::VinylStop(false), [1, 1]);
                         let mut reference = auto_decks(from, 1, change_tempo);
                         for d in [&mut decks, &mut reference] {
                             d.command(Command::AutoStyle(u8::from(bass_swap)), [1, 1]);
@@ -5328,6 +5470,102 @@ mod tests {
     }
 
     #[test]
+    fn scrub_cubic_reduces_fractional_sine_error_and_handles_edges() {
+        let frequency = 0.12 * std::f64::consts::TAU;
+        let samples: Vec<f32> = (0..1024)
+            .map(|i| (i as f64 * frequency).sin() as f32)
+            .collect();
+        let mut linear_error = 0.;
+        let mut cubic_error = 0.;
+        for i in 2..1021 {
+            let position = i as f64 + 0.37;
+            let expected = (position * frequency).sin() as f32;
+            let linear = samples[i] + 0.37 * (samples[i + 1] - samples[i]);
+            linear_error += (linear - expected).powi(2);
+            cubic_error += (scrub_sample(&samples, position, 0) - expected).powi(2);
+        }
+        assert!(cubic_error < linear_error * 0.1);
+        for channel in [&[0.5][..], &[0.5, -0.5][..]] {
+            assert_eq!(scrub_sample(channel, 0., 0), 0.5);
+            assert_eq!(
+                scrub_sample(channel, (channel.len() - 1) as f64, 0),
+                *channel.last().unwrap()
+            );
+        }
+        assert_eq!(scrub_sample(&samples, 12., 12), samples[12]);
+    }
+
+    #[test]
+    fn scrub_steady_drag_keeps_speed_stable_between_pointer_packets() {
+        let rate = crate::sample_rate::get();
+        for (intervals, tolerance) in [
+            (vec![rate / 60], 0.001),
+            (vec![rate / 30], 0.001),
+            (
+                vec![rate * 7 / 480, rate / 60, rate * 9 / 480, rate / 60],
+                0.05,
+            ),
+        ] {
+            for speed in [0.5, 1., 2., -1.] {
+                let start = rate * 5;
+                let mut motion = ScrubMotion::new(start);
+                let mut packet = 0;
+                let mut next_packet = intervals[0];
+                for frame in 0..rate * 2 {
+                    if frame == next_packet {
+                        motion.retarget((start as f64 + frame as f64 * speed).round() as usize);
+                        packet += 1;
+                        next_packet += intervals[packet % intervals.len()];
+                    }
+                    motion.packet_age += 1;
+                    motion.advance(0, rate * 20);
+                    if frame > rate {
+                        assert!(
+                            (motion.velocity / speed - 1.).abs() < tolerance,
+                            "speed {speed}, intervals {intervals:?}, actual {}",
+                            motion.velocity
+                        );
+                    }
+                }
+                // No new packets: finish the ramp and settle at the exact target.
+                for _ in 0..rate {
+                    motion.advance(0, rate * 20);
+                }
+                assert_eq!(motion.position, motion.target);
+                assert_eq!(motion.envelope, 0.);
+            }
+        }
+    }
+
+    #[test]
+    fn scrub_packets_preserve_velocity_and_envelope_and_reversals_settle() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::ScrubStart(0, 1, 12000), [1, 1]);
+        decks.command(Command::Scrub(0, 1, 24000, true), [1, 1]);
+        for _ in 0..768 {
+            decks.next().unwrap();
+        }
+        let before = decks.voices[0].as_ref().unwrap().scrub.unwrap();
+        assert!(before.velocity > 0. && before.envelope > 0.9);
+        decks.command(Command::Scrub(0, 1, 30000, true), [1, 1]);
+        let after = decks.voices[0].as_ref().unwrap().scrub.unwrap();
+        assert_eq!(before.position, after.position);
+        assert_eq!(before.velocity, after.velocity);
+        assert_eq!(before.envelope, after.envelope);
+        decks.next().unwrap();
+        assert!(decks.voices[0].as_ref().unwrap().scrub.unwrap().envelope > 0.9);
+        decks.command(Command::Scrub(0, 1, 0, true), [1, 1]);
+        for _ in 0..24000 {
+            assert!(decks.next().unwrap().samples.iter().all(|s| s.is_finite()));
+        }
+        let motion = decks.voices[0].as_ref().unwrap().scrub.unwrap();
+        assert_eq!(motion.position, 0.);
+        assert_eq!(motion.velocity, 0.);
+        assert_eq!(motion.envelope, 0.);
+    }
+
+    #[test]
     fn scrub_follows_motion_then_is_silent_and_ignores_playing_decks() {
         let mut decks = Decks::new();
         install(&mut decks, 0, 1, source());
@@ -5335,7 +5573,7 @@ mod tests {
         assert_eq!(decks.next().unwrap().samples, [0.; 2]);
         decks.command(Command::Scrub(0, 1, 24000, true), [1, 1]);
         let mut audible = false;
-        for _ in 0..1920 {
+        for _ in 0..24000 {
             let frame = decks.next().unwrap();
             audible |= frame.samples.iter().any(|s| s.abs() > 0.001);
             assert!(!frame.playing[0]);
@@ -5346,7 +5584,7 @@ mod tests {
         }
         assert_eq!(decks.next().unwrap().positions[0], 24000);
         decks.command(Command::Scrub(0, 1, 6000, true), [1, 1]);
-        for _ in 0..1920 {
+        for _ in 0..24000 {
             decks.next().unwrap();
         }
         assert_eq!(decks.next().unwrap().positions[0], 6000);
@@ -5443,8 +5681,80 @@ mod tests {
             .all(|sample| *sample == [0.; 2]));
     }
     #[test]
+    fn vinyl_stop_decelerates_to_silence_and_resumes_at_normal_speed() {
+        for rewind in [false, true] {
+            let mut decks = Decks::new();
+            install(&mut decks, 0, 1, source());
+            decks.command(Command::Play(0, 1), [1, 1]);
+            for _ in 0..1000 {
+                decks.next().unwrap();
+            }
+            decks.command(
+                if rewind {
+                    Command::Stop(0, 1)
+                } else {
+                    Command::PlayPause(0, 1)
+                },
+                [1, 1],
+            );
+            let length = crate::sample_rate::get() * 300 / 1000;
+            let mut crossings = [0; 3];
+            let mut previous = 0.;
+            let mut peak = 0_f32;
+            for frame in 0..length {
+                let sample = decks.next().unwrap().deck_samples[0][0];
+                assert!(sample.is_finite());
+                peak = peak.max(sample.abs());
+                if sample > 0. && previous <= 0. {
+                    crossings[(frame * 3 / length).min(2)] += 1;
+                }
+                previous = sample;
+            }
+            assert!(peak > 0.01);
+            assert!(
+                crossings[0] > crossings[1] && crossings[1] > crossings[2],
+                "Pitch must fall: {crossings:?}"
+            );
+            let voice = decks.voices[0].as_ref().unwrap();
+            assert!(voice.vinyl_tail.is_none());
+            assert!(!voice.playing);
+            assert_eq!(voice.clock.speed, 1.);
+            if rewind {
+                assert_eq!(voice.position, 0);
+            } else {
+                assert!((voice.position as f64 - (1000. + length as f64 / 2.)).abs() < 2.);
+            }
+            assert_eq!(decks.next().unwrap().deck_samples[0], [0.; 2]);
+            let position = decks.voices[0].as_ref().unwrap().position;
+            decks.command(Command::Play(0, 1), [1, 1]);
+            assert_eq!(decks.next().unwrap().positions[0], position as u64 + 1);
+        }
+    }
+    #[test]
+    fn vinyl_stop_can_be_interrupted_and_pending_launches_stop_silently() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.command(Command::Play(0, 1), [1, 1]);
+        for _ in 0..1000 {
+            decks.next().unwrap();
+        }
+        decks.command(Command::Pause(0, 1), [1, 1]);
+        for _ in 0..100 {
+            decks.next().unwrap();
+        }
+        decks.command(Command::Play(0, 1), [1, 1]);
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert!(voice.playing && voice.vinyl_tail.is_none());
+        assert_eq!(voice.clock.speed, 1.);
+        decks.voices[0].as_mut().unwrap().launch_beat = Some(100.);
+        decks.command(Command::Pause(0, 1), [1, 1]);
+        assert!(decks.voices[0].as_ref().unwrap().vinyl_tail.is_none());
+        assert_eq!(decks.next().unwrap().deck_samples[0], [0.; 2]);
+    }
+    #[test]
     fn finite_play_pause_stop_seek_and_end_without_looping() {
         let mut decks = Decks::new();
+        decks.command(Command::VinylStop(false), [0, 0]);
         install(&mut decks, 0, 1, source());
         assert_eq!(decks.next().unwrap().positions, [0, 0]);
         decks.command(Command::Play(0, 1), [1, 1]);
@@ -5553,6 +5863,7 @@ mod tests {
     #[test]
     fn slip_returns_to_background_position_after_switching_and_releasing_a_loop() {
         let mut decks = Decks::new();
+        decks.command(Command::VinylStop(false), [0, 0]);
         install(&mut decks, 0, 1, source());
         decks.command(
             Command::Grid(
@@ -5635,6 +5946,7 @@ mod tests {
     fn playable_zero_is_the_first_beat_for_locked_and_unlocked_transport() {
         for locked in [false, true] {
             let mut decks = Decks::new();
+            decks.command(Command::VinylStop(false), [0, 0]);
             let source = Arc::new(Source {
                 bass_profile: Default::default(),
                 left: vec![0.1; 48000 * 5],

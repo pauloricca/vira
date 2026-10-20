@@ -513,7 +513,8 @@ separate R3/transport states.
 - **Stop** pauses and returns to the beginning, preserving Cue.
 - On paused/stopped decks, drag the full-track overview playhead to seek silently.
   Drag the top rolling waveform beneath its fixed center playhead to scrub audibly,
-  forwards or backwards. Audio goes silent when the pointer stops. Clicking the
+  forwards or backwards, with continuous motion smoothing and cubic audio
+  interpolation. Audio fades to silence when the pointer stops. Clicking the
   rolling waveform grabs it without jumping. Release leaves the deck paused at
   the selected position. While playing, click either waveform to jump to the
   nearest position with the same phase as the deck immediately before the jump,
@@ -1222,3 +1223,9 @@ scroll pixel), separate from MIDI wheel settings. Playing decks must be unlocked
 Pinch gestures continue to zoom. Trackpad movement also works in Edit grid mode
 without changing the draft grid or its pinned beat; pointer dragging still edits
 the grid. MIDI map mode and grid saving disable trackpad movement. Queued scrolling is discarded when the deck changes or is locked.
+
+Settings → Playback → **Vinyl stop** is enabled by default and remembered between
+launches. Pausing or stopping a deck brakes its audio over 300 ms, lowering speed
+and pitch to silence. Pause resumes from the brake’s final position at the normal
+selected tempo; Stop returns to the track start. Cue release and cancelled
+scheduled starts stay immediate. Disable Vinyl stop for immediate transport stops.

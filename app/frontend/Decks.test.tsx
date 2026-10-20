@@ -894,6 +894,44 @@ function dragGridMark(from: number, to: number) {
   fireEvent.pointerMove(wave, { clientX: to });
   fireEvent.pointerUp(wave, { clientX: to });
 }
+test('bar arrows edit the draft in both directions and save or discard with the grid', async () => {
+  mockGridAudio();
+  render(<GridEditHarness />);
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
+  await waitFor(() => expect((screen.getByText('Edit grid') as HTMLButtonElement).disabled).toBe(false));
+  await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
+  const right = screen.getByRole('button', { name: 'Shift bar start forward one beat on deck A' });
+  const left = screen.getByRole('button', { name: 'Shift bar start back one beat on deck A' });
+  expect((right as HTMLButtonElement).disabled).toBe(false);
+  await act(async () => { fireEvent.click(right); fireEvent.click(left); fireEvent.click(left); });
+  expect(invoke.mock.calls.filter(([c, args]) => c === 'track_timing' && args.grid || c === 'apply_timing')).toHaveLength(0);
+  await act(async () => { fireEvent.click(screen.getByText('Save grid')); });
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: { bpm: 120, downbeat_seconds: 7.5, reviewed: false }, referenceBeats: [] });
+  await act(async () => { fireEvent.click(screen.getByText('Edit grid')); });
+  await act(async () => { fireEvent.click(right); });
+  const writes = invoke.mock.calls.filter(([c, args]) => c === 'track_timing' && args.grid || c === 'apply_timing').length;
+  await act(async () => { fireEvent.click(screen.getByText('Cancel')); });
+  expect(invoke.mock.calls.filter(([c, args]) => c === 'track_timing' && args.grid || c === 'apply_timing')).toHaveLength(writes);
+  expect(screen.getByText('Edit grid')).toBeTruthy();
+});
+
+test.each([{ playing: true }, { launch_pending: true }])('draft bar shifts wait for a stopped deck: %j', async blocked => {
+  const native = mockGridAudio();
+  const hook = renderHook(() => useDecks());
+  await waitFor(() => expect(hook.result.current.audio.running).toBe(true));
+  await act(async () => { await hook.result.current.control(0, 'grid_edit'); await hook.result.current.control(0, 'grid_pin', 8); });
+  const draft = hook.result.current.audio.decks[0].grid_edit;
+  await act(async () => { await hook.result.current.control(0, 'shift_bar_start', 1); });
+  expect(hook.result.current.audio.decks[0].grid_edit?.downbeat_seconds).toBe(.5);
+  expect(hook.result.current.audio.decks[0].grid_pin).toBe(8);
+  native.decks[0] = { ...native.decks[0], ...blocked };
+  await waitFor(() => expect(hook.result.current.audio.decks[0]).toMatchObject(blocked));
+  await act(async () => { await hook.result.current.control(0, 'shift_bar_start', -1); });
+  expect(hook.result.current.audio.decks[0].grid_edit?.downbeat_seconds).toBe(.5);
+  await act(async () => { await hook.result.current.control(0, 'grid_cancel'); });
+  expect(hook.result.current.audio.decks[0].grid).toEqual(draft);
+});
+
 test('grid edits survive polling, cancel restores the original, and save persists and applies the draft', async () => {
   vi.stubGlobal('PointerEvent', MouseEvent);
   try {

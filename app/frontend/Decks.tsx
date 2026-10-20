@@ -162,7 +162,7 @@ export function useDecks() {
       if (action === 'master_volume' || action === 'cue_volume') {
         setAudio(previous => ({ ...previous, [action]: value }));
       }
-      if (['grid_edit', 'grid_cancel', 'grid_save', 'grid_pin', 'grid_drag_start', 'grid_drag'].includes(action)) {
+      if (['grid_edit', 'grid_cancel', 'grid_save', 'grid_pin', 'grid_drag_start', 'grid_drag'].includes(action) || action === 'shift_bar_start' && gridEdits.current[deck]) {
         const state = currentAudio.current.decks[deck];
         const edit = gridEdits.current[deck];
         if (action === 'grid_cancel') {
@@ -177,8 +177,11 @@ export function useDecks() {
           gridEdits.current[deck] = { generation: state.generation, grid: { ...state.grid }, original: { ...state.grid }, saving: false };
         } else {
           if (!state.track || !edit || edit.generation !== state.generation || edit.saving || edit.previewing) return;
-          if ((state.playing || state.launch_pending) && ['grid_pin', 'grid_drag_start', 'grid_drag'].includes(action)) return;
-          if (action === 'grid_pin') {
+          if ((state.playing || state.launch_pending) && ['grid_pin', 'grid_drag_start', 'grid_drag', 'shift_bar_start'].includes(action)) return;
+          if (action === 'shift_bar_start') {
+            edit.grid = shiftBarStart(edit.grid, value === 1 ? 1 : -1, state.track.duration_seconds);
+            edit.drag = undefined;
+          } else if (action === 'grid_pin') {
             const beat = Math.round((value! - edit.grid.downbeat_seconds) * edit.grid.bpm / 60);
             const seconds = edit.grid.downbeat_seconds + beat * 60 / edit.grid.bpm;
             if (!Number.isFinite(seconds) || seconds < (state.track.start_seconds ?? 0) || seconds >= state.track.duration_seconds) return;
@@ -398,6 +401,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     <path key={m.seconds} d={`M${m.seconds / total * 1024},0V120`} stroke="currentColor" opacity={state.grid?.reviewed ? .6 : .25} />),
     [state.grid?.bpm, state.grid?.downbeat_seconds, state.grid?.reviewed, total]);
   const ready = Boolean(state.track && running);
+  const barShiftDisabled = !ready || loading || state.loading || !state.grid || !!state.grid_saving || !!state.grid_previewing || (state.grid_edit ? state.playing || !!state.launch_pending : state.playing && otherPlaying);
   const loopIn = state.loop_in_seconds;
   const loopOut = state.loop_out_seconds;
   const cue = useCue(state.deck, state.generation, ready, control);
@@ -477,10 +481,10 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     <section id={`deck-${state.deck}-timing`} hidden={!timingOpen} className="deck-settings" aria-label={`Timing & tempo deck ${name}`}><div className="timing-controls">
       <div className="timing-tools">
       <div className="timing-grid-actions">{state.grid_edit ? <><MidiButton disabled={!ready || state.grid_saving || state.grid_previewing} onClick={() => void control(state.deck, 'grid_save')}>{state.grid_saving ? 'Saving…' : 'Save grid'}</MidiButton><MidiButton disabled={state.grid_saving || state.grid_previewing} onClick={() => void control(state.deck, 'grid_cancel')}>Cancel</MidiButton></> : <MidiButton disabled={!ready || preparing || !state.grid} onClick={() => void control(state.deck, 'grid_edit')}>Edit grid</MidiButton>}</div>
-      <fieldset className="grid-timing-fields" disabled={!!state.grid_edit}>
-      <MidiButton disabled={!ready || state.playing} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / trackSampleRate(state.track))))} aria-label="Set reference beat" title="Set reference beat at playhead">Ref beat</MidiButton>
-      <div className="shift-bar-row"><span>Bar</span><MidiButton disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start back one beat on deck ${name}`} title="Shift bar start back one beat" onClick={() => void control(state.deck, 'shift_bar_start', -1)}>←</MidiButton><MidiButton disabled={!ready || (state.playing && otherPlaying) || !state.grid} aria-label={`Shift bar start forward one beat on deck ${name}`} title="Shift bar start forward one beat" onClick={() => void control(state.deck, 'shift_bar_start', 1)}>→</MidiButton></div>
-      </fieldset>
+      <div className="grid-timing-fields">
+      <MidiButton disabled={!ready || state.playing || !!state.grid_edit} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / trackSampleRate(state.track))))} aria-label="Set reference beat" title="Set reference beat at playhead">Ref beat</MidiButton>
+      <div className="shift-bar-row"><span>Bar</span><MidiButton disabled={barShiftDisabled} aria-label={`Shift bar start back one beat on deck ${name}`} title="Shift bar start back one beat" onClick={() => void control(state.deck, 'shift_bar_start', -1)}>←</MidiButton><MidiButton disabled={barShiftDisabled} aria-label={`Shift bar start forward one beat on deck ${name}`} title="Shift bar start forward one beat" onClick={() => void control(state.deck, 'shift_bar_start', 1)}>→</MidiButton></div>
+      </div>
       </div>
       <fieldset className="grid-timing-fields timing-tempo" disabled={!!state.grid_edit}>
       <label>Track <MidiInput aria-label="Track BPM" midiId={`Track BPM deck ${name}`} type="number" step=".01" min="30" max="300" disabled={!ready} value={state.grid_edit ? state.grid_edit.bpm.toFixed(2) : trackBpm} onChange={e => setTrackBpm(e.target.value)} /></label>

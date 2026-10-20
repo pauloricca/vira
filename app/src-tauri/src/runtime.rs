@@ -1144,6 +1144,7 @@ impl EngineHandle {
                         | "master_tempo"
                         | "drift_rate"
                         | "sync_quantum"
+                        | "vinyl_stop"
                         | "jump_crossfade"
                         | "crossfader"
                         | "crossfader_enabled"
@@ -1418,6 +1419,7 @@ impl EngineHandle {
                 );
                 Command::DriftRate(rate)
             }
+            "vinyl_stop" => Command::VinylStop(value == Some(1.)),
             "sync_quantum" => {
                 let quantum =
                     value.ok_or_else(|| anyhow::anyhow!("Sync timing requires beat or bar"))?;

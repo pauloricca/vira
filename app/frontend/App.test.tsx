@@ -653,6 +653,33 @@ test.each([.8, .001, 0])('command arrows and load buttons protect a playing deck
   fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true });
   await waitFor(() => expect(audioInvoke.mock.calls.filter(([command]) => command === 'load_track')).toHaveLength(gain === 0 ? 2 : 1));
 });
+test('bar shortcut shifts the unsaved grid draft', async () => {
+  const tracks = [0, 1].map(deck => ({ ...library.tracks[0], id: `loaded-${deck}`, analysis: { state: 'needs_review' as const, result: estimate, error: null } }));
+  const current = { ...library, tracks };
+  invoke.mockImplementation((command: string, args?: { trackId?: string; deck?: number; grid?: unknown; referenceBeats?: number[] }) => {
+    if (command === 'timing_waveform') return Promise.resolve({ artifact_id: `artifact-${args?.deck}`, fine_peaks: [], fine_peak_frames: 0 });
+    if (command === 'track_timing') return Promise.resolve({ grid: args?.grid ?? { bpm: 120, downbeat_seconds: 0, reviewed: false }, reference_beats: args?.referenceBeats ?? [] });
+    if (command === 'approve_track_analysis') return Promise.resolve({ ...current, revision: 2, tracks: tracks.map(track => track.id === args?.trackId ? { ...track, analysis: { ...track.analysis, state: 'approved' } } : track) });
+    return Promise.resolve(current);
+  });
+  audioInvoke.mockImplementation((command: string) => Promise.resolve(command === 'get_audio_state' ? {
+    running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({
+      deck, loading: false, error: null, track: { track_id: `loaded-${deck}`, artifact_id: `artifact-${deck}`, title: 'Loaded', artist: '', filename: '', duration_seconds: 100, frames: 4800000, peak_frames: 0, peaks: [] },
+      grid: { bpm: 120, downbeat_seconds: 0, reviewed: false }, position_seconds: 12, playing: false, gain: .8, generation: 1, requested_generation: 1,
+    })),
+  } : undefined));
+  render(<App />);
+  await screen.findAllByText('Needs review');
+  fireEvent.pointerDown(screen.getByRole('img', { name: 'Rolling waveform deck B' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck B' }));
+  const panel = within(screen.getByRole('region', { name: 'Timing & tempo deck B' }));
+  await act(async () => { fireEvent.click(panel.getByText('Edit grid')); });
+  const applied = invoke.mock.calls.filter(([command]) => command === 'apply_timing').length;
+  await act(async () => { fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true, shiftKey: true }); });
+  expect(invoke.mock.calls.filter(([command]) => command === 'apply_timing')).toHaveLength(applied);
+  await act(async () => { fireEvent.click(panel.getByText('Save grid')); });
+  expect(invoke.mock.calls.filter(([command]) => command === 'apply_timing').at(-1)).toEqual(['apply_timing', expect.objectContaining({ deck: 1, grid: expect.objectContaining({ downbeat_seconds: .5 }) })]);
+});
 test('timing shortcuts use the last touched rolling waveform with the panel closed', async () => {
   const tracks = [0, 1].map(deck => ({ ...library.tracks[0], id: `loaded-${deck}`, analysis: { state: 'needs_review' as const, result: estimate, error: null } }));
   const current = { ...library, tracks };
@@ -1816,4 +1843,26 @@ test('track menu edits title, artist and all musical keys, retains errors and up
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal');
+});
+
+test('vinyl stop defaults on and restores the saved playback preference', async () => {
+  localStorage.removeItem('vira.vinyl-stop');
+  invoke.mockResolvedValue(library);
+  try {
+    render(<App />);
+    await screen.findByText('Unknown artist');
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'vinyl_stop', value: 1, generation: 0 }));
+    fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+    expect((screen.getByRole('checkbox', { name: 'Vinyl stop' }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Vinyl stop' }));
+    expect(localStorage.getItem('vira.vinyl-stop')).toBe('false');
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'vinyl_stop', value: 0, generation: 0 }));
+    cleanup();
+    audioInvoke.mockClear();
+    render(<App />);
+    await screen.findByText('Unknown artist');
+    fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
+    expect((screen.getByRole('checkbox', { name: 'Vinyl stop' }) as HTMLInputElement).checked).toBe(false);
+    await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'vinyl_stop', value: 0, generation: 0 }));
+  } finally { localStorage.removeItem('vira.vinyl-stop'); }
 });
