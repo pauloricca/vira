@@ -192,6 +192,17 @@ pub fn request_analysis(track_id: &str) -> Result<Library, String> {
     )
 }
 
+pub fn request_key_analysis(track_id: &str) -> Result<Library, String> {
+    if !valid_id(track_id) {
+        return Err("Key analysis requires a library track ID.".into());
+    }
+    service_request(
+        "/v1/analysis/key",
+        Some(serde_json::json!({ "track_id": track_id })),
+        true,
+    )
+}
+
 pub fn approve_analysis(track_id: &str) -> Result<Library, String> {
     if !valid_id(track_id) {
         return Err("Analysis approval requires a library track ID.".into());
@@ -375,6 +386,12 @@ pub fn run() {
         tauri::async_runtime::spawn_blocking(move || request_analysis(&track_id))
             .await
             .map_err(|e| format!("Analysis request worker failed: {e}"))?
+    }
+    #[tauri::command]
+    async fn analyse_track_key(track_id: String) -> Result<Library, String> {
+        tauri::async_runtime::spawn_blocking(move || request_key_analysis(&track_id))
+            .await
+            .map_err(|e| format!("Key analysis request worker failed: {e}"))?
     }
     #[tauri::command]
     async fn approve_track_analysis(track_id: String) -> Result<Library, String> {
@@ -818,6 +835,7 @@ pub fn run() {
             get_library_state,
             analyse_track,
             approve_track_analysis,
+            analyse_track_key,
             get_track_artwork,
             get_audio_state,
             get_routing_graph,

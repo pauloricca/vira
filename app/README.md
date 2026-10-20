@@ -334,7 +334,7 @@ and reconfigures the mount on a background thread when needed. Neither the
 service nor app modifies source music.
 
 Startup and Refresh scan direct children, using FFprobe to read embedded title,
-artist and duration for MP3, PCM WAV and Ogg (`.ogg`, Vorbis or Opus). Missing title uses the complete filename
+artist and duration for MP3, PCM WAV, Ogg (`.ogg`, Vorbis or Opus), and WebM (Vorbis or Opus, including files mislabeled `.mp3`). Missing title uses the complete filename
 stem; missing artist uses `Unknown artist`. Source filenames are available in the
 title tooltip and library search. Subfolders are skipped. Unsupported, damaged, non-regular and
 symlink files get individual error rows. There is no recursive scan or watcher.

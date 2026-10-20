@@ -8,7 +8,7 @@ import { DisplayPosition, animate } from './transport';
 import { WaveTiles, gridGeometry, trackSampleRate } from './waveform';
 import { drawTransitionGuides, transitionMarkers, TransitionDescription, type TransitionPlan } from './TransitionGuides';
 export const drawMetrics = { count: 0, total_ms: 0, max_ms: 0 };
-export function RollingRow({ state, running, window, control, transition, masterBpm = 120, timingOpen = false, onInteract, active = false }: { transition?: TransitionPlan | null; masterBpm?: number; state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function RollingRow({ state, running, window, control, transition, masterBpm = 120, timingOpen = false, onInteract }: { transition?: TransitionPlan | null; masterBpm?: number; state: DeckState; running: boolean; window: number; timingOpen?: boolean; onInteract?: (deck: number) => void; active?: boolean; control?: (deck: number, action: string, value?: number) => Promise<void> }) {
   const midi = useMidiMarkers();
   const pinnedBeat = useRef<HTMLDivElement>(null);
   const hoverX = useRef<number | null>(null);
@@ -144,7 +144,7 @@ export function RollingRow({ state, running, window, control, transition, master
     paint.current(performance.now());
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
-  return <div className={`rolling-row deck-${state.deck}${state.grid_edit ? ' editing-grid' : ''}${state.grid_pin != null ? ' grid-pinned' : ''}${state.grid_edit && (state.playing || state.launch_pending || state.grid_previewing) ? ' grid-listening' : ''}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}><span className={`deck-badge${active ? ' active' : ''}`} title={`Deck ${state.deck===0 ? 'A' : 'B'}${active ? ' · active' : ''}`}>{state.deck===0 ? 'A' : 'B'}</span>
+  return <div className={`rolling-row deck-${state.deck}${state.grid_edit ? ' editing-grid' : ''}${state.grid_pin != null ? ' grid-pinned' : ''}${state.grid_edit && (state.playing || state.launch_pending || state.grid_previewing) ? ' grid-listening' : ''}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}>
     <canvas {...waveformHandlers} {...midi(`deck:${state.deck}:jog`)} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
       onPointerDown={event => { if (!state.grid_edit) waveformHandlers.onPointerDown(event); }}
       onPointerLeave={event => { hoverX.current = null; if (!gridDrag.current) event.currentTarget.style.cursor = ''; }}

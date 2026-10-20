@@ -45,7 +45,6 @@ h1 { font-size: 28px; letter-spacing: 5px; font-weight: 400; color: #bfc8d0; }
 .deck-1 { --other-deck-color: var(--blue); --deck-color: var(--orange); color: var(--orange); }
 .deck-badge { display: grid; place-items: center; box-sizing: border-box; background: transparent; border: 2px solid var(--deck-color); color: var(--deck-color); width: 36px; height: 40px; font-size: 24px; font-weight: 500; flex-shrink: 0; }
 .deck-badge.active { background: var(--deck-color); color: #09161d; }
-.rolling-row > .deck-badge { position: absolute; left: 6px; top: 21px; z-index: 2; }
 .rolling-playhead { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: #f0f3f4; pointer-events: none; }
 .rolling-playhead::before { content: ''; position: absolute; top: 0; left: -4px; border-top: 10px solid #f0f3f4; border-left: 5px solid transparent; border-right: 5px solid transparent; }
 .reference-beat { stroke: #f6d477; stroke-width: 2.5px; }
@@ -232,36 +231,26 @@ main { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; 
 .slots-empty { min-height: 0; }
 /* Each deck owns its channel strip; the narrow centre keeps master levels and crossfader. */
 .mixer { display: flex; flex-direction: column; align-items: center; gap: 0; padding: 10px 7px 12px; }
-.mixer-channel { flex: 0 0 78px; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 7px 4px; border: 1px solid var(--line); background: linear-gradient(120deg,#15212799,#0e191d99); display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
-.mixer-channel-top { flex: 0 0 36px; display: grid; grid-template-columns: 36px 27px; align-items: center; gap: 4px; }
-.mixer-channel-top .mixer-dial { grid-column: 1; justify-self: start; }
-.mixer-channel-top .mixer-headphones { grid-column: 2; justify-self: center; }
-.deck-1 .mixer-channel-top { grid-template-columns: 27px 36px; justify-content: end; }
-.deck-1 .mixer-channel-top .mixer-dial { grid-column: 2; grid-row: 1; justify-self: end; }
-.deck-1 .mixer-channel-top .mixer-headphones { grid-column: 1; grid-row: 1; }
-.mixer-dial { position: relative; z-index: 1; width: 34px; height: 34px; color: var(--deck-color); cursor: ns-resize; touch-action: none; user-select: none; }
+.mixer-channel { flex: 0 0 38px; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 4px; border: 1px solid var(--line); background: linear-gradient(120deg,#15212799,#0e191d99); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.mixer-dial { position: relative; z-index: 1; width: 24px; height: 24px; color: var(--deck-color); cursor: ns-resize; touch-action: none; user-select: none; }
+.mixer-dial-hi::after,.mixer-dial-md::after { content: ''; position: absolute; left: calc(50% - .5px); bottom: -4px; width: 1px; height: 6px; background: #687b84; opacity: .8; pointer-events: none; }
 .mixer-dial:focus { outline: none; }
 .mixer-dial svg { display: block; width: 100%; height: 100%; }
 .mixer-dial-base { fill: #1b2b32; stroke: #687b84; stroke-width: 1.2; opacity: .8; }
 .mixer-dial-arc { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
-.mixer-dial text { fill: currentColor; font-size: 10px; font-weight: 500; letter-spacing: .2px; }
-.mixer-headphones { width: 27px; height: 27px; padding: 0; display: grid; place-items: center; color: var(--deck-color); border-color: #687b84; }
-.mixer-headphones:hover:not(:disabled) { color: var(--deck-color); border-color: #687b84; background: color-mix(in srgb, var(--deck-color) 14%, #142025); }
-.mixer-channel-body { flex: 1 1 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 36px 28px; grid-template-rows: minmax(0,1fr); align-items: stretch; gap: 4px; }
-.mixer-eq { display: grid; grid-template-rows: repeat(4, 40px); align-content: start; gap: 2px; min-height: 0; }
-.mixer-eq-row { position: relative; display: flex; align-items: center; justify-content: center; width: 36px; }
-.mixer-eq-row:nth-child(-n+2)::after { content: ''; position: absolute; left: 17px; bottom: -5px; width: 1px; height: 10px; background: var(--deck-color); opacity: .55; pointer-events: none; }
-.deck-1 .mixer-eq-row { justify-self: end; }
-.mixer-fader-group { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
-.metered-fader { position: relative; width: 28px; flex: 0 0 145px; height: 145px; min-height: 0; }
-.metered-fader .level-meter { position: absolute; top: 6px; bottom: 6px; left: 12px; width: 4px; height: auto; pointer-events: none; }
-.metered-fader .vertical-fader { position: relative; display: block; width: 28px; height: 145px; margin: 0; }
+.mixer-dial text { fill: currentColor; font-size: 11.5px; font-weight: 500; letter-spacing: .2px; }
+.mixer-headphones { flex: 0 0 20px; width: 26px; height: 20px; min-height: 0; padding: 0; display: grid; place-items: center; color: var(--deck-color); border: 0; background: transparent; opacity: .6; }
+.mixer-headphones:hover:not(:disabled) { color: var(--deck-color); background: transparent; opacity: 1; }
+.mixer-headphones:focus-visible { outline: 1px solid var(--deck-color); outline-offset: 1px; }
+.mixer-eq { display: flex; flex: none; flex-direction: column; align-items: center; gap: 2px; }
+.mixer-fader-group { display: flex; flex: 1 1 0; flex-direction: column; align-items: center; min-height: 0; width: 28px; }
+.metered-fader { position: relative; width: 28px; flex: 1 1 0; height: 100%; min-height: 0; }
+.metered-fader .level-meter { position: absolute; top: 3px; bottom: 3px; left: 12px; width: 4px; height: auto; pointer-events: none; }
+.metered-fader .vertical-fader { position: relative; display: block; width: 28px; height: 100%; margin: 0; }
 .metered-fader .vertical-fader::-webkit-slider-runnable-track { width: 4px; background: transparent; }
-.metered-fader .vertical-fader::-webkit-slider-thumb { width: 28px; margin-left: -12px; border-color: #c1dbe980; background: #aec9d65c; transition: background .12s, border-color .12s; }
+.metered-fader .vertical-fader::-webkit-slider-thumb { width: 22px; height: 7px; margin-left: -9px; border-color: #c1dbe980; background: #aec9d65c; transition: background .12s, border-color .12s; }
+.metered-fader .vertical-fader::-moz-range-thumb { width: 22px; height: 7px; }
 .metered-fader .vertical-fader:hover:not(:disabled)::-webkit-slider-thumb,.metered-fader .vertical-fader:active:not(:disabled)::-webkit-slider-thumb { border-color: #edf8ff; background: #bcd6e3; }
-.deck-1 .mixer-channel-body { grid-template-columns: 28px 36px; justify-content: end; }
-.deck-1 .mixer-eq { grid-column: 2; grid-row: 1; }
-.deck-1 .mixer-fader-group { grid-column: 1; grid-row: 1; }
 .mixer-master { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; align-items: center; color: #cbd8de; font-size: 11px; gap: 5px; }
 .mixer-master .stereo-meters { flex: 0 0 140px; height: 140px; min-height: 0; width: 20px; justify-content: center; gap: 6px; }
 .mixer-no-crossfader .mixer-master .stereo-meters { flex: 1 1 0; height: auto; }
@@ -349,7 +338,7 @@ html,body,#root,#root * { -webkit-user-select: none; user-select: none; -webkit-
 
 .rolling-row canvas:active { cursor: grabbing; }
 
-.mixer-headphones.active { color: var(--deck-color); background: color-mix(in srgb, var(--deck-color) 24%, #142025); border-color: var(--deck-color); box-shadow: 0 0 8px color-mix(in srgb, var(--deck-color) 28%, transparent); }
+.mixer-headphones.active { color: var(--deck-color); background: transparent; opacity: 1; filter: drop-shadow(0 0 3px var(--deck-color)); }
 .audio-actions { padding: 16px; }
 .audio-help { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 0 0 14px; }
 .settings-page select { max-width: 280px; }
@@ -539,7 +528,7 @@ html,body,#root,#root * { -webkit-user-select: none; user-select: none; -webkit-
 .instrument-editor .settings-card select { min-width:0; width:65%; }
 @media(min-width:901px) and (max-width:1100px) { .app-header { flex-wrap:wrap; } }
 
-.rolling-controls { position: relative; z-index: 4; display: flex; justify-content: flex-end; gap: 6px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.rolling-controls { position: absolute; top: 5px; right: 6px; z-index: 4; display: flex; justify-content: flex-end; gap: 6px; }
 .rolling-controls .rolling-zoom { position: relative; inset: auto; }
 .rolling-sources { position: relative; font-size: 11px; }
 .rolling-sources > button { height: 100%; padding: 5px 8px; border: 1px solid #526169; border-radius: 3px; color: #d4dce1; background: linear-gradient(#1a272d,#121c21); }

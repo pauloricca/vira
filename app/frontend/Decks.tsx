@@ -541,16 +541,17 @@ function MixerDial({ label, state, running, control }: { label: DialLabel; state
 
   const angle = (value - initial) * 300;
   const radians = (angle - 90) * Math.PI / 180;
-  const endX = 20 + 17 * Math.cos(radians);
-  const endY = 20 + 17 * Math.sin(radians);
+  const radius = label === 'GN' ? 15 : 17;
+  const endX = 20 + radius * Math.cos(radians);
+  const endY = 20 + radius * Math.sin(radians);
   const midi = useMidiControl({ id: `ui:${dialNames[label]} deck ${deck}`, label: `${dialNames[label]} deck ${deck}`, kind: 'number', min: 0, max: 1, step: .001, disabled: !enabled, read: () => value, apply: turn });
-  return <div {...midi} className="mixer-dial" role="slider" tabIndex={-1} aria-disabled={!enabled} aria-label={`${dialNames[label]} deck ${deck}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value * 100)} aria-valuetext={description} title={`${dialNames[label]} · ${description} · drag to turn, double-click to reset`}
+  return <div {...midi} className={`mixer-dial mixer-dial-${label.toLowerCase()}`} role="slider" tabIndex={-1} aria-disabled={!enabled} aria-label={`${dialNames[label]} deck ${deck}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value * 100)} aria-valuetext={description} title={`${dialNames[label]} · ${description} · drag to turn, double-click to reset`}
     onPointerDown={event => { if (!enabled) return; event.preventDefault(); drag.current = { pointerId: event.pointerId, y: event.clientY, value }; event.currentTarget.setPointerCapture?.(event.pointerId); }}
     onPointerMove={event => { if (drag.current?.pointerId === event.pointerId) turn(drag.current.value + (drag.current.y - event.clientY) / 140); }}
     onPointerUp={event => { if (drag.current?.pointerId === event.pointerId) drag.current = null; }}
     onPointerCancel={() => { drag.current = null; }}
     onDoubleClick={() => turn(initial)}>
-    <svg viewBox="0 0 40 40" aria-hidden="true"><circle className="mixer-dial-base" cx="20" cy="20" r="17" />{Math.abs(angle) > .1 && <path className="mixer-dial-arc" d={`M20 3 A17 17 0 0 ${angle > 0 ? 1 : 0} ${endX} ${endY}`} />}<text x="20" y="23" textAnchor="middle">{label}</text></svg>
+    <svg viewBox="0 0 40 40" aria-hidden="true"><circle className="mixer-dial-base" cx="20" cy="20" r={radius} />{Math.abs(angle) > .1 && <path className="mixer-dial-arc" d={`M20 ${20 - radius} A${radius} ${radius} 0 0 ${angle > 0 ? 1 : 0} ${endX} ${endY}`} />}<text x="20" y="23.5" textAnchor="middle">{label}</text></svg>
   </div>;
 }
 
@@ -565,11 +566,9 @@ function ChannelFader({ state, running, control, meter }: { state: DeckState; ru
     generation.current = state.generation;
   }, [state]);
   return <div className={`mixer-channel deck-${state.deck}`} aria-label={`Deck ${name} mixer controls`}>
-    <div className="mixer-channel-top"><MixerDial label="GN" state={state} running={running} control={control} /><MidiButton className={`mixer-headphones${state.headphone_cue ? ' active' : ''}`} disabled={!running} aria-pressed={!!state.headphone_cue} aria-label={`Headphone cue deck ${name}`} title="Send this deck to cue headphones before the channel fader" onClick={() => void control(state.deck, 'headphone_cue', state.headphone_cue ? 0 : 1)}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v7H5a2 2 0 0 1-2-2v-3a2 2 0 0 0-1-2Zm16 0h-3v7h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-1-2Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg></MidiButton></div>
-    <div className="mixer-channel-body">
-      <div className="mixer-eq" aria-label={`EQ and filter deck ${name}`}>{(['HI', 'MD', 'LO', 'FL'] as const).map(label => <div className="mixer-eq-row" key={label}><MixerDial label={label} state={state} running={running} control={control} /></div>)}</div>
-      <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={!state.track || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
-    </div>
+    <div className="mixer-eq" aria-label={`Gain, EQ and filter deck ${name}`}>{(['GN', 'HI', 'MD', 'LO', 'FL'] as const).map(label => <MixerDial key={label} label={label} state={state} running={running} control={control} />)}</div>
+    <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={!state.track || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
+    <MidiButton className={`mixer-headphones${state.headphone_cue ? ' active' : ''}`} disabled={!running} aria-pressed={!!state.headphone_cue} aria-label={`Headphone cue deck ${name}`} title="Send this deck to cue headphones before the channel fader" onClick={() => void control(state.deck, 'headphone_cue', state.headphone_cue ? 0 : 1)}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v7H5a2 2 0 0 1-2-2v-3a2 2 0 0 0-1-2Zm16 0h-3v7h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-1-2Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg></MidiButton>
   </div>;
 }
 

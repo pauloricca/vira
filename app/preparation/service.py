@@ -35,8 +35,8 @@ def inspect_file(path: Path) -> dict:
             raise ValueError("Only regular files are supported.")
         stat = path.stat()
         row.update(size_bytes=stat.st_size, modified_ns=str(stat.st_mtime_ns))
-        if path.suffix.lower() not in (".mp3", ".wav", ".ogg"):
-            row.update(status="unsupported", error="Only MP3, PCM WAV and Ogg (Vorbis or Opus) files are supported.")
+        if path.suffix.lower() not in (".mp3", ".wav", ".ogg", ".webm"):
+            row.update(status="unsupported", error="Only MP3, PCM WAV, Ogg and WebM (Vorbis or Opus) files are supported.")
             return row
         probe = subprocess.run([
             "ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_format", "-show_streams", "-of", "json", str(path)
@@ -49,9 +49,10 @@ def inspect_file(path: Path) -> dict:
         container = info.get("format", {}).get("format_name", "").split(",")
         supported = (path.suffix.lower() == ".mp3" and codec == "mp3" and "mp3" in container) or (
             path.suffix.lower() == ".wav" and codec.startswith("pcm_") and "wav" in container) or (
-            path.suffix.lower() == ".ogg" and codec in ("vorbis", "opus") and "ogg" in container)
+            path.suffix.lower() == ".ogg" and codec in ("vorbis", "opus") and "ogg" in container) or (
+            codec in ("vorbis", "opus") and "webm" in container)
         if not supported:
-            row.update(status="unsupported", error="File content is not MP3, PCM WAV or Ogg (Vorbis or Opus) audio.")
+            row.update(status="unsupported", error="File content is not MP3, PCM WAV, Ogg or WebM (Vorbis or Opus) audio.")
             return row
         tags = {k.lower(): v for k, v in audio.get("tags", {}).items()}
         tags.update({k.lower(): v for k, v in info.get("format", {}).get("tags", {}).items()})
@@ -257,7 +258,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                     self.respond(400, {"error": str(exc)})
                 return
             # Accept only an opaque track ID, never a path or shell command.
-            if self.path in ("/v1/analysis", "/v1/analysis/approve", "/v1/prepare"):
+            if self.path in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare"):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
@@ -287,7 +288,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                         self.respond(200, jobs.approve(track_id))
                     else:
                         priority.background()
-                        self.respond(202, jobs.request(track_id))
+                        self.respond(202, jobs.request(track_id, key_only=self.path == "/v1/analysis/key"))
                 except (ValueError, OSError) as exc:
                     self.respond(400, {"error": str(exc)})
                 return
@@ -435,7 +436,7 @@ def make_collections_handler(collections, generated):
                 else:
                     self.respond(200, value)
                 return
-            if self.path not in ("/v1/analysis", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save"):
+            if self.path not in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save"):
                 self.respond(404, {"error": "Unknown endpoint."})
                 return
             try:

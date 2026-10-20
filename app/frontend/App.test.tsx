@@ -1707,3 +1707,14 @@ test('category checkboxes mix tracks, preserve the open menu, persist selection 
   localStorage.removeItem('vira.collections');
   localStorage.removeItem('vira.collection');
 });
+
+test('track menu can request key-only analysis for an unanalysed track with manual BPM', async () => {
+  const track = { ...library.tracks[0], timing_bpm: 127.5, analysis: { state: 'not_analysed' as const, result: null, error: null } };
+  invoke.mockResolvedValue({ ...library, tracks: [track] });
+  render(<App />);
+  await screen.findAllByText('Not analysed');
+  fireEvent.click(screen.getByLabelText(`Actions for ${track.title}`));
+  fireEvent.click(screen.getByRole('button', { name: `Analyse key ${track.title}` }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('analyse_track_key', { trackId: track.id }));
+  expect(invoke.mock.calls.some(([command]) => command === 'analyse_track')).toBe(false);
+});

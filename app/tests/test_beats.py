@@ -12,6 +12,18 @@ from preparation.baseline import SR, HOP, grid_diagnostics, align_grid_to_attack
 
 
 class BeatTests(unittest.TestCase):
+    def test_key_only_detects_pitch_without_running_beat_detection(self):
+        from unittest.mock import patch
+        from preparation.baseline import estimate_key
+        samples = np.arange(2 * SR) / SR
+        chord = sum(np.sin(2 * np.pi * frequency * samples) for frequency in (261.63, 329.63, 392)) * .1
+        with patch('librosa.beat.beat_track', side_effect=AssertionError('Beat analysis must not run')):
+            value = estimate_key(chord)
+        self.assertTrue(value['keys'])
+        self.assertTrue(all(np.isfinite(candidate['correlation']) for candidate in value['keys']))
+        self.assertIsNone(value['grid'])
+        self.assertEqual(value['beats_seconds'], [])
+
     def test_worker_uses_original_file_genre_metadata(self):
         worker = Path(__file__).resolve().parents[1] / 'preparation' / 'analysis_worker.py'
         with tempfile.TemporaryDirectory() as temporary:

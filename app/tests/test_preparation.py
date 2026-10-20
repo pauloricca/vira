@@ -96,6 +96,30 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(rows["renamed.ogg"]["status"], "unsupported")
         self.assertEqual(rows["broken.ogg"]["status"], "unreadable")
 
+    def test_webm_metadata_and_playback_with_mp3_extension(self):
+        from preparation.service import inspect_file
+        from preparation.jobs import LibraryJobs
+        from preparation.prepare import Preparation
+        for codec in ("libopus", "libvorbis"):
+            filename = codec + ".webm"
+            self.audio(filename, [("title", "WebM title"), ("artist", "WebM artist")], codec=codec)
+            path = self.music / filename
+            self.assertEqual(inspect_file(path)["status"], "ready")
+            path.rename(path.with_suffix(".mp3"))
+        jobs = LibraryJobs(self.music, self.generated)
+        try:
+            jobs.reconcile([inspect_file(path) for path in self.music.iterdir()])
+            library = jobs.state()
+            preparation = Preparation(jobs)
+            for row in library["tracks"]:
+                self.assertEqual(row["status"], "ready")
+                self.assertEqual(row["title"], "WebM title")
+                self.assertEqual(row["artist"], "WebM artist")
+                prepared = preparation.prepare(row["id"], audition=True)
+                self.assertAlmostEqual(prepared["duration_seconds"], 2, delta=.1)
+        finally:
+            jobs.close()
+
     def test_collections_have_unique_rows_but_identical_content_shares_timing(self):
         import shutil
         self.audio("same.wav")

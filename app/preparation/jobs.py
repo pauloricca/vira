@@ -102,11 +102,11 @@ def validate_result(result):
     return result
 
 
-def run_analysis(snapshot, work):
+def run_analysis(snapshot, work, key_only=False):
     result_path = work / "result.json"
     try:
         subprocess.run(["nice", "-n", "10", sys.executable, str(Path(__file__).with_name("analysis_worker.py")),
-                        "--input", str(snapshot), "--output", str(result_path)],
+                        "--input", str(snapshot), "--output", str(result_path), *(["--key-only"] if key_only else [])],
                        check=True, capture_output=True, timeout=600)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("Analysis timed out after ten minutes. Retry the selected file.") from exc
@@ -364,7 +364,7 @@ class LibraryJobs:
                 raise ValueError("Track is unavailable or has changed. Refresh the library.")
             return copy.deepcopy(row), self.music / row["filename"]
 
-    def request(self, track_id):
+    def request(self, track_id, key_only=False):
         with self.lock:
             row = self.rows.get(track_id)
             if not row or row["status"] != "ready":
@@ -389,7 +389,10 @@ class LibraryJobs:
                 raise ValueError("Cannot save analysis job. Check the generated-data mount.")
             token = self.tokens.get(track_id, 0) + 1
             self.tokens[track_id] = token
-            self.pending.put_nowait((copy.deepcopy(row), token))
+            requested = copy.deepcopy(row)
+            if key_only:
+                requested["_key_previous"] = copy.deepcopy(old)
+            self.pending.put_nowait((requested, token))
             self.revision += 1
             return self.state()
 
@@ -454,12 +457,20 @@ class LibraryJobs:
                 if (stat.st_size, str(stat.st_mtime_ns)) != (requested["size_bytes"], requested["modified_ns"]):
                     raise ValueError("Source changed before analysis. Refresh and retry.")
                 requested["source_hash"] = digest
-                restored = self.shared_analysis(digest)
+                restored = None if "_key_previous" in requested else self.shared_analysis(digest)
                 if restored is not None and restored["analysis"]["state"] == "stale":
                     restored = None
                 if restored is None:
                     self.background()
-                    result = validate_result(self.analyzer(snapshot, work))
+                    result = validate_result(self.analyzer(snapshot, work, key_only=True) if "_key_previous" in requested else self.analyzer(snapshot, work))
+                    if "_key_previous" in requested:
+                        previous = requested["_key_previous"]["result"]
+                        base = copy.deepcopy(previous) if previous else {"grid": None, "beats_seconds": [], "flags": []}
+                        for field in ("keys", "window_keys", "key_window_agreement", "duration_seconds", "analysis_seconds"):
+                            if field in result:
+                                base[field] = result[field]
+                        base["flags"] = [flag for flag in base["flags"] if flag != "ambiguous_key"] + result["flags"]
+                        result = validate_result(base)
         except Exception as exc:
             failure = str(exc) or "Analysis failed. Retry this file."
         # Check again even without Refresh: never publish a result for changed content.
@@ -477,7 +488,7 @@ class LibraryJobs:
             if not unchanged:
                 row["analysis"] = blank("stale", "Source changed or was removed during analysis. Refresh and reanalyse.")
             elif failure:
-                row["analysis"] = blank("failed", failure)
+                row["analysis"] = {**requested["_key_previous"], "error": failure} if "_key_previous" in requested else blank("failed", failure)
             elif restored:
                 row["analysis"] = restored["analysis"]
                 row["analysis_saved_ns"] = restored.get("saved_ns", 0)

@@ -49,6 +49,43 @@ class JobTests(unittest.TestCase):
     def track(self, manager, index=0):
         return manager.state()["tracks"][index]
 
+    def test_key_only_preserves_manual_timing_and_allows_approval(self):
+        calls = []
+        def analyze(snapshot, work, key_only=False):
+            calls.append(key_only)
+            return {"grid": None, "beats_seconds": [], "keys": [{"key": "D minor", "correlation": .9}], "window_keys": [], "flags": []}
+        manager = self.manager(analyze)
+        manager.reconcile([self.row()])
+        track_id = self.track(manager)["id"]
+        grid = {"bpm": 127.5, "downbeat_seconds": .2, "reviewed": True}
+        Timing(manager).save(track_id, grid, [.2, .7])
+        manager.request(track_id, key_only=True)
+        manager.pending.join()
+        self.assertEqual(calls, [True])
+        self.assertEqual(Timing(manager).get(track_id)["grid"], grid)
+        self.assertEqual(self.track(manager)["timing_bpm"], 127.5)
+        self.assertEqual(self.track(manager)["analysis"]["result"]["keys"][0]["key"], "D minor")
+        manager.approve(track_id)
+        self.assertEqual(self.track(manager)["analysis"]["state"], "approved")
+
+    def test_key_only_preserves_existing_analysis_grid_and_beats(self):
+        def analyze(snapshot, work, key_only=False):
+            value = result()
+            if key_only:
+                value.update(grid=None, beats_seconds=[], keys=[{"key": "D minor", "correlation": .9}])
+            return value
+        manager = self.manager(analyze)
+        manager.reconcile([self.row()])
+        track_id = self.track(manager)["id"]
+        manager.request(track_id)
+        manager.pending.join()
+        manager.request(track_id, key_only=True)
+        manager.pending.join()
+        actual = self.track(manager)["analysis"]["result"]
+        self.assertEqual(actual["grid"], result()["grid"])
+        self.assertEqual(actual["beats_seconds"], result()["beats_seconds"])
+        self.assertEqual(actual["keys"][0]["key"], "D minor")
+
     def test_only_selected_file_serial_and_deduplicated(self):
         started = threading.Event()
         calls = []

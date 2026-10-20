@@ -194,6 +194,26 @@ def fast_genre(genre):
         r'jump ?up|techstep|darkstep|drumstep|hardstep)\b', normalized))
 
 
+def estimate_key(y):
+    chunks = []
+    for start in range(0, len(y), 30 * SR):
+        part = y[start:start + 30 * SR]
+        if len(part) < SR or np.sqrt(np.mean(part**2)) < 1e-5:
+            continue
+        spectrum = abs(librosa.stft(part, n_fft=4096, hop_length=1024))
+        harmonic = librosa.decompose.hpss(spectrum)[0]
+        chroma = librosa.feature.chroma_stft(S=harmonic**2, sr=SR, n_fft=4096, hop_length=1024)
+        chunks.append((start / SR, np.mean(chroma, axis=1), chroma.shape[1]))
+    ranked = keys(np.average([c[1] for c in chunks], axis=0, weights=[c[2] for c in chunks])) if chunks else []
+    window_keys = [{'start_seconds': c[0], 'candidates': keys(c[1])} for c in chunks]
+    flags = []
+    agreement = sum(bool(w['candidates']) and w['candidates'][0]['key'] == ranked[0]['key'] for w in window_keys) / len(window_keys) if ranked else 0
+    if not ranked or ranked[0]['correlation'] < .6 or ranked[0]['correlation'] - ranked[1]['correlation'] < .1 or agreement < .7:
+        flags.append('ambiguous_key')
+    return {'grid': None, 'beats_seconds': [], 'keys': ranked, 'window_keys': window_keys,
+            'key_window_agreement': agreement, 'flags': flags}
+
+
 def estimate(y, genre=None):
     if len(y) < SR or np.max(abs(y)) < 1e-6:
         return {'grid': None, 'beats_seconds': [], 'keys': [], 'window_keys': [], 'flags': ['silence_or_too_short']}
@@ -212,25 +232,15 @@ def estimate(y, genre=None):
         onset_envelope=onset, sr=SR, hop_length=HOP, bpm=tempo, trim=False)
     candidates = librosa.frames_to_time(opening_frames, sr=SR, hop_length=HOP)
     grid = recover_opening_beats(y, grid, candidates)
-    chunks = []
-    for start in range(0, len(y), 30 * SR):
-        part = y[start:start + 30 * SR]
-        if len(part) < SR or np.sqrt(np.mean(part**2)) < 1e-5:
-            continue
-        spectrum = abs(librosa.stft(part, n_fft=4096, hop_length=1024))
-        harmonic = librosa.decompose.hpss(spectrum)[0]
-        chroma = librosa.feature.chroma_stft(S=harmonic**2, sr=SR, n_fft=4096, hop_length=1024)
-        chunks.append((start / SR, np.mean(chroma, axis=1), chroma.shape[1]))
-    ranked = keys(np.average([c[1] for c in chunks], axis=0, weights=[c[2] for c in chunks])) if chunks else []
-    window_keys = [{'start_seconds': c[0], 'candidates': keys(c[1])} for c in chunks]
+    key_result = estimate_key(y)
+    ranked, window_keys = key_result['keys'], key_result['window_keys']
     flags = ['metrical_level_and_phase_unverified']
     if not grid:
         flags.append('no_usable_grid')
     elif grid['residual_p95_ms'] > 40 or abs(grid['end_minus_start_residual_ms']) > 30 or grid['tempo_spread_percent'] > 1:
         flags.append('grid_needs_review')
-    agreement = sum(bool(w['candidates']) and w['candidates'][0]['key'] == ranked[0]['key'] for w in window_keys) / len(window_keys) if ranked else 0
-    if not ranked or ranked[0]['correlation'] < .6 or ranked[0]['correlation'] - ranked[1]['correlation'] < .1 or agreement < .7:
-        flags.append('ambiguous_key')
+    agreement = key_result['key_window_agreement']
+    flags.extend(key_result['flags'])
     return {'tracker_bpm': float(np.asarray(tempo).flat[0]), 'grid': grid,
             'tempo_alternatives': [grid['bpm'] / 2, grid['bpm'], grid['bpm'] * 2] if grid else [],
             'beats_seconds': beats.tolist(), 'untrimmed_beats_seconds': candidates.tolist(),

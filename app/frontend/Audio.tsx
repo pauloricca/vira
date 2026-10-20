@@ -91,9 +91,9 @@ export function Audio({ audio }: { audio: AudioState }) {
   }
   return <>
       <SettingsCard className="settings-card"><h3 className="device-list-heading">Output devices<DeviceRefresh label="Refresh audio devices" refresh={() => refreshDevices.current()} /></h3>
-        <div className="settings-row"><div><strong>Master out</strong><p>The mix after channel faders and crossfader.{!master && inventory?.default_device && <> System default: {inventory.default_device}.</>}</p></div><select aria-label="Master out device" value={master} disabled={!inventory || busy} onChange={event => chooseMaster(event.target.value)}><option value="">System default</option>{options(master)}</select></div>
+        <div className="settings-row"><div><strong><output className={audio.running ? 'settings-live' : undefined}>{audio.running ? 'Running' : 'Unavailable'}</output> · Master out</strong><p>The mix after channel faders and crossfader. Stereo · {(audio.telemetry.sample_rate ?? 48000) / 1000} kHz.{!master && inventory?.default_device && <> System default: {inventory.default_device}.</>}</p></div><select aria-label="Master out device" value={master} disabled={!inventory || busy} onChange={event => chooseMaster(event.target.value)}><option value="">System default</option>{options(master)}</select></div>
         <div className="settings-row"><span>Master channels</span><select aria-label="Master output channels" value={masterPair.join(',')} disabled={!inventory || busy} onChange={event => setMasterPair(event.target.value.split(',').map(Number) as Pair)}>{channelOptions(masterPairs, masterPair)}</select></div>
-        <div className="settings-row"><div><strong>Cue headphones</strong><p>Before channel faders and crossfader; follows trim, EQ and filter.</p></div><select aria-label="Cue headphones device" value={cue} disabled={!inventory || busy} onChange={event => chooseCue(event.target.value)}><option value="">Off</option>{options(cue)}</select></div>
+        <div className="settings-row"><div><strong><output className={audio.routing?.cue_running ? 'settings-live' : undefined}>{audio.routing?.cue_running ? 'Running' : audio.routing?.cue ? 'Unavailable' : 'Off'}</output> · Cue headphones</strong><p>Before channel faders and crossfader; follows trim, EQ and filter.{audio.routing?.cue_running && audio.routing.cue_sample_rate != null && <> Stereo · {audio.routing.cue_sample_rate / 1000} kHz.</>}</p></div><select aria-label="Cue headphones device" value={cue} disabled={!inventory || busy} onChange={event => chooseCue(event.target.value)}><option value="">Off</option>{options(cue)}</select></div>
         {!!cue && <div className="settings-row"><span>Cue channels</span><select aria-label="Cue output channels" value={cuePair.join(',')} disabled={!inventory || busy} onChange={event => setCuePair(event.target.value.split(',').map(Number) as Pair)}>{channelOptions(cuePairs, cuePair)}</select></div>}
         <div className="audio-actions"><p className="audio-help">Select A, B or both with the headphone buttons above the channel faders. Use separate channel pairs when sharing a device.</p>
         {overlap && <p className="settings-error" role="alert">Master and cue channels must not overlap on the same device.</p>}
@@ -101,15 +101,9 @@ export function Audio({ audio }: { audio: AudioState }) {
         {sameDevice && !overlap && <p className="audio-help">Master and cue share one {selectedRate / 1000} kHz stream.</p>}
         {restarting && <p className="audio-help">Changing to {selectedRate / 1000} kHz restarts VIRA and clears the decks. Save any grid or patch edits first. Tracks will use a cache prepared at the new rate.</p>}
         {(error || scanError) && <p className="settings-error" role="alert">{error || scanError}</p>}
-        <button disabled={!changed || busy || overlap || invalidPairs || missing(master) || missing(cue) || unsupported(master) || unsupported(cue)} onClick={() => void apply()}>{busy ? 'Applying…' : restarting ? 'Apply outputs & restart VIRA' : 'Apply outputs'}</button></div>
-      </SettingsCard>
-      <SettingsCard className="settings-card"><h3>Output status</h3>
-        <div className="settings-row"><span>Master out</span><output className={audio.running ? 'settings-live' : undefined}>{audio.running ? 'Running' : 'Unavailable'}</output></div>
-        <div className="settings-row"><span>Cue headphones</span><output className={audio.routing?.cue_running ? 'settings-live' : undefined}>{audio.routing?.cue_running ? 'Running' : audio.routing?.cue ? 'Unavailable' : 'Off'}</output></div>
-        <div className="settings-row"><span>Master format</span><output>Stereo · {(audio.telemetry.sample_rate ?? 48000) / 1000} kHz</output></div>
-        {audio.routing?.cue_running && audio.routing.cue_sample_rate != null && <div className="settings-row"><span>Cue format</span><output>Stereo · {audio.routing.cue_sample_rate / 1000} kHz</output></div>}
         {audio.error && <p className="settings-error" role="alert">{audio.error}</p>}
         {audio.routing?.cue_error && <p className="settings-error" role="alert">{audio.routing.cue_error}</p>}
+        <button disabled={!changed || busy || overlap || invalidPairs || missing(master) || missing(cue) || unsupported(master) || unsupported(cue)} onClick={() => void apply()}>{busy ? 'Applying…' : restarting ? 'Apply outputs & restart VIRA' : 'Apply outputs'}</button></div>
       </SettingsCard>
   </>;
 }
