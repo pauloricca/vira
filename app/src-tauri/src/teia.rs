@@ -130,6 +130,8 @@ pub struct Record {
     pub overrides: BTreeMap<String, f64>,
     pub bypass: bool,
     #[serde(default)]
+    pub passthrough: bool,
+    #[serde(default)]
     pub clock_running: bool,
     #[serde(default)]
     pub runtime_snapshots: Value,
@@ -339,6 +341,15 @@ impl Host {
                 })
                 .map_err(|_| anyhow::anyhow!("Teia queue full"))?;
         }
+        self.ports
+            .lock()
+            .unwrap()
+            .commands
+            .push(Command {
+                id: self.next(),
+                action: Action::Passthrough(record.passthrough),
+            })
+            .map_err(|_| anyhow::anyhow!("Teia queue full"))?;
         if record.bypass {
             self.ports
                 .lock()
@@ -516,6 +527,7 @@ impl Host {
                 prepared,
                 overrides: BTreeMap::new(),
                 bypass: false,
+                passthrough: false,
                 clock_running: false,
                 runtime_snapshots: json!({}),
             }),
@@ -524,6 +536,7 @@ impl Host {
             working_revision: ticket,
         };
         self.send(Action::Bypass(false), self.next())?;
+        self.send(Action::Passthrough(false), self.next())?;
         *self.restore_error.lock().unwrap() = None;
         self.persist()?;
         Ok(self.snapshot())
@@ -646,6 +659,14 @@ impl Host {
             "bypass" => {
                 updated.bypass = value == Some(1.);
                 self.send(Action::Bypass(updated.bypass), self.next())?;
+            }
+            "passthrough" => {
+                ensure!(
+                    value == Some(0.) || value == Some(1.),
+                    "Bypass must be 0 or 1"
+                );
+                updated.passthrough = value == Some(1.);
+                self.send(Action::Passthrough(updated.passthrough), self.next())?;
             }
             "reset" => {
                 // Reconstruct from durable resources off-render. Whole-engine reset
@@ -1403,6 +1424,75 @@ mod tests {
         plan.render_block(&mut block, &mut drivers);
         assert!((block[127].samples[0] - 0.2).abs() < 1e-6);
         assert_eq!(block[127].samples[1], 0.);
+
+        // Bypass sums every exposed input, including inputs unused by the DSP,
+        // and follows the same fan-out and wire gains as the processed signal.
+        graph.wires.push(crate::routing::Wire {
+            from: "b-player".into(),
+            to: "patch-0".into(),
+            input: "a-unused".into(),
+            output: "audio".into(),
+            gain: 0.5,
+        });
+        graph.wires.push(crate::routing::Wire {
+            from: "patch-0".into(),
+            to: "headphones".into(),
+            input: "audio".into(),
+            output: "audio".into(),
+            gain: 0.5,
+        });
+        let mut plan = graph.compile().unwrap();
+        ports
+            .commands
+            .push(Command {
+                id: 2,
+                action: Action::Passthrough(true),
+            })
+            .ok()
+            .unwrap();
+        drivers[0].commands();
+        for _ in 0..crate::sample_rate::fine_frames().div_ceil(PRODUCER_FRAMES) + 1 {
+            plan.render_block(&mut block, &mut drivers);
+        }
+        assert!(block[127].samples[0].abs() < 1e-6);
+        assert!((block[127].samples[1] - 0.05).abs() < 1e-6);
+        assert!((block[127].cue_samples[1] - 0.025).abs() < 1e-6);
+        ports
+            .commands
+            .push(Command {
+                id: 3,
+                action: Action::Bypass(true),
+            })
+            .ok()
+            .unwrap();
+        drivers[0].commands();
+        for _ in 0..crate::sample_rate::fine_frames().div_ceil(PRODUCER_FRAMES) + 1 {
+            plan.render_block(&mut block, &mut drivers);
+        }
+        assert_eq!(block[127].samples, [0.; 2]);
+        ports
+            .commands
+            .push(Command {
+                id: 4,
+                action: Action::Bypass(false),
+            })
+            .ok()
+            .unwrap();
+        ports
+            .commands
+            .push(Command {
+                id: 5,
+                action: Action::Passthrough(false),
+            })
+            .ok()
+            .unwrap();
+        drivers[0].commands();
+        drivers[0].commands();
+        for _ in 0..crate::sample_rate::fine_frames().div_ceil(PRODUCER_FRAMES) + 1 {
+            plan.render_block(&mut block, &mut drivers);
+        }
+        assert!((block[127].samples[0] - 0.2).abs() < 1e-6);
+        assert_eq!(block[127].samples[1], 0.);
     }
     #[test]
     fn routed_patch_instances_sum_and_toggle_independently_and_restore_separately() {
@@ -1845,6 +1935,10 @@ mod tests {
         let fixture = Fixture::new();
         fixture
             .host
+            .control("passthrough", None, Some(1.), None)
+            .unwrap();
+        fixture
+            .host
             .control("parameter", Some("gain"), Some(0.25), None)
             .unwrap();
         fixture
@@ -1869,6 +1963,7 @@ mod tests {
         );
         assert_eq!(restored.snapshot()["record"]["overrides"]["gain"], 0.25);
         assert_eq!(restored.snapshot()["record"]["bypass"], true);
+        assert_eq!(restored.snapshot()["record"]["passthrough"], true);
         assert_eq!(
             read_json(&fixture.root.join("Gain.json")).unwrap()["name"],
             "Gain"

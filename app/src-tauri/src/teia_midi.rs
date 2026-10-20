@@ -123,6 +123,14 @@ pub fn channel() -> Render {
     }
 }
 impl Render {
+    pub fn discard_input(&mut self) {
+        self.pending.clear();
+        for _ in 0..1024 {
+            if self.input.pop().is_err() {
+                break;
+            }
+        }
+    }
     pub fn prepare_input(&mut self, epoch: u64) {
         if self.epoch != epoch {
             self.pending.clear();

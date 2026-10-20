@@ -6,7 +6,7 @@ type MidiDevice = { id: number; name: string };
 export function Instruments() {
   const [items, setItems] = useState<Instrument[]>([]);
   const [saved, setSaved] = useState<Instrument[]>([]);
-  const [selected, setSelected] = useState('');
+  const [selected, setSelected] = useState(() => localStorage.getItem('vira.selected-instrument') ?? '');
   const [ready, setReady] = useState(false);
   const [devices, setDevices] = useState<{ inputs: AudioDevice[]; outputs: AudioDevice[] }>({ inputs: [], outputs: [] });
   const [midi, setMidi] = useState<{ inputs: MidiDevice[]; outputs: MidiDevice[] }>({ inputs: [], outputs: [] });
@@ -16,7 +16,7 @@ export function Instruments() {
   const refreshDevices = useRef<(manual?: boolean) => Promise<void>>(async () => {});
   useEffect(() => {
     let stopped = false;
-    void invoke<Instrument[]>('get_instruments').then(value => { if (!stopped) { setItems(value); setSaved(value); setSelected(value[0]?.id ?? ''); setReady(true); } }).catch(e => { if (!stopped) setError(String(e)); });
+    void invoke<Instrument[]>('get_instruments').then(value => { if (!stopped) { setItems(value); setSaved(value); setSelected(previous => value.some(i => i.id === previous) ? previous : value[0]?.id ?? ''); setReady(true); } }).catch(e => { if (!stopped) setError(String(e)); });
     let scanning = false;
     const refresh = async (manual = false) => {
       if (scanning) return;
@@ -31,6 +31,9 @@ export function Instruments() {
     void refresh(); const timer = setInterval(() => void refresh(), 3000);
     return () => { stopped = true; clearInterval(timer); };
   }, []);
+  useEffect(() => {
+    if (ready) localStorage.setItem('vira.selected-instrument', selected);
+  }, [ready, selected]);
   const item = items.find(i => i.id === selected);
   const dirty = JSON.stringify(items) !== JSON.stringify(saved);
   function update(change: Partial<Instrument>) { setItems(items.map(i => i.id === selected ? {...i, ...change} : i)); }
@@ -44,7 +47,7 @@ export function Instruments() {
   function midiField(key: 'midi_input' | 'midi_output', label: string, options: MidiDevice[]) {
     const port = item![key];
     const change = (value: MidiPort | null) => update({[key]:value});
-    return <section className="settings-card"><h3 className="device-list-heading">{label}<DeviceRefresh label={`Refresh ${label.toLowerCase()} devices`} refresh={() => refreshDevices.current(true)} /></h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? 0} onChange={e => change(Number(e.target.value) ? {device:Number(e.target.value), channel:port?.channel ?? null} : null)}><option value={0}>None</option>{port && !options.some(d => d.id === port.device) && <option value={port.device}>Disconnected device ({port.device})</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <label>Channel<select aria-label={`${label} channel`} value={port.channel ?? ''} onChange={e => change({...port, channel:e.target.value ? Number(e.target.value) : null})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(c => <option key={c} value={c}>{c}</option>)}</select></label>}<p className="settings-hint">{key === 'midi_input' ? 'Receive from this device. All accepts every channel.' : 'Send to this device. All preserves the source channel.'}</p></section>;
+    return <section className="settings-card"><h3 className="device-list-heading">{label}<DeviceRefresh label={`Refresh ${label.toLowerCase()} devices`} refresh={() => refreshDevices.current(true)} /></h3><label>Device<select aria-label={`${label} device`} value={port?.device ?? 0} onChange={e => change(Number(e.target.value) ? {...port, device:Number(e.target.value), channel:port?.channel ?? null} : null)}><option value={0}>None</option>{port && !options.some(d => d.id === port.device) && <option value={port.device}>Disconnected device ({port.device})</option>}{options.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>{port && <label>Channel<select aria-label={`${label} channel`} value={port.channel ?? ''} onChange={e => change({...port, channel:e.target.value ? Number(e.target.value) : null})}><option value="">All</option>{Array.from({length:16}, (_, i) => i + 1).map(c => <option key={c} value={c}>{c}</option>)}</select></label>}{key === 'midi_output' && <><label>Send MIDI clock<input type="checkbox" aria-label="Send MIDI clock" disabled={!port} checked={port?.send_clock ?? false} onChange={e => port && change({...port, send_clock:e.target.checked})} /></label><label>Send transport messages<input type="checkbox" aria-label="Send transport messages" disabled={!port} checked={port?.send_transport ?? false} onChange={e => port && change({...port, send_transport:e.target.checked})} /></label>{port?.send_transport && <label>Send Play every<select aria-label="Transport play interval" value={port.transport_bars ?? 1} onChange={e => change({...port, transport_bars:Number(e.target.value) as MidiPort['transport_bars']})}>{([1,2,4,16,32] as const).map(bars => <option key={bars} value={bars}>{bars} {bars === 1 ? 'bar' : 'bars'}</option>)}</select></label>}<p className="settings-hint">Clock follows master playback at 24 pulses per beat, sent early by this instrument’s timing advance. Transport sends Play (MIDI Start) at the selected global bar boundaries, using timing advance. It never sends Stop or Continue.</p></>}<p className="settings-hint">{key === 'midi_input' ? 'Receive from this device. All accepts every channel.' : 'Send to this device. All preserves the source channel.'}</p></section>;
   }
   async function save() {
     setBusy(true); setError('');

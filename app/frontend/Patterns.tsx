@@ -1,7 +1,7 @@
 import { useMidiTargets, useMidiMarkers, type MidiTarget } from './MidiMapping';
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { fitSteps, patternBeats, patternSteps, patternLengthLabel, keys, newPattern, pitch, pitchLabel, scales, snap, uid, type Bank, type Pattern, type PatternNote } from './patternModel';
+import { fitSteps, patternBeats, patternSteps, patternLengthLabel, keys, newPattern, pitch, pitchLabel, scales, snap, uid, type Bank, type Pattern, type PatternNote, type PercussionRow } from './patternModel';
 import './patterns.css';
 import { PatternCanvas } from './PatternCanvas';
 import { normaliseBank, linkedHarmony, type Harmony, type MusicalGraph } from './patternModel';
@@ -24,9 +24,10 @@ export function Patterns({ active }: { active: boolean }) {
   const pending = useRef(0);
   const saveFailed = useRef(false);
   const [noteSelected, setNoteSelected] = useState('');
+  const [rowEdit, setRowEdit] = useState<PercussionRow | null>(null);
   const grid = useRef<HTMLDivElement>(null);
   const rollScroll = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (rollScroll.current) rollScroll.current.scrollTop = 220; }, [selected, expanded]);
+  useEffect(() => { if (rollScroll.current) rollScroll.current.scrollTop = current.current?.patterns.find(p => p.id === selected)?.kind === 'percussion' ? 0 : 220; }, [selected, expanded]);
   useEffect(() => {
     let live = true;
     const refresh = () => invoke<Snapshot>('patterns_state').then(s => {
@@ -54,11 +55,17 @@ export function Patterns({ active }: { active: boolean }) {
   function editGraph(graph: MusicalGraph) { if (current.current) commit({ ...current.current, graph }); }
   function removePattern(id: string) { if (!bank) return; const nodes = bank.graph!.nodes.filter(n => n.pattern !== id); commit({ ...bank, patterns: bank.patterns.filter(p => p.id !== id), graph: { nodes, wires: bank.graph!.wires.filter(w => nodes.some(n => n.id === w.from) && nodes.some(n => n.id === w.to)) } }); setSelected(bank.patterns.find(p => p.id !== id)?.id ?? ''); setDeleteId(''); if (bank.patterns.length === 1) setExpanded(false); }
   function canPlay(p: Pattern) { return !!snapshot?.clockReady && !!bank?.graph?.nodes.some(n => n.pattern === p.id); }
-  function add(duplicate = false, point?: {x:number;y:number}) {
-    if (!bank) return;
-    const p = duplicate && pattern ? { ...pattern, id: uid(), name: `${pattern.name} copy`, notes: pattern.notes.map(n => ({ ...n, id: uid() })) } : newPattern();
+  function add(duplicate = false, point?: {x:number;y:number}, kind: Pattern['kind'] = 'melodic') {
+    if (!bank || bank.patterns.length >= 128) return;
+    setRowEdit(null);
+    const p = duplicate && pattern ? { ...pattern, id: uid(), name: `${pattern.name} copy`, notes: pattern.notes.map(n => ({ ...n, id: uid() })) } : newPattern(kind);
     const node = { id: uid(), kind: 'pattern' as const, label: p.name, x: 430 + Math.floor(bank.patterns.length / 4) * 230 % 1000, y: 70 + bank.patterns.length % 4 * 200, pattern: p.id, ...point };
     commit({ ...bank, patterns: [...bank.patterns, p], graph: { ...bank.graph!, nodes: [...bank.graph!.nodes, node] } }); setSelected(p.id); setDeleteId('');
+  }
+  function addRow() {
+    if (!pattern || (pattern.rows?.length ?? 0) >= 128) return;
+    const row = { id: uid(), name: `Row ${(pattern.rows?.length ?? 0) + 1}`, note: 36, channel: null };
+    update({ ...pattern, rows: [...(pattern.rows ?? []), row] }); setRowEdit(row);
   }
   async function transport(p: Pattern) {
     const play = !snapshot?.voices[p.id];
@@ -67,11 +74,12 @@ export function Patterns({ active }: { active: boolean }) {
   }
   function point(event: { clientX: number; clientY: number }, p: Pattern) {
     const rect = grid.current!.getBoundingClientRect();
-    return { beat: Math.max(0, Math.min(Math.max(0, (Math.ceil(patternBeats(p) * p.grid) - 1) / p.grid), Math.floor((event.clientX - rect.left) / rect.width * patternBeats(p) * p.grid) / p.grid)), row: rows[Math.max(0, Math.min(rows.length - 1, Math.floor((event.clientY - rect.top) / 22)))] };
+    return { beat: Math.max(0, Math.min(Math.max(0, (Math.ceil(patternBeats(p) * p.grid) - 1) / p.grid), Math.floor((event.clientX - rect.left) / rect.width * patternBeats(p) * p.grid) / p.grid)), row: (p.kind === 'percussion' ? (p.rows ?? []).map((_, i) => i) : rows)[Math.max(0, Math.min((p.kind === 'percussion' ? p.rows?.length ?? 0 : rows.length) - 1, Math.floor((event.clientY - rect.top) / 22)))] };
   }
   function create(event: ReactPointerEvent<HTMLDivElement>) {
     if (!pattern || event.button !== 0 || event.target !== event.currentTarget) return;
-    const { beat, row } = point(event, pattern); const relative = rowDegree(row);
+    if (pattern.kind === 'percussion' && !pattern.rows?.length) return;
+    const { beat, row } = point(event, pattern); const relative = pattern.kind === 'percussion' ? { degree: 1, octave: 0, row: pattern.rows![row].id } : rowDegree(row);
     if (pitch(pattern, relative.degree, relative.octave) < 0 || pitch(pattern, relative.degree, relative.octave) > 127) return;
     const note = { id: uid(), beat, duration: Math.min(1 / pattern.grid, patternBeats(pattern) - beat), ...relative, velocity: 100 };
     update({ ...pattern, notes: [...pattern.notes, note] }); setNoteSelected(note.id);
@@ -87,7 +95,12 @@ export function Patterns({ active }: { active: boolean }) {
       moved = true;
       const rect = grid.current!.getBoundingClientRect(); const quantise = (value: number) => snapToGrid ? snap(value, original.grid) : value; const delta = quantise((e.clientX - origin.x) / rect.width * patternBeats(original));
       if (resize) latest = { ...note, duration: Math.min(patternBeats(original) - note.beat, Math.max(snapToGrid ? 1 / original.grid : 0.03125, quantise(note.duration + delta))) };
-      else { const row = Math.max(-14, Math.min(20, (note.octave * 7 + note.degree - 1) - Math.round((e.clientY - origin.y) / 22))); const rel = rowDegree(row); if (pitch(original, rel.degree, rel.octave) < 0 || pitch(original, rel.degree, rel.octave) > 127) return; latest = { ...note, beat: Math.max(0, Math.min(patternBeats(original) - note.duration, quantise(note.beat + delta))), ...rel }; }
+      else {
+        const row = pattern.kind === 'percussion' ? Math.max(0, Math.min((original.rows?.length ?? 1) - 1, (original.rows ?? []).findIndex(r => r.id === note.row) + Math.round((e.clientY - origin.y) / 22))) : Math.max(-14, Math.min(20, (note.octave * 7 + note.degree - 1) - Math.round((e.clientY - origin.y) / 22)));
+        const rel = original.kind === 'percussion' ? { row: original.rows![row].id } : rowDegree(row);
+        latest = { ...note, beat: Math.max(0, Math.min(patternBeats(original) - note.duration, quantise(note.beat + delta))), ...rel };
+        if (original.kind === 'melodic' && (pitch(original, latest.degree, latest.octave) < 0 || pitch(original, latest.degree, latest.octave) > 127)) return;
+      }
       setBank({ ...current.current!, patterns: current.current!.patterns.map(p => p.id === original.id ? { ...original, notes: original.notes.map(n => n.id === note.id ? latest : n) } : p) });
     };
     const finish = (e: PointerEvent) => {
@@ -111,7 +124,7 @@ export function Patterns({ active }: { active: boolean }) {
     return [
       ...fields.map(([field,label,min,max]): MidiTarget => ({id:`pattern:${p.id}:${field}`,label:`${p.name} · ${label}`,kind:'number',min,max,step:1,
         read:() => field === 'steps' ? patternSteps(p) : field === 'stepDivision' ? [1,2,4,8].indexOf(p.stepDivision ?? 4) : field === 'grid' ? [1,2,4,8].indexOf(p.grid) : field === 'phraseSync' ? Number(p.phraseSync !== false) : p[field],
-        disabled: (field === 'key' || field === 'scale') && !!linkedHarmony(bank!,p.id,snapshot?.deckKeys ?? [null,null],field === 'key' ? 'root':'scale',snapshot?.liveRoots,snapshot?.activeDeck ?? 0),
+        disabled: p.kind === 'percussion' && ['key', 'scale', 'octave'].includes(field) || (field === 'key' || field === 'scale') && !!linkedHarmony(bank!,p.id,snapshot?.deckKeys ?? [null,null],field === 'key' ? 'root':'scale',snapshot?.liveRoots,snapshot?.activeDeck ?? 0),
         apply:value => {
           const b = current.current, latest = b?.patterns.find(old => old.id === p.id); if (!b || !latest) return;
           const next = field === 'steps' ? fitSteps(latest,value) : field === 'stepDivision' ? fitSteps(latest,patternSteps(latest),[1,2,4,8][value]) : {...latest,[field]:field === 'quantum' ? value < 3 ? 1 : 4 : field === 'grid' ? [1,2,4,8][value] : field === 'phraseSync' ? !!value : value};
@@ -122,12 +135,12 @@ export function Patterns({ active }: { active: boolean }) {
     ];
   }));
   return <section className={expanded ? 'patterns-workspace' : 'patterns-overview'} aria-label="Patterns" hidden={!active}>
-    {bank && <PatternCanvas activeDeck={snapshot?.activeDeck ?? 0} deviceNotes={snapshot?.deviceNotes ?? {}} inputs={snapshot?.inputs ?? []} liveRoots={snapshot?.liveRoots ?? {}} bank={bank} outputs={snapshot?.outputs ?? []} instruments={snapshot?.instruments ?? []} deckKeys={snapshot?.deckKeys ?? [null, null]} active={active && !expanded} status={status} canPlay={canPlay} onGraph={editGraph} onCreate={point => add(false, point)} onExpand={id => { setSelected(id); setExpanded(true); }} onPlay={p => void transport(p)} error={setError} />}
-    {expanded && <aside className="patterns-sidebar"><div className="patterns-title"><h2>PATTERNS</h2><button onClick={() => add()} disabled={!bank || bank.patterns.length >= 128} aria-label="Create pattern">+ New</button></div><p className="patterns-caption">MELODIC · SCALE RELATIVE</p>
-      <div className="patterns-list">{bank?.patterns.map(p => <div key={p.id} className={`pattern-item ${p.id === selected ? 'selected' : ''}`}><button className="pattern-select" onClick={() => { setSelected(p.id); setDeleteId(''); setNoteSelected(''); }}><i className={`pattern-indicator ${status(p).toLowerCase()}`} /><span>{p.name}<small>{patternLengthLabel(p)} · {keys[p.key]} {scales[p.scale]}</small></span></button><button {...midi(`pattern:${p.id}:transport`)} className="pattern-launch" aria-label={`${snapshot?.voices[p.id] ? 'Stop' : 'Play'} ${p.name}`} title={status(p)} disabled={(saving && !snapshot?.voices[p.id]) || (!snapshot?.voices[p.id] && !canPlay(p))} onClick={() => void transport(p)}>{snapshot?.voices[p.id] ? '■' : '▶'}</button></div>)}</div>
+    {bank && <PatternCanvas activeDeck={snapshot?.activeDeck ?? 0} deviceNotes={snapshot?.deviceNotes ?? {}} inputs={snapshot?.inputs ?? []} liveRoots={snapshot?.liveRoots ?? {}} bank={bank} outputs={snapshot?.outputs ?? []} instruments={snapshot?.instruments ?? []} deckKeys={snapshot?.deckKeys ?? [null, null]} active={active && !expanded} status={status} canPlay={canPlay} onGraph={editGraph} onCreate={(point, kind) => add(false, point, kind)} onExpand={id => { setSelected(id); setRowEdit(null); setExpanded(true); }} onPlay={p => void transport(p)} error={setError} />}
+    {expanded && <aside className="patterns-sidebar"><div className="patterns-title"><h2>PATTERNS</h2></div><div className="pattern-create"><button onClick={() => add()} disabled={!bank || bank.patterns.length >= 128}>+ Melodic pattern</button><button onClick={() => add(false, undefined, 'percussion')} disabled={!bank || bank.patterns.length >= 128}>+ Percussion pattern</button></div><p className="patterns-caption">MELODIC & PERCUSSION</p>
+      <div className="patterns-list">{bank?.patterns.map(p => <div key={p.id} className={`pattern-item ${p.id === selected ? 'selected' : ''}`}><button className="pattern-select" onClick={() => { setSelected(p.id); setDeleteId(''); setNoteSelected(''); setRowEdit(null); }}><i className={`pattern-indicator ${status(p).toLowerCase()}`} /><span>{p.name}<small>{patternLengthLabel(p)} · {p.kind === 'percussion' ? `Percussion · ${p.rows?.length ?? 0} rows` : `${keys[p.key]} ${scales[p.scale]}`}</small></span></button><button {...midi(`pattern:${p.id}:transport`)} className="pattern-launch" aria-label={`${snapshot?.voices[p.id] ? 'Stop' : 'Play'} ${p.name}`} title={status(p)} disabled={(saving && !snapshot?.voices[p.id]) || (!snapshot?.voices[p.id] && !canPlay(p))} onClick={() => void transport(p)}>{snapshot?.voices[p.id] ? '■' : '▶'}</button></div>)}</div>
       <p className="patterns-caption">Multiple patterns can play together.<br />All patterns follow the master tempo.</p>
     </aside>}
-    <div className="pattern-editor" hidden={!expanded}>{!bank ? <p className="pattern-empty">Loading patterns…</p> : !pattern ? <div className="pattern-empty"><h2>A melody, in any key.</h2><p>Create a pattern, then click the grid to add scale degrees.</p><button onClick={() => add()}>Create melodic pattern</button></div> : <>
+    <div className="pattern-editor" hidden={!expanded}>{!bank ? <p className="pattern-empty">Loading patterns…</p> : !pattern ? <div className="pattern-empty"><h2>Start a pattern.</h2><p>Create a melodic pattern with scale degrees, or a percussion pattern with custom rows.</p><button onClick={() => add()}>Create melodic pattern</button><button onClick={() => add(false, undefined, 'percussion')}>Create percussion pattern</button></div> : <>
       <div className="pattern-heading"><button aria-label="Collapse pattern editor" title="Return to patching canvas" onClick={() => setExpanded(false)}>↙ Canvas</button><input aria-label="Pattern name" value={pattern.name} maxLength={200} onChange={e => setBank({ ...bank, patterns: bank.patterns.map(p => p.id === pattern.id ? { ...p, name: e.target.value } : p) })} onBlur={e => update({ ...pattern, name: e.target.value.trim() || 'Untitled pattern' })} /><span className={`pattern-status ${status(pattern).toLowerCase()}`}>{status(pattern)}</span><button {...midi(`pattern:${pattern.id}:transport`)} disabled={(saving && !voice) || (!voice && !canPlay(pattern))} onClick={() => void transport(pattern)}>{voice ? '■ Stop' : '▶ Launch'}</button><button onClick={() => add(true)} disabled={bank.patterns.length >= 128}>Duplicate</button><button onClick={() => setDeleteId(pattern.id)}>Delete</button></div>
       {deleteId === pattern.id && <dialog className="patch-confirmation" ref={confirmation} aria-labelledby="delete-pattern-title" aria-describedby="delete-pattern-description" onCancel={e => { e.preventDefault(); setDeleteId(''); }} onKeyDown={e => e.stopPropagation()}>
         <h2 id="delete-pattern-title">Delete pattern?</h2>
@@ -140,17 +153,24 @@ export function Patterns({ active }: { active: boolean }) {
         <label>Clock alignment<select {...midi(`pattern:${pattern.id}:phraseSync`)} aria-label="Pattern clock alignment" value={pattern.phraseSync === false ? 'tempo' : 'phrase'} onChange={e => update({ ...pattern, phraseSync: e.target.value === 'phrase' })}><option value="phrase">Master beat / bar</option><option value="tempo">Tempo only · independent phase</option></select></label>
         <label>Grid<select {...midi(`pattern:${pattern.id}:grid`)} aria-label="Pattern grid" value={pattern.grid} onChange={e => update({ ...pattern, grid: +e.target.value })}>{[1, 2, 4, 8].map(n => <option key={n} value={n}>1/{n * 4}</option>)}</select></label>
         <label><input type="checkbox" aria-label="Snap to grid" checked={snapToGrid} onChange={e => setSnapToGrid(e.target.checked)} /> Snap to grid</label>
-        <label>Root note<select {...midi(`pattern:${pattern.id}:key`)} aria-label="Pattern key" disabled={!!rootLink} value={pattern.key} onChange={e => update({ ...pattern, key: +e.target.value })}>{keys.map((k, i) => <option key={k} value={i}>{k}</option>)}</select></label>
+        {pattern.kind === 'melodic' && <><label>Root note<select {...midi(`pattern:${pattern.id}:key`)} aria-label="Pattern key" disabled={!!rootLink} value={pattern.key} onChange={e => update({ ...pattern, key: +e.target.value })}>{keys.map((k, i) => <option key={k} value={i}>{k}</option>)}</select></label>
         <label>Scale<select {...midi(`pattern:${pattern.id}:scale`)} aria-label="Pattern scale" disabled={!!scaleLink} value={pattern.scale} onChange={e => update({ ...pattern, scale: +e.target.value })}>{scales.map((s, i) => <option key={s} value={i}>{s}</option>)}</select></label>
         <label>Octave<select {...midi(`pattern:${pattern.id}:octave`)} aria-label="Pattern octave" value={pattern.octave} onChange={e => update({ ...pattern, octave: +e.target.value })}>{[2, 3, 4, 5].map(n => <option key={n}>{n}</option>)}</select></label>
-        <label>Launch / stop<select {...midi(`pattern:${pattern.id}:quantum`)} aria-label="Pattern launch quantisation" disabled={pattern.phraseSync === false} value={pattern.quantum} onChange={e => update({ ...pattern, quantum: +e.target.value })}><option value={1}>Next beat</option><option value={4}>Next bar</option></select></label>
+        </>}<label>Launch / stop<select {...midi(`pattern:${pattern.id}:quantum`)} aria-label="Pattern launch quantisation" disabled={pattern.phraseSync === false} value={pattern.quantum} onChange={e => update({ ...pattern, quantum: +e.target.value })}><option value={1}>Next beat</option><option value={4}>Next bar</option></select></label>
         <small>{pattern.phraseSync === false ? 'Tempo only: launch and stop immediately; the loop keeps its own phase.' : 'Launch and stop on the selected master boundary; each loop repeats at its own length.'}</small>
       </div>
-      <div ref={rollScroll} className="pattern-roll-scroll"><div className="pattern-roll" style={{ minWidth: Math.max(640, patternBeats(pattern) * 40) }}><div className="pattern-ruler"><span>DEGREE</span><div>{Array.from({ length: Math.ceil(patternBeats(pattern)) }, (_, i) => <span key={i} className={i % 4 === 0 ? 'bar' : ''} style={{ left: `${i / (patternBeats(pattern)) * 100}%` }}>{Math.floor(i / 4) + 1}.{i % 4 + 1}</span>)}</div></div>
-        <div className="pattern-roll-body"><div className="pattern-pitches">{rows.map(row => { const r = rowDegree(row); const midi = pitch(pattern, r.degree, r.octave); return <div key={row} className={r.degree === 1 ? 'tonic' : ''}><span>{r.degree}<sup>{r.octave > 0 ? `+${r.octave}` : r.octave || ''}</sup></span><small>{midi >= 0 && midi <= 127 ? pitchLabel(midi) : '—'}</small></div>; })}</div>
-        <div ref={grid} className="pattern-grid" aria-label="Scale degree note grid" onPointerDown={create} style={{ backgroundSize: `100% 22px, ${100 / (patternBeats(pattern) * pattern.grid)}% 100%` }}>
+      {pattern.kind === 'percussion' && <div className="percussion-toolbar"><button onClick={addRow} disabled={(pattern.rows?.length ?? 0) >= 128}>+ Add row</button><small>{pattern.rows?.length ? 'Click a row header to configure its name, note and channel.' : 'No rows yet. Add a row to start your percussion pattern.'}</small></div>}
+      {pattern.kind === 'percussion' && rowEdit && <form className="percussion-row-editor" aria-label="Configure percussion row" onSubmit={e => { e.preventDefault(); if (!rowEdit.name.trim()) return; update({ ...pattern, rows: (pattern.rows ?? []).map(r => r.id === rowEdit.id ? { ...rowEdit, name: rowEdit.name.trim() } : r) }); setRowEdit(null); }}>
+        <label>Name<input autoFocus aria-label="Row name" required maxLength={200} value={rowEdit.name} onChange={e => setRowEdit({ ...rowEdit, name: e.target.value })} /></label>
+        <label>Note<select aria-label="Row note" value={rowEdit.note} onChange={e => setRowEdit({ ...rowEdit, note: +e.target.value })}>{Array.from({length:128}, (_, note) => <option key={note} value={note}>{pitchLabel(note)} · {note}</option>)}</select></label>
+        <label>Channel (optional)<select aria-label="Row channel" value={rowEdit.channel ?? ''} onChange={e => setRowEdit({ ...rowEdit, channel: e.target.value === '' ? null : +e.target.value })}><option value="">Use routed channel</option>{Array.from({length:16}, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+        <button type="submit">Save row</button><button type="button" onClick={() => setRowEdit(null)}>Cancel</button><button type="button" onClick={() => { update({...pattern, rows:pattern.rows?.filter(r => r.id !== rowEdit.id), notes:pattern.notes.filter(n => n.row !== rowEdit.id)}); setRowEdit(null); }}>Delete row</button>
+      </form>}
+      <div ref={rollScroll} className="pattern-roll-scroll"><div className={`pattern-roll ${pattern.kind === 'percussion' ? 'percussion-roll' : ''}`} style={{ minWidth: Math.max(640, patternBeats(pattern) * 40) }}><div className="pattern-ruler"><span>{pattern.kind === 'percussion' ? 'PERCUSSION' : 'DEGREE'}</span><div>{Array.from({ length: Math.ceil(patternBeats(pattern)) }, (_, i) => <span key={i} className={i % 4 === 0 ? 'bar' : ''} style={{ left: `${i / (patternBeats(pattern)) * 100}%` }}>{Math.floor(i / 4) + 1}.{i % 4 + 1}</span>)}</div></div>
+        <div className="pattern-roll-body"><div className="pattern-pitches">{pattern.kind === 'percussion' ? (pattern.rows ?? []).map(r => <button key={r.id} className="percussion-row-header" aria-label={`Configure ${r.name}`} title={`${r.name} · ${pitchLabel(r.note)} (${r.note}) · ${r.channel ? `CH ${r.channel}` : 'Use routed channel'}`} onClick={() => setRowEdit({...r})}><span>{r.name}</span><small>{pitchLabel(r.note)}{r.channel ? ` · ${r.channel}` : ''}</small></button>) : rows.map(row => { const r = rowDegree(row); const midi = pitch(pattern, r.degree, r.octave); return <div key={row} className={r.degree === 1 ? 'tonic' : ''}><span>{r.degree}<sup>{r.octave > 0 ? `+${r.octave}` : r.octave || ''}</sup></span><small>{midi >= 0 && midi <= 127 ? pitchLabel(midi) : '—'}</small></div>; })}</div>
+        <div ref={grid} className="pattern-grid" aria-label={pattern.kind === 'percussion' ? 'Percussion note grid' : 'Scale degree note grid'} onPointerDown={create} style={{ height: pattern.kind === 'percussion' ? (pattern.rows?.length ?? 0) * 22 : 770, backgroundSize: `100% 22px, ${100 / (patternBeats(pattern) * pattern.grid)}% 100%` }}>
           {Array.from({ length: Math.ceil(patternBeats(pattern)) }, (_, i) => <i key={i} className={`pattern-division ${i % 4 === 0 ? 'bar' : ''}`} style={{ left: `${i / (patternBeats(pattern)) * 100}%` }} />)}
-          {pattern.notes.map(n => <div key={n.id} role="button" aria-label={`Degree ${n.degree}, ${pitchLabel(pitch(pattern, n.degree, n.octave))}, beat ${n.beat + 1}, duration ${n.duration}`} className={`pattern-note ${n.id === noteSelected ? 'selected' : ''}`} title={`Degree ${n.degree} · ${pitchLabel(pitch(pattern, n.degree, n.octave))} · velocity ${n.velocity}\nClick to delete · drag to move · drag right edge to resize`} style={{ left: `${n.beat / (patternBeats(pattern)) * 100}%`, width: `${n.duration / (patternBeats(pattern)) * 100}%`, top: (20 - (n.octave * 7 + n.degree - 1)) * 22 + 2 }} onPointerDown={e => drag(e, n, false)}>{n.degree}<span className="pattern-note-end" aria-label="Resize note" onPointerDown={e => drag(e, n, true)} /></div>)}
+          {pattern.notes.map(n => <div key={n.id} role="button" aria-label={`${pattern.kind === 'percussion' ? pattern.rows?.find(r => r.id === n.row)?.name : `Degree ${n.degree}`}, ${pitchLabel(pattern.kind === 'percussion' ? pattern.rows?.find(r => r.id === n.row)?.note ?? 0 : pitch(pattern, n.degree, n.octave))}, beat ${n.beat + 1}, duration ${n.duration}`} className={`pattern-note ${n.id === noteSelected ? 'selected' : ''}`} title={`${pattern.kind === 'percussion' ? pattern.rows?.find(r => r.id === n.row)?.name : `Degree ${n.degree}`} · ${pitchLabel(pattern.kind === 'percussion' ? pattern.rows?.find(r => r.id === n.row)?.note ?? 0 : pitch(pattern, n.degree, n.octave))} · velocity ${n.velocity}\nClick to delete · drag to move · drag right edge to resize`} style={{ left: `${n.beat / (patternBeats(pattern)) * 100}%`, width: `${n.duration / (patternBeats(pattern)) * 100}%`, top: (pattern.kind === 'percussion' ? (pattern.rows ?? []).findIndex(r => r.id === n.row) : 20 - (n.octave * 7 + n.degree - 1)) * 22 + 2 }} onPointerDown={e => drag(e, n, false)}>{pattern.kind === 'percussion' ? '●' : n.degree}<span className="pattern-note-end" aria-label="Resize note" onPointerDown={e => drag(e, n, true)} /></div>)}
           {voice && snapshot && snapshot.beat >= voice.start && <div className="pattern-playhead" style={{ left: `${position / (patternBeats(pattern)) * 100}%` }} />}
         </div></div></div></div>
       <div className="pattern-footer"><span>Click empty space to add · click a note to delete · drag to move · drag its right edge to resize</span>{selectedNote && <label>Velocity <input type="number" {...midi(`pattern:${pattern.id}:note:${selectedNote.id}:velocity`)} aria-label="Note velocity" min={1} max={127} value={selectedNote.velocity} onChange={e => { const value = +e.target.value; if (value >= 1 && value <= 127) update({ ...pattern, notes: pattern.notes.map(n => n.id === selectedNote.id ? { ...n, velocity: value } : n) }); }} /></label>}<small>{pattern.notes.length} notes · {patternLengthLabel(pattern)} · {saving ? 'Saving…' : saveFailed.current ? 'Unsaved changes' : 'Saved'}</small></div>

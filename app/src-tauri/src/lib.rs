@@ -15,6 +15,7 @@ mod instruments;
 mod metrics;
 mod midi_live;
 mod midi_mapping;
+mod midi_sync;
 mod mixer;
 pub mod native_check;
 pub mod paths;
@@ -331,6 +332,8 @@ pub fn run() {
     if let Err(error) = midi_live::initialize() {
         eprintln!("{error}");
     }
+    // Saved MIDI sync outputs must work before Instruments or Patterns is opened.
+    patterns::start();
     #[tauri::command]
     async fn get_tags() -> Result<Vec<tags::Tag>, String> {
         tauri::async_runtime::spawn_blocking(tags::get)
@@ -396,15 +399,22 @@ pub fn run() {
             .map_err(|e| format!("Key analysis request worker failed: {e}"))?
     }
     #[tauri::command]
-    async fn save_track_metadata(track_id: String, metadata: serde_json::Value) -> Result<Library, String> {
+    async fn save_track_metadata(
+        track_id: String,
+        metadata: serde_json::Value,
+    ) -> Result<Library, String> {
         if !valid_id(&track_id) {
             return Err("Metadata requires a library track ID.".into());
         }
-        tauri::async_runtime::spawn_blocking(move || service_request(
-            "/v1/metadata/save",
-            Some(serde_json::json!({"track_id": track_id, "metadata": metadata})),
-            true,
-        )).await.map_err(|e| format!("Metadata worker failed: {e}"))?
+        tauri::async_runtime::spawn_blocking(move || {
+            service_request(
+                "/v1/metadata/save",
+                Some(serde_json::json!({"track_id": track_id, "metadata": metadata})),
+                true,
+            )
+        })
+        .await
+        .map_err(|e| format!("Metadata worker failed: {e}"))?
     }
     #[tauri::command]
     async fn approve_track_analysis(track_id: String) -> Result<Library, String> {

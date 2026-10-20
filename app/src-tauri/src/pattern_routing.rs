@@ -443,6 +443,9 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
             p.channel = target.channel.unwrap_or(p.channel);
         }
         for component in ["root", "scale"] {
+            if p.kind == "percussion" {
+                continue;
+            }
             if let Some(h) = graph
                 .wires
                 .iter()
@@ -473,6 +476,9 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
         }
         // MIDI's bounded pitch range is a playback constraint; never wrap it.
         p.notes.retain(|n| {
+            if p.kind == "percussion" {
+                return true;
+            }
             let pitch = 12 * (p.octave as i16 + 1 + n.octave as i16)
                 + p.key as i16
                 + super::patterns::SCALES[p.scale][n.degree as usize - 1];

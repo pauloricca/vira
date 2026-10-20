@@ -2,10 +2,10 @@
   "links": [
     {
       "from": {
-        "node": "input",
-        "port": "left"
+        "node": "crossover_1",
+        "port": "band 2"
       },
-      "mode": "set",
+      "mode": "add",
       "to": {
         "node": "reverb_1",
         "port": "signal"
@@ -17,12 +17,108 @@
         "node": "reverb_1",
         "port": "left"
       },
-      "mode": "set",
+      "mode": "add",
       "to": {
         "node": "output",
         "port": "both"
       },
-      "weight": 12.01
+      "weight": 13.83
+    },
+    {
+      "from": {
+        "node": "input",
+        "port": "left"
+      },
+      "mode": "set",
+      "to": {
+        "node": "crossover_1",
+        "port": "signal"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "crossover_1",
+        "port": "band 1"
+      },
+      "mode": "add",
+      "to": {
+        "node": "output",
+        "port": "both"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "crossover_1",
+        "port": "band 2"
+      },
+      "mode": "add",
+      "to": {
+        "node": "output",
+        "port": "both"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "slider_1",
+        "port": "signal"
+      },
+      "mode": "set",
+      "to": {
+        "node": "delay_1",
+        "port": "time"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "crossover_1",
+        "port": "band 2"
+      },
+      "mode": "set",
+      "to": {
+        "node": "delay_1",
+        "port": "signal"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "delay_1",
+        "port": "signal"
+      },
+      "mode": "add",
+      "to": {
+        "node": "reverb_1",
+        "port": "signal"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "sineosc_1",
+        "port": "signal"
+      },
+      "mode": "set",
+      "to": {
+        "node": "slider_1",
+        "port": "value"
+      },
+      "weight": 1
+    },
+    {
+      "from": {
+        "node": "slider_2",
+        "port": "signal"
+      },
+      "mode": "set",
+      "to": {
+        "node": "crossover_1",
+        "port": "frequency 1"
+      },
+      "weight": 1
     }
   ],
   "name": "reverb",
@@ -45,24 +141,112 @@
         "level": 1
       },
       "position": {
-        "x": 1248,
-        "y": 362
+        "x": 1331.08,
+        "y": 313.76
       },
       "type": "AudioOut"
     },
     {
       "id": "reverb_1",
       "params": {
-        "decay": 0.94,
-        "mix": 1,
+        "decay": 0.6,
+        "mix": 0.7,
         "mode": 2,
         "size": 1
       },
       "position": {
-        "x": 664,
-        "y": 261
+        "x": 712.24,
+        "y": 431.18000000000006
       },
       "type": "Reverb"
+    },
+    {
+      "id": "crossover_1",
+      "params": {
+        "frequency 1": 1200,
+        "frequency 2": 4000,
+        "frequency 3": 8000,
+        "frequency 4": 12000,
+        "frequency 5": 15000,
+        "frequency 6": 17000,
+        "frequency 7": 18500,
+        "frequency 8": 19500,
+        "points": 1,
+        "slope": 24
+      },
+      "position": {
+        "x": 389.14,
+        "y": 159.57999999999998
+      },
+      "type": "Crossover"
+    },
+    {
+      "id": "delay_1",
+      "params": {
+        "feedback": 0,
+        "mix": 1,
+        "time": 0.28
+      },
+      "position": {
+        "x": 454.7999999999999,
+        "y": 531.54
+      },
+      "type": "Delay"
+    },
+    {
+      "compactPorts": true,
+      "id": "slider_1",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 0.1,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 0.08331303603661469
+      },
+      "position": {
+        "x": 85.98712000000017,
+        "y": 683.4798800000001
+      },
+      "scopeSize": {
+        "height": 68,
+        "width": 311
+      },
+      "type": "Slider"
+    },
+    {
+      "id": "sineosc_1",
+      "params": {
+        "frequency": 0.2,
+        "phase": 0,
+        "phaseReset": 0,
+        "rangeMax": 0.02,
+        "rangeMin": 0
+      },
+      "position": {
+        "x": 58.65380000000009,
+        "y": 441.39528
+      },
+      "type": "SineOsc"
+    },
+    {
+      "compactPorts": true,
+      "id": "slider_2",
+      "params": {
+        "curve": 0,
+        "direction": 0,
+        "max": 10000,
+        "midiCc": 1,
+        "midiChannel": 0,
+        "min": 0,
+        "value": 0.10325209234300695
+      },
+      "position": {
+        "x": 348.98346620000007,
+        "y": -6.741525199999906
+      },
+      "type": "Slider"
     }
   ]
 }

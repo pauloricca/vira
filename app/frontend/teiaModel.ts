@@ -1,6 +1,6 @@
 import { NATIVE_PROFILE, preparePatch, type Patch, type PreparedPatch } from '@pauloricca/teia-hosted';
 export type Parameter = PreparedPatch['parameters'][number];
-export type TeiaRecord = { name: string; saved_hash: string; saved_document: Patch; document: Patch; installed_document: Patch; prepared: PreparedPatch; overrides: Record<string, number>; bypass: boolean; clock_running?: boolean };
+export type TeiaRecord = { name: string; saved_hash: string; saved_document: Patch; document: Patch; installed_document: Patch; prepared: PreparedPatch; overrides: Record<string, number>; bypass: boolean; passthrough?: boolean; clock_running?: boolean };
 export type TeiaState = { generation: string; runtimeGeneration: string; record: TeiaRecord | null; parameters?: Record<string, number>; editorOpen: boolean; peak: number; renderFailures: number; automaticResets?: number; suspended?: boolean; repeatExhaustions?: number; midi?: { available: boolean; inputs: {id: number; name: string}[]; outputs: {id: number; name: string}[]; input: number; output: number; inputDrops: number; outputDrops: number; lateInputs: number; muted?: boolean; error?: string }; restoreError: string | null; running: boolean };
 // UI offerings only; Teia's shared Rust validator remains authoritative for DSP.
 // Resource-backed nodes need host acquisition/configuration or repeat budgets.

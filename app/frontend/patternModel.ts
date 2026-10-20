@@ -1,11 +1,12 @@
 export const scales = ['Major', 'Natural minor', 'Dorian', 'Mixolydian'];
 export const intervals = [[0, 2, 4, 5, 7, 9, 11], [0, 2, 3, 5, 7, 8, 10], [0, 2, 3, 5, 7, 9, 10], [0, 2, 4, 5, 7, 9, 10]];
 export const keys = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
-export type PatternNote = { id: string; beat: number; duration: number; degree: number; octave: number; velocity: number };
-export type Pattern = { id: string; name: string; kind: 'melodic'; mode: 'relative'; output: number; channel: number; bars: number; steps?: number; stepDivision?: number; phraseSync?: boolean; grid: number; key: number; scale: number; octave: number; quantum: number; compensation: number | null; notes: PatternNote[] };
+export type PatternNote = { id: string; beat: number; duration: number; degree: number; octave: number; velocity: number; row?: string };
+export type PercussionRow = { id: string; name: string; note: number; channel: number | null };
+export type Pattern = { id: string; name: string; kind: 'melodic' | 'percussion'; rows?: PercussionRow[]; mode: 'relative'; output: number; channel: number; bars: number; steps?: number; stepDivision?: number; phraseSync?: boolean; grid: number; key: number; scale: number; octave: number; quantum: number; compensation: number | null; notes: PatternNote[] };
 export type Bank = { patterns: Pattern[]; outputCompensation: Record<string, number>; graph?: MusicalGraph | null };
 export const uid = () => crypto.randomUUID();
-export function newPattern(): Pattern { return { id: uid(), name: 'Untitled pattern', kind: 'melodic', mode: 'relative', output: 0, channel: 1, bars: 2, steps: 32, stepDivision: 4, phraseSync: true, grid: 4, key: 0, scale: 0, octave: 4, quantum: 4, compensation: null, notes: [] }; }
+export function newPattern(kind: Pattern['kind'] = 'melodic'): Pattern { return { id: uid(), name: kind === 'percussion' ? 'Untitled percussion' : 'Untitled pattern', kind, ...(kind === 'percussion' ? { rows: [] } : {}), mode: 'relative', output: 0, channel: 1, bars: 2, steps: 32, stepDivision: 4, phraseSync: true, grid: 4, key: 0, scale: 0, octave: 4, quantum: 4, compensation: null, notes: [] }; }
 export function pitch(p: Pattern, degree: number, octave: number) { return (p.octave + octave + 1) * 12 + p.key + intervals[p.scale][degree - 1]; }
 export function pitchLabel(midi: number) { return `${keys[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`; }
 export function patternBeats(p: Pattern) { return p.steps == null ? p.bars * 4 : p.steps / (p.stepDivision ?? 4); }

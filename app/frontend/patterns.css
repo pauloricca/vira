@@ -96,3 +96,13 @@
 
 .pattern-settings input[type=number] { width: 85px; font-size: 11px; }
 .pattern-settings > small { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+
+.pattern-create { display: grid; gap: 6px; padding: 10px 12px; }
+.percussion-toolbar,.percussion-row-editor { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; border-bottom: 1px solid var(--line); }
+.percussion-toolbar small { color: var(--muted); font-size: 11px; }
+.percussion-row-editor { background: #172b35; align-items: end; }
+.percussion-row-editor label { display: grid; gap: 6px; font-size: 10px; color: var(--muted); }
+.percussion-roll .pattern-pitches,.percussion-roll .pattern-ruler > span { width: 170px; }
+.pattern-pitches > .percussion-row-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 22px; padding: 0 8px; border: 0; border-bottom: 1px solid #283a43; background: transparent; text-align: left; }
+.percussion-row-header span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.percussion-row-header small { flex-shrink: 0; color: var(--muted); }

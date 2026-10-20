@@ -1239,6 +1239,7 @@ pub struct Frame {
     pub drift_target: Option<usize>,
     pub output_frame: u64,
     pub global_beat: f64,
+    pub master_running: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -2746,13 +2747,13 @@ impl Decks {
         if patterns_running {
             self.master_bpm_set = true;
         }
-        if self
+        frame.master_running = self
             .voices
             .iter()
             .flatten()
             .any(|v| v.playing && v.launch_beat.is_none())
-            || patterns_running
-        {
+            || patterns_running;
+        if frame.master_running {
             self.global_beat += self.master_bpm / (60. * (crate::sample_rate::get() as f64));
         }
         frame.global_beat = self.global_beat;

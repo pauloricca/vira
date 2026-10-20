@@ -1,5 +1,2307 @@
 {
-  "record": null,
+  "record": {
+    "bypass": false,
+    "clock_running": false,
+    "document": {
+      "links": [
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "reverb_1",
+            "port": "left"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 13.83
+        },
+        {
+          "from": {
+            "node": "input",
+            "port": "left"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 1"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "time"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "sineosc_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "slider_1",
+            "port": "value"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_2",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "frequency 1"
+          },
+          "weight": 1
+        }
+      ],
+      "name": "reverb",
+      "nodes": [
+        {
+          "id": "input",
+          "params": {
+            "gain": 1,
+            "level": 1
+          },
+          "position": {
+            "x": 80,
+            "y": 160
+          },
+          "type": "AudioInput"
+        },
+        {
+          "id": "output",
+          "params": {
+            "level": 1
+          },
+          "position": {
+            "x": 1331.08,
+            "y": 313.76
+          },
+          "type": "AudioOut"
+        },
+        {
+          "id": "reverb_1",
+          "params": {
+            "decay": 0.6,
+            "mix": 0.7,
+            "mode": 2,
+            "size": 1
+          },
+          "position": {
+            "x": 712.24,
+            "y": 431.18000000000006
+          },
+          "type": "Reverb"
+        },
+        {
+          "id": "crossover_1",
+          "params": {
+            "frequency 1": 1200,
+            "frequency 2": 4000,
+            "frequency 3": 8000,
+            "frequency 4": 12000,
+            "frequency 5": 15000,
+            "frequency 6": 17000,
+            "frequency 7": 18500,
+            "frequency 8": 19500,
+            "points": 1,
+            "slope": 24
+          },
+          "position": {
+            "x": 389.14,
+            "y": 159.57999999999998
+          },
+          "type": "Crossover"
+        },
+        {
+          "id": "delay_1",
+          "params": {
+            "feedback": 0,
+            "mix": 1,
+            "time": 0.28
+          },
+          "position": {
+            "x": 454.7999999999999,
+            "y": 531.54
+          },
+          "type": "Delay"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_1",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 0.1,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.08331303603661469
+          },
+          "position": {
+            "x": 85.98712000000017,
+            "y": 683.4798800000001
+          },
+          "scopeSize": {
+            "height": 68,
+            "width": 311
+          },
+          "type": "Slider"
+        },
+        {
+          "id": "sineosc_1",
+          "params": {
+            "frequency": 0.2,
+            "phase": 0,
+            "phaseReset": 0,
+            "rangeMax": 0.02,
+            "rangeMin": 0
+          },
+          "position": {
+            "x": 58.65380000000009,
+            "y": 441.39528
+          },
+          "type": "SineOsc"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_2",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 10000,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.10325209234300695
+          },
+          "position": {
+            "x": 348.98346620000007,
+            "y": -6.741525199999906
+          },
+          "type": "Slider"
+        }
+      ]
+    },
+    "installed_document": {
+      "links": [
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "reverb_1",
+            "port": "left"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 13.83
+        },
+        {
+          "from": {
+            "node": "input",
+            "port": "left"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 1"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "time"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "sineosc_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "slider_1",
+            "port": "value"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_2",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "frequency 1"
+          },
+          "weight": 1
+        }
+      ],
+      "name": "reverb",
+      "nodes": [
+        {
+          "id": "input",
+          "params": {
+            "gain": 1,
+            "level": 1
+          },
+          "position": {
+            "x": 80,
+            "y": 160
+          },
+          "type": "AudioInput"
+        },
+        {
+          "id": "output",
+          "params": {
+            "level": 1
+          },
+          "position": {
+            "x": 1331.08,
+            "y": 313.76
+          },
+          "type": "AudioOut"
+        },
+        {
+          "id": "reverb_1",
+          "params": {
+            "decay": 0.6,
+            "mix": 0.7,
+            "mode": 2,
+            "size": 1
+          },
+          "position": {
+            "x": 712.24,
+            "y": 431.18000000000006
+          },
+          "type": "Reverb"
+        },
+        {
+          "id": "crossover_1",
+          "params": {
+            "frequency 1": 1200,
+            "frequency 2": 4000,
+            "frequency 3": 8000,
+            "frequency 4": 12000,
+            "frequency 5": 15000,
+            "frequency 6": 17000,
+            "frequency 7": 18500,
+            "frequency 8": 19500,
+            "points": 1,
+            "slope": 24
+          },
+          "position": {
+            "x": 389.14,
+            "y": 159.57999999999998
+          },
+          "type": "Crossover"
+        },
+        {
+          "id": "delay_1",
+          "params": {
+            "feedback": 0,
+            "mix": 1,
+            "time": 0.28
+          },
+          "position": {
+            "x": 454.7999999999999,
+            "y": 531.54
+          },
+          "type": "Delay"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_1",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 0.1,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.08331303603661469
+          },
+          "position": {
+            "x": 85.98712000000017,
+            "y": 683.4798800000001
+          },
+          "scopeSize": {
+            "height": 68,
+            "width": 311
+          },
+          "type": "Slider"
+        },
+        {
+          "id": "sineosc_1",
+          "params": {
+            "frequency": 0.2,
+            "phase": 0,
+            "phaseReset": 0,
+            "rangeMax": 0.02,
+            "rangeMin": 0
+          },
+          "position": {
+            "x": 58.65380000000009,
+            "y": 441.39528
+          },
+          "type": "SineOsc"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_2",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 10000,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.10325209234300695
+          },
+          "position": {
+            "x": 348.98346620000007,
+            "y": -6.741525199999906
+          },
+          "type": "Slider"
+        }
+      ]
+    },
+    "name": "reverb.json",
+    "overrides": {},
+    "passthrough": true,
+    "prepared": {
+      "diagnostics": [],
+      "layout": "{\"version\":1,\"engineApiVersion\":2,\"ops\":[{\"opcode\":0,\"out\":0,\"a\":0,\"value\":0},{\"opcode\":0,\"out\":4,\"a\":1,\"value\":0},{\"opcode\":11,\"out\":3,\"a\":4,\"b\":0},{\"opcode\":0,\"out\":5,\"a\":2,\"value\":0},{\"opcode\":2,\"out\":6,\"a\":3,\"b\":5},{\"opcode\":0,\"out\":7,\"a\":3,\"value\":0},{\"opcode\":2,\"out\":8,\"a\":6,\"b\":7},{\"opcode\":0,\"out\":9,\"a\":4,\"value\":0},{\"opcode\":17,\"out\":10,\"a\":8,\"b\":9},{\"opcode\":0,\"out\":11,\"a\":5,\"value\":0},{\"opcode\":0,\"out\":12,\"a\":6,\"value\":0},{\"opcode\":0,\"out\":13,\"a\":7,\"value\":0},{\"opcode\":16,\"out\":14,\"a\":13,\"b\":12},{\"opcode\":2,\"out\":15,\"a\":11,\"b\":14},{\"opcode\":1,\"out\":16,\"a\":12,\"b\":15},{\"opcode\":0,\"out\":17,\"a\":8,\"value\":0},{\"opcode\":2,\"out\":18,\"a\":16,\"b\":17},{\"opcode\":17,\"out\":19,\"a\":18,\"b\":9},{\"opcode\":0,\"out\":21,\"a\":9,\"value\":0},{\"opcode\":4,\"out\":20,\"a\":2,\"b\":10,\"c\":19,\"d\":21,\"state\":64},{\"opcode\":0,\"out\":23,\"a\":10,\"value\":0},{\"opcode\":4,\"out\":22,\"a\":2,\"b\":20,\"c\":19,\"d\":23,\"state\":68},{\"opcode\":0,\"out\":24,\"a\":11,\"value\":0},{\"opcode\":2,\"out\":25,\"a\":22,\"b\":24},{\"opcode\":0,\"out\":27,\"a\":12,\"value\":0},{\"opcode\":2,\"out\":28,\"a\":22,\"b\":27},{\"opcode\":17,\"out\":29,\"a\":28,\"b\":9},{\"opcode\":0,\"out\":30,\"a\":13,\"value\":0},{\"opcode\":0,\"out\":31,\"a\":14,\"value\":0},{\"opcode\":0,\"out\":32,\"a\":15,\"value\":0},{\"opcode\":3,\"out\":33,\"a\":0,\"b\":30,\"c\":-1,\"d\":-1,\"e\":-1,\"state\":73,\"value2\":31,\"value3\":32,\"value4\":1,\"value\":-1},{\"opcode\":0,\"out\":34,\"a\":16,\"value\":0},{\"opcode\":2,\"out\":35,\"a\":33,\"b\":34},{\"opcode\":17,\"out\":36,\"a\":35,\"b\":9},{\"opcode\":0,\"out\":37,\"a\":17,\"value\":0},{\"opcode\":0,\"out\":38,\"a\":18,\"value\":0},{\"opcode\":16,\"out\":39,\"a\":38,\"b\":37},{\"opcode\":2,\"out\":40,\"a\":36,\"b\":39},{\"opcode\":1,\"out\":41,\"a\":37,\"b\":40},{\"opcode\":0,\"out\":42,\"a\":19,\"value\":0},{\"opcode\":2,\"out\":43,\"a\":41,\"b\":42},{\"opcode\":17,\"out\":44,\"a\":43,\"b\":9},{\"opcode\":0,\"out\":45,\"a\":20,\"value\":0},{\"opcode\":0,\"out\":46,\"a\":21,\"value\":0},{\"opcode\":12,\"out\":26,\"a\":29,\"b\":44,\"c\":45,\"d\":46,\"state\":72},{\"opcode\":0,\"out\":47,\"a\":22,\"value\":0},{\"opcode\":2,\"out\":48,\"a\":26,\"b\":47},{\"opcode\":0,\"out\":49,\"a\":23,\"value\":0},{\"opcode\":1,\"out\":50,\"a\":49,\"b\":25},{\"opcode\":1,\"out\":51,\"a\":50,\"b\":48},{\"opcode\":0,\"out\":52,\"a\":24,\"value\":0},{\"opcode\":0,\"out\":53,\"a\":25,\"value\":0},{\"opcode\":0,\"out\":54,\"a\":26,\"value\":0},{\"opcode\":0,\"out\":55,\"a\":27,\"value\":1},{\"opcode\":14,\"out\":1,\"e\":2,\"a\":51,\"b\":52,\"c\":53,\"d\":54,\"value2\":56,\"state\":0},{\"opcode\":0,\"out\":56,\"a\":28,\"value\":0},{\"opcode\":2,\"out\":57,\"a\":1,\"b\":56},{\"opcode\":0,\"out\":58,\"a\":29,\"value\":0},{\"opcode\":2,\"out\":59,\"a\":6,\"b\":58},{\"opcode\":17,\"out\":60,\"a\":59,\"b\":9},{\"opcode\":0,\"out\":61,\"a\":30,\"value\":0},{\"opcode\":2,\"out\":62,\"a\":16,\"b\":61},{\"opcode\":17,\"out\":63,\"a\":62,\"b\":9},{\"opcode\":4,\"out\":64,\"a\":1,\"b\":60,\"c\":63,\"d\":21,\"state\":74},{\"opcode\":4,\"out\":65,\"a\":1,\"b\":64,\"c\":63,\"d\":23,\"state\":78},{\"opcode\":0,\"out\":66,\"a\":31,\"value\":0},{\"opcode\":2,\"out\":67,\"a\":65,\"b\":66},{\"opcode\":0,\"out\":68,\"a\":32,\"value\":0},{\"opcode\":2,\"out\":69,\"a\":22,\"b\":68},{\"opcode\":0,\"out\":70,\"a\":33,\"value\":0},{\"opcode\":1,\"out\":71,\"a\":70,\"b\":57},{\"opcode\":1,\"out\":72,\"a\":71,\"b\":67},{\"opcode\":1,\"out\":73,\"a\":72,\"b\":69},{\"opcode\":2,\"out\":74,\"a\":73,\"b\":0},{\"opcode\":5,\"a\":74,\"b\":0},{\"opcode\":5,\"a\":74,\"b\":1}],\"valueBindings\":[{\"id\":\"output.level\",\"kind\":\"node-param\",\"nodeId\":\"output\",\"port\":\"level\",\"valueIndex\":0},{\"id\":\"input.gain\",\"kind\":\"node-param\",\"nodeId\":\"input\",\"port\":\"gain\",\"valueIndex\":1},{\"id\":\"input.level\",\"kind\":\"node-param\",\"nodeId\":\"input\",\"port\":\"level\",\"valueIndex\":2},{\"id\":\"input:left->crossover_1:signal.weight\",\"kind\":\"link-weight\",\"linkId\":\"input:left->crossover_1:signal\",\"valueIndex\":3},{\"id\":\"constant.1\",\"valueIndex\":4,\"kind\":\"constant\"},{\"id\":\"slider_2.value\",\"kind\":\"node-param\",\"nodeId\":\"slider_2\",\"port\":\"value\",\"valueIndex\":5},{\"id\":\"slider_2.min\",\"kind\":\"node-param\",\"nodeId\":\"slider_2\",\"port\":\"min\",\"valueIndex\":6},{\"id\":\"slider_2.max\",\"kind\":\"node-param\",\"nodeId\":\"slider_2\",\"port\":\"max\",\"valueIndex\":7},{\"id\":\"slider_2:signal->crossover_1:frequency 1.weight\",\"kind\":\"link-weight\",\"linkId\":\"slider_2:signal->crossover_1:frequency 1\",\"valueIndex\":8},{\"id\":\"constant.1.3065629648763766\",\"valueIndex\":9,\"kind\":\"constant\"},{\"id\":\"constant.0.541196100146197\",\"valueIndex\":10,\"kind\":\"constant\"},{\"id\":\"crossover_1:band 2->reverb_1:signal.weight\",\"kind\":\"link-weight\",\"linkId\":\"crossover_1:band 2->reverb_1:signal\",\"valueIndex\":11},{\"id\":\"crossover_1:band 2->delay_1:signal.weight\",\"kind\":\"link-weight\",\"linkId\":\"crossover_1:band 2->delay_1:signal\",\"valueIndex\":12},{\"id\":\"sineosc_1.frequency\",\"kind\":\"node-param\",\"nodeId\":\"sineosc_1\",\"port\":\"frequency\",\"valueIndex\":13},{\"id\":\"sineosc_1.rangeMin\",\"kind\":\"node-param\",\"nodeId\":\"sineosc_1\",\"port\":\"rangeMin\",\"valueIndex\":14},{\"id\":\"sineosc_1.rangeMax\",\"kind\":\"node-param\",\"nodeId\":\"sineosc_1\",\"port\":\"rangeMax\",\"valueIndex\":15},{\"id\":\"sineosc_1:signal->slider_1:value.weight\",\"kind\":\"link-weight\",\"linkId\":\"sineosc_1:signal->slider_1:value\",\"valueIndex\":16},{\"id\":\"slider_1.min\",\"kind\":\"node-param\",\"nodeId\":\"slider_1\",\"port\":\"min\",\"valueIndex\":17},{\"id\":\"slider_1.max\",\"kind\":\"node-param\",\"nodeId\":\"slider_1\",\"port\":\"max\",\"valueIndex\":18},{\"id\":\"slider_1:signal->delay_1:time.weight\",\"kind\":\"link-weight\",\"linkId\":\"slider_1:signal->delay_1:time\",\"valueIndex\":19},{\"id\":\"delay_1.feedback\",\"kind\":\"node-param\",\"nodeId\":\"delay_1\",\"port\":\"feedback\",\"valueIndex\":20},{\"id\":\"delay_1.mix\",\"kind\":\"node-param\",\"nodeId\":\"delay_1\",\"port\":\"mix\",\"valueIndex\":21},{\"id\":\"delay_1:signal->reverb_1:signal.weight\",\"kind\":\"link-weight\",\"linkId\":\"delay_1:signal->reverb_1:signal\",\"valueIndex\":22},{\"id\":\"reverb_1.signal\",\"kind\":\"node-param\",\"nodeId\":\"reverb_1\",\"port\":\"signal\",\"valueIndex\":23},{\"id\":\"reverb_1.size\",\"kind\":\"node-param\",\"nodeId\":\"reverb_1\",\"port\":\"size\",\"valueIndex\":24},{\"id\":\"reverb_1.decay\",\"kind\":\"node-param\",\"nodeId\":\"reverb_1\",\"port\":\"decay\",\"valueIndex\":25},{\"id\":\"reverb_1.mix\",\"kind\":\"node-param\",\"nodeId\":\"reverb_1\",\"port\":\"mix\",\"valueIndex\":26},{\"id\":\"reverb_1.mode\",\"kind\":\"node-param\",\"nodeId\":\"reverb_1\",\"port\":\"mode\",\"valueIndex\":27},{\"id\":\"reverb_1:left->output:both.weight\",\"kind\":\"link-weight\",\"linkId\":\"reverb_1:left->output:both\",\"valueIndex\":28},{\"id\":\"input:left->crossover_1:signal.weight\",\"kind\":\"link-weight\",\"linkId\":\"input:left->crossover_1:signal\",\"valueIndex\":29},{\"id\":\"slider_2:signal->crossover_1:frequency 1.weight\",\"kind\":\"link-weight\",\"linkId\":\"slider_2:signal->crossover_1:frequency 1\",\"valueIndex\":30},{\"id\":\"crossover_1:band 1->output:both.weight\",\"kind\":\"link-weight\",\"linkId\":\"crossover_1:band 1->output:both\",\"valueIndex\":31},{\"id\":\"crossover_1:band 2->output:both.weight\",\"kind\":\"link-weight\",\"linkId\":\"crossover_1:band 2->output:both\",\"valueIndex\":32},{\"id\":\"output.both\",\"kind\":\"node-param\",\"nodeId\":\"output\",\"port\":\"both\",\"valueIndex\":33}],\"midiControlBindings\":[],\"tempoBindings\":[],\"stateBindings\":[{\"id\":\"reverb_1:effect\",\"state\":0,\"count\":64,\"kind\":\"effect\",\"nodeId\":\"reverb_1\"},{\"id\":\"crossover_1:crossover:1:high:0\",\"state\":64,\"count\":4,\"kind\":\"filter\",\"nodeId\":\"crossover_1\"},{\"id\":\"crossover_1:crossover:1:high:1\",\"state\":68,\"count\":4,\"kind\":\"filter\",\"nodeId\":\"crossover_1\"},{\"id\":\"delay_1:effect\",\"state\":72,\"count\":1,\"kind\":\"effect\",\"nodeId\":\"delay_1\"},{\"id\":\"sineosc_1:oscillator\",\"state\":73,\"count\":1,\"kind\":\"oscillator\",\"nodeId\":\"sineosc_1\"},{\"id\":\"crossover_1:crossover:1:low:0\",\"state\":74,\"count\":4,\"kind\":\"filter\",\"nodeId\":\"crossover_1\"},{\"id\":\"crossover_1:crossover:1:low:1\",\"state\":78,\"count\":4,\"kind\":\"filter\",\"nodeId\":\"crossover_1\"}],\"registerCount\":75,\"stateCount\":82,\"feedbackLinkIds\":[],\"monitorIds\":{\"slider_2\":11,\"slider_1\":36,\"output:left\":74,\"output:right\":74},\"sampleBindings\":[],\"imageBindings\":[],\"fftBindings\":[],\"customWaveBindings\":[],\"sequencerBindings\":[],\"repeatBindings\":[],\"maxVoices\":1,\"usesMidiNote\":false,\"usesMidiClock\":false,\"errors\":[]}",
+      "parameters": [],
+      "profile": "native-scalar-v1",
+      "program": {
+        "customWaveBindings": [],
+        "engineApiVersion": 2,
+        "errors": [],
+        "feedbackLinkIds": [],
+        "fftBindings": [],
+        "imageBindings": [],
+        "inputBindings": [
+          {
+            "nodeId": "input",
+            "register": 3
+          }
+        ],
+        "maxVoices": 1,
+        "midiControlBindings": [],
+        "monitorIds": {
+          "output:left": 74,
+          "output:right": 74,
+          "slider_1": 36,
+          "slider_2": 11
+        },
+        "ops": [
+          {
+            "a": 0,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 0,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 1,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 4,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 4,
+            "b": 0,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 11,
+            "out": 3,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 2,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 5,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 3,
+            "b": 5,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 6,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 3,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 7,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 6,
+            "b": 7,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 8,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 4,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 9,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 8,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 10,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 5,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 11,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 6,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 12,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 7,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 13,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 13,
+            "b": 12,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 16,
+            "out": 14,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 11,
+            "b": 14,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 15,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 12,
+            "b": 15,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 16,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 8,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 17,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 16,
+            "b": 17,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 18,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 18,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 19,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 9,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 21,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 2,
+            "b": 10,
+            "c": 19,
+            "d": 21,
+            "e": -1,
+            "opcode": 4,
+            "out": 20,
+            "state": 64,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 10,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 23,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 2,
+            "b": 20,
+            "c": 19,
+            "d": 23,
+            "e": -1,
+            "opcode": 4,
+            "out": 22,
+            "state": 68,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 11,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 24,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 22,
+            "b": 24,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 25,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 12,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 27,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 22,
+            "b": 27,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 28,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 28,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 29,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 13,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 30,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 14,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 31,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 15,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 32,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 0,
+            "b": 30,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 3,
+            "out": 33,
+            "state": 73,
+            "value": -1.0,
+            "value2": 31.0,
+            "value3": 32.0,
+            "value4": 1.0
+          },
+          {
+            "a": 16,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 34,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 33,
+            "b": 34,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 35,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 35,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 36,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 17,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 37,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 18,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 38,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 38,
+            "b": 37,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 16,
+            "out": 39,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 36,
+            "b": 39,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 40,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 37,
+            "b": 40,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 41,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 19,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 42,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 41,
+            "b": 42,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 43,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 43,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 44,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 20,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 45,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 21,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 46,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 29,
+            "b": 44,
+            "c": 45,
+            "d": 46,
+            "e": -1,
+            "opcode": 12,
+            "out": 26,
+            "state": 72,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 22,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 47,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 26,
+            "b": 47,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 48,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 23,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 49,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 49,
+            "b": 25,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 50,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 50,
+            "b": 48,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 51,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 24,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 52,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 25,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 53,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 26,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 54,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 27,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 55,
+            "state": -1,
+            "value": 1.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 51,
+            "b": 52,
+            "c": 53,
+            "d": 54,
+            "e": 2,
+            "opcode": 14,
+            "out": 1,
+            "state": 0,
+            "value": 0.0,
+            "value2": 56.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 28,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 56,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 1,
+            "b": 56,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 57,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 29,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 58,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 6,
+            "b": 58,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 59,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 59,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 60,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 30,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 61,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 16,
+            "b": 61,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 62,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 62,
+            "b": 9,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 17,
+            "out": 63,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 1,
+            "b": 60,
+            "c": 63,
+            "d": 21,
+            "e": -1,
+            "opcode": 4,
+            "out": 64,
+            "state": 74,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 1,
+            "b": 64,
+            "c": 63,
+            "d": 23,
+            "e": -1,
+            "opcode": 4,
+            "out": 65,
+            "state": 78,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 31,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 66,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 65,
+            "b": 66,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 67,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 32,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 68,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 22,
+            "b": 68,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 69,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 33,
+            "b": -1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 0,
+            "out": 70,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 70,
+            "b": 57,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 71,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 71,
+            "b": 67,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 72,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 72,
+            "b": 69,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 1,
+            "out": 73,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 73,
+            "b": 0,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 2,
+            "out": 74,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 74,
+            "b": 0,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 5,
+            "out": -1,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          },
+          {
+            "a": 74,
+            "b": 1,
+            "c": -1,
+            "d": -1,
+            "e": -1,
+            "opcode": 5,
+            "out": -1,
+            "state": -1,
+            "value": 0.0,
+            "value2": 0.0,
+            "value3": 0.0,
+            "value4": 0.0
+          }
+        ],
+        "optimization": {
+          "afterConstantFolding": {
+            "byOpcode": {
+              "Add": 7,
+              "Delay": 1,
+              "Div": 7,
+              "Filter": 4,
+              "Input": 1,
+              "Mul": 16,
+              "Osc": 1,
+              "Output": 2,
+              "Reverb": 1,
+              "Sub": 2,
+              "Value": 34
+            },
+            "byTrait": {
+              "event": 0,
+              "ordering barrier": 2,
+              "pure": 66,
+              "resource": 1,
+              "stateful": 7
+            },
+            "operations": 76,
+            "registers": 75,
+            "states": 82,
+            "values": 34
+          },
+          "beforeLoadDedup": {
+            "byOpcode": {
+              "Add": 7,
+              "Delay": 1,
+              "Div": 7,
+              "Filter": 4,
+              "Input": 1,
+              "Mul": 16,
+              "Osc": 1,
+              "Output": 2,
+              "Reverb": 1,
+              "Sub": 2,
+              "Value": 42
+            },
+            "byTrait": {
+              "event": 0,
+              "ordering barrier": 2,
+              "pure": 74,
+              "resource": 1,
+              "stateful": 7
+            },
+            "operations": 84,
+            "registers": 83,
+            "states": 82,
+            "values": 34
+          },
+          "emitted": {
+            "byOpcode": {
+              "Add": 7,
+              "Delay": 1,
+              "Div": 7,
+              "Filter": 4,
+              "Input": 1,
+              "Mul": 16,
+              "Osc": 1,
+              "Output": 2,
+              "Reverb": 1,
+              "Sub": 2,
+              "Value": 34
+            },
+            "byTrait": {
+              "event": 0,
+              "ordering barrier": 2,
+              "pure": 66,
+              "resource": 1,
+              "stateful": 7
+            },
+            "operations": 76,
+            "registers": 75,
+            "states": 82,
+            "values": 34
+          },
+          "final": {
+            "byOpcode": {
+              "Add": 7,
+              "Delay": 1,
+              "Div": 7,
+              "Filter": 4,
+              "Input": 1,
+              "Mul": 16,
+              "Osc": 1,
+              "Output": 2,
+              "Reverb": 1,
+              "Sub": 2,
+              "Value": 34
+            },
+            "byTrait": {
+              "event": 0,
+              "ordering barrier": 2,
+              "pure": 66,
+              "resource": 1,
+              "stateful": 7
+            },
+            "operations": 76,
+            "registers": 75,
+            "states": 82,
+            "values": 34
+          },
+          "reasons": {
+            "constantArithmetic": 0,
+            "deduplicatedLoads": 8,
+            "unusedPure": 0
+          }
+        },
+        "registerCount": 75,
+        "repeatBindings": [],
+        "sampleBindings": [],
+        "sequencerBindings": [],
+        "signedMeterIds": [],
+        "stateBindings": [
+          {
+            "count": 64,
+            "id": "reverb_1:effect",
+            "kind": "effect",
+            "nodeId": "reverb_1",
+            "state": 0
+          },
+          {
+            "count": 4,
+            "id": "crossover_1:crossover:1:high:0",
+            "kind": "filter",
+            "nodeId": "crossover_1",
+            "state": 64
+          },
+          {
+            "count": 4,
+            "id": "crossover_1:crossover:1:high:1",
+            "kind": "filter",
+            "nodeId": "crossover_1",
+            "state": 68
+          },
+          {
+            "count": 1,
+            "id": "delay_1:effect",
+            "kind": "effect",
+            "nodeId": "delay_1",
+            "state": 72
+          },
+          {
+            "count": 1,
+            "id": "sineosc_1:oscillator",
+            "kind": "oscillator",
+            "nodeId": "sineosc_1",
+            "state": 73
+          },
+          {
+            "count": 4,
+            "id": "crossover_1:crossover:1:low:0",
+            "kind": "filter",
+            "nodeId": "crossover_1",
+            "state": 74
+          },
+          {
+            "count": 4,
+            "id": "crossover_1:crossover:1:low:1",
+            "kind": "filter",
+            "nodeId": "crossover_1",
+            "state": 78
+          }
+        ],
+        "stateCount": 82,
+        "tempoBindings": [],
+        "usesMidiClock": false,
+        "usesMidiNote": false,
+        "valueBindings": [
+          {
+            "id": "output.level",
+            "kind": "node-param",
+            "nodeId": "output",
+            "port": "level",
+            "valueIndex": 0
+          },
+          {
+            "id": "input.gain",
+            "kind": "node-param",
+            "nodeId": "input",
+            "port": "gain",
+            "valueIndex": 1
+          },
+          {
+            "id": "input.level",
+            "kind": "node-param",
+            "nodeId": "input",
+            "port": "level",
+            "valueIndex": 2
+          },
+          {
+            "id": "input:left->crossover_1:signal.weight",
+            "kind": "link-weight",
+            "linkId": "input:left->crossover_1:signal",
+            "valueIndex": 3
+          },
+          {
+            "id": "constant.1",
+            "kind": "constant",
+            "valueIndex": 4
+          },
+          {
+            "id": "slider_2.value",
+            "kind": "node-param",
+            "nodeId": "slider_2",
+            "port": "value",
+            "valueIndex": 5
+          },
+          {
+            "id": "slider_2.min",
+            "kind": "node-param",
+            "nodeId": "slider_2",
+            "port": "min",
+            "valueIndex": 6
+          },
+          {
+            "id": "slider_2.max",
+            "kind": "node-param",
+            "nodeId": "slider_2",
+            "port": "max",
+            "valueIndex": 7
+          },
+          {
+            "id": "slider_2:signal->crossover_1:frequency 1.weight",
+            "kind": "link-weight",
+            "linkId": "slider_2:signal->crossover_1:frequency 1",
+            "valueIndex": 8
+          },
+          {
+            "id": "constant.1.3065629648763766",
+            "kind": "constant",
+            "valueIndex": 9
+          },
+          {
+            "id": "constant.0.541196100146197",
+            "kind": "constant",
+            "valueIndex": 10
+          },
+          {
+            "id": "crossover_1:band 2->reverb_1:signal.weight",
+            "kind": "link-weight",
+            "linkId": "crossover_1:band 2->reverb_1:signal",
+            "valueIndex": 11
+          },
+          {
+            "id": "crossover_1:band 2->delay_1:signal.weight",
+            "kind": "link-weight",
+            "linkId": "crossover_1:band 2->delay_1:signal",
+            "valueIndex": 12
+          },
+          {
+            "id": "sineosc_1.frequency",
+            "kind": "node-param",
+            "nodeId": "sineosc_1",
+            "port": "frequency",
+            "valueIndex": 13
+          },
+          {
+            "id": "sineosc_1.rangeMin",
+            "kind": "node-param",
+            "nodeId": "sineosc_1",
+            "port": "rangeMin",
+            "valueIndex": 14
+          },
+          {
+            "id": "sineosc_1.rangeMax",
+            "kind": "node-param",
+            "nodeId": "sineosc_1",
+            "port": "rangeMax",
+            "valueIndex": 15
+          },
+          {
+            "id": "sineosc_1:signal->slider_1:value.weight",
+            "kind": "link-weight",
+            "linkId": "sineosc_1:signal->slider_1:value",
+            "valueIndex": 16
+          },
+          {
+            "id": "slider_1.min",
+            "kind": "node-param",
+            "nodeId": "slider_1",
+            "port": "min",
+            "valueIndex": 17
+          },
+          {
+            "id": "slider_1.max",
+            "kind": "node-param",
+            "nodeId": "slider_1",
+            "port": "max",
+            "valueIndex": 18
+          },
+          {
+            "id": "slider_1:signal->delay_1:time.weight",
+            "kind": "link-weight",
+            "linkId": "slider_1:signal->delay_1:time",
+            "valueIndex": 19
+          },
+          {
+            "id": "delay_1.feedback",
+            "kind": "node-param",
+            "nodeId": "delay_1",
+            "port": "feedback",
+            "valueIndex": 20
+          },
+          {
+            "id": "delay_1.mix",
+            "kind": "node-param",
+            "nodeId": "delay_1",
+            "port": "mix",
+            "valueIndex": 21
+          },
+          {
+            "id": "delay_1:signal->reverb_1:signal.weight",
+            "kind": "link-weight",
+            "linkId": "delay_1:signal->reverb_1:signal",
+            "valueIndex": 22
+          },
+          {
+            "id": "reverb_1.signal",
+            "kind": "node-param",
+            "nodeId": "reverb_1",
+            "port": "signal",
+            "valueIndex": 23
+          },
+          {
+            "id": "reverb_1.size",
+            "kind": "node-param",
+            "nodeId": "reverb_1",
+            "port": "size",
+            "valueIndex": 24
+          },
+          {
+            "id": "reverb_1.decay",
+            "kind": "node-param",
+            "nodeId": "reverb_1",
+            "port": "decay",
+            "valueIndex": 25
+          },
+          {
+            "id": "reverb_1.mix",
+            "kind": "node-param",
+            "nodeId": "reverb_1",
+            "port": "mix",
+            "valueIndex": 26
+          },
+          {
+            "id": "reverb_1.mode",
+            "kind": "node-param",
+            "nodeId": "reverb_1",
+            "port": "mode",
+            "valueIndex": 27
+          },
+          {
+            "id": "reverb_1:left->output:both.weight",
+            "kind": "link-weight",
+            "linkId": "reverb_1:left->output:both",
+            "valueIndex": 28
+          },
+          {
+            "id": "input:left->crossover_1:signal.weight",
+            "kind": "link-weight",
+            "linkId": "input:left->crossover_1:signal",
+            "valueIndex": 29
+          },
+          {
+            "id": "slider_2:signal->crossover_1:frequency 1.weight",
+            "kind": "link-weight",
+            "linkId": "slider_2:signal->crossover_1:frequency 1",
+            "valueIndex": 30
+          },
+          {
+            "id": "crossover_1:band 1->output:both.weight",
+            "kind": "link-weight",
+            "linkId": "crossover_1:band 1->output:both",
+            "valueIndex": 31
+          },
+          {
+            "id": "crossover_1:band 2->output:both.weight",
+            "kind": "link-weight",
+            "linkId": "crossover_1:band 2->output:both",
+            "valueIndex": 32
+          },
+          {
+            "id": "output.both",
+            "kind": "node-param",
+            "nodeId": "output",
+            "port": "both",
+            "valueIndex": 33
+          }
+        ],
+        "values": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.10325209234300695,
+          0.0,
+          10000.0,
+          1.0,
+          1.3065629648763766,
+          0.541196100146197,
+          1.0,
+          1.0,
+          0.2,
+          0.0,
+          0.02,
+          1.0,
+          0.0,
+          0.1,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          0.6,
+          0.7,
+          2.0,
+          13.83,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "version": 1
+      },
+      "requirements": {
+        "audioChannels": 2,
+        "buffers": {},
+        "engineApiVersion": 2,
+        "hostTimeline": false,
+        "images": [],
+        "midiKinds": [
+          "note on",
+          "note off",
+          "control change",
+          "pitch bend"
+        ],
+        "samples": []
+      }
+    },
+    "runtime_snapshots": {},
+    "saved_document": {
+      "links": [
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "reverb_1",
+            "port": "left"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 13.83
+        },
+        {
+          "from": {
+            "node": "input",
+            "port": "left"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 1"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "add",
+          "to": {
+            "node": "output",
+            "port": "both"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "time"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "crossover_1",
+            "port": "band 2"
+          },
+          "mode": "set",
+          "to": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "delay_1",
+            "port": "signal"
+          },
+          "mode": "add",
+          "to": {
+            "node": "reverb_1",
+            "port": "signal"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "sineosc_1",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "slider_1",
+            "port": "value"
+          },
+          "weight": 1
+        },
+        {
+          "from": {
+            "node": "slider_2",
+            "port": "signal"
+          },
+          "mode": "set",
+          "to": {
+            "node": "crossover_1",
+            "port": "frequency 1"
+          },
+          "weight": 1
+        }
+      ],
+      "name": "reverb",
+      "nodes": [
+        {
+          "id": "input",
+          "params": {
+            "gain": 1,
+            "level": 1
+          },
+          "position": {
+            "x": 80,
+            "y": 160
+          },
+          "type": "AudioInput"
+        },
+        {
+          "id": "output",
+          "params": {
+            "level": 1
+          },
+          "position": {
+            "x": 1331.08,
+            "y": 313.76
+          },
+          "type": "AudioOut"
+        },
+        {
+          "id": "reverb_1",
+          "params": {
+            "decay": 0.6,
+            "mix": 0.7,
+            "mode": 2,
+            "size": 1
+          },
+          "position": {
+            "x": 712.24,
+            "y": 431.18000000000006
+          },
+          "type": "Reverb"
+        },
+        {
+          "id": "crossover_1",
+          "params": {
+            "frequency 1": 1200,
+            "frequency 2": 4000,
+            "frequency 3": 8000,
+            "frequency 4": 12000,
+            "frequency 5": 15000,
+            "frequency 6": 17000,
+            "frequency 7": 18500,
+            "frequency 8": 19500,
+            "points": 1,
+            "slope": 24
+          },
+          "position": {
+            "x": 389.14,
+            "y": 159.57999999999998
+          },
+          "type": "Crossover"
+        },
+        {
+          "id": "delay_1",
+          "params": {
+            "feedback": 0,
+            "mix": 1,
+            "time": 0.28
+          },
+          "position": {
+            "x": 454.7999999999999,
+            "y": 531.54
+          },
+          "type": "Delay"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_1",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 0.1,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.08331303603661469
+          },
+          "position": {
+            "x": 85.98712000000017,
+            "y": 683.4798800000001
+          },
+          "scopeSize": {
+            "height": 68,
+            "width": 311
+          },
+          "type": "Slider"
+        },
+        {
+          "id": "sineosc_1",
+          "params": {
+            "frequency": 0.2,
+            "phase": 0,
+            "phaseReset": 0,
+            "rangeMax": 0.02,
+            "rangeMin": 0
+          },
+          "position": {
+            "x": 58.65380000000009,
+            "y": 441.39528
+          },
+          "type": "SineOsc"
+        },
+        {
+          "compactPorts": true,
+          "id": "slider_2",
+          "params": {
+            "curve": 0,
+            "direction": 0,
+            "max": 10000,
+            "midiCc": 1,
+            "midiChannel": 0,
+            "min": 0,
+            "value": 0.10325209234300695
+          },
+          "position": {
+            "x": 348.98346620000007,
+            "y": -6.741525199999906
+          },
+          "type": "Slider"
+        }
+      ]
+    },
+    "saved_hash": "91297b3be5d47e240ecb3b1b4a7d8476c2a4d6cecf1f386a1f5fa67dd825bfeb"
+  },
   "teiaProfile": "native-scalar-v1",
   "teiaSnapshot": "40bf20e14c3654afd269d25c3d80124f6e2175366c59be8afeb4905d0f2874fb",
   "version": 1

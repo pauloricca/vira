@@ -1,7 +1,7 @@
 import { useMidiControl, MidiButton } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { addSessionPatch } from './patchLibrary';
+import { addSessionPatch, patchAudioInputs } from './patchLibrary';
 import { type Parameter, type TeiaRecord, type TeiaState } from './teiaModel';
 
 type Entry = { slot: number; state: TeiaState };
@@ -182,6 +182,8 @@ export function Patches() {
     <div className="patch-list" role="list" aria-label="Session patches">{active.map(entry => {
       const record = entry.state.record!;
       const bypass = pending.current.get(`${entry.slot}:bypass`) ?? (record.bypass ? 1 : 0);
+      const passthrough = pending.current.get(`${entry.slot}:passthrough`) ?? (record.passthrough ? 1 : 0);
+      const hasInputs = patchAudioInputs(record.installed_document ?? record.prepared.document).length > 0;
       return <div className={`patch-row${bypass ? ' patch-off' : ''}${selected === record.name ? ' patch-selected' : ''}${dragging === entry.slot ? ' patch-dragging' : ''}${dropTarget?.slot === entry.slot ? dropTarget.after ? ' drop-after' : ' drop-before' : ''}`} key={entry.slot}
         role="listitem" aria-label={patchName(record)} aria-current={selected === record.name ? 'true' : undefined} data-patch-name={record.name} title="Click to select · Double-click to edit · Drag to reorder" tabIndex={-1} draggable={!busy}
         onPointerDownCapture={e => { dragAllowed.current = !isControl(e.target); if (dragAllowed.current && e.button === 0) e.currentTarget.focus({ preventScroll: true }); }}
@@ -203,7 +205,8 @@ export function Patches() {
           const rect = e.currentTarget.getBoundingClientRect();
           reorder(entry.slot, e.clientY >= rect.top + rect.height / 2); finishDrag();
         }} onDragEnd={finishDrag}>
-        <MidiButton midiId={`patch:${record.name}:enabled`} className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${patchName(record)}`} disabled={busy || !entry.state.running} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</MidiButton>
+        <MidiButton midiId={`patch:${record.name}:enabled`} className="patch-toggle" role="switch" aria-checked={!bypass} aria-label={`Enable ${patchName(record)}`} disabled={busy || !entry.state.running || Boolean(passthrough)} onClick={() => control(entry, 'bypass', null, bypass ? 0 : 1)}>{bypass ? 'OFF' : 'ON'}</MidiButton>
+        <MidiButton midiId={`patch:${record.name}:bypass`} className="patch-bypass" aria-pressed={Boolean(passthrough)} aria-label={`Bypass ${patchName(record)}`} title={hasInputs ? 'Pass audio inputs directly to the patch destinations; OFF still silences the patch' : 'Bypass requires an audio input'} disabled={busy || !entry.state.running || !hasInputs} onClick={() => control(entry, 'passthrough', null, passthrough ? 0 : 1)}>BYPASS</MidiButton>
         <strong className="patch-name" title={record.name}>{patchName(record)}</strong>
         {entry.state.suspended && <span className="patch-recovering" role="status">Recovering audio…</span>}
         {record.prepared.parameters.map(p => <PatchKnob midiId={`patch:${record.name}:parameter:${p.id}`} key={`${entry.state.generation}:${p.id}`} parameter={p} value={pending.current.get(`${entry.slot}:${p.id}`) ?? entry.state.parameters?.[p.id] ?? record.overrides[p.id] ?? p.defaultValue} disabled={busy || !entry.state.running || Boolean(entry.state.suspended)} change={value => control(entry, 'parameter', p.id, value)} />)}

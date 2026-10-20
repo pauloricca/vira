@@ -859,6 +859,14 @@ device dependent. Dual-device listening still needs verification on macOS hardwa
 
 ### Audio Routing page
 
+In the Decks **Patches** panel, **BYPASS** beside ON/OFF passes the patch's audio
+inputs directly to its existing destinations. ON/OFF is disabled while bypassed.
+OFF and BYPASS pause the patch DSP and its clock; parameter edits apply when
+processing resumes. Multiple stereo inputs sum while
+preserving left/right channels and routing gains. OFF still silences the patch;
+turning it ON restores its chosen bypass state. Patches without audio inputs
+have bypass disabled. The bypass choice persists with the session.
+
 **ROUTING** opens a stereo audio patchbay. Deck A and B keep their labeled, color-coded groups;
 player → trim → EQ → filter → fader is the initial chain. These nodes retain the
 Decks page's controls. Crossfader/mix and cue mix retain their existing controls;
@@ -963,13 +971,22 @@ Tag filters pause while Tag tracks is enabled; the folder and search still apply
 Bulk assignments are saved together, and failed saves leave existing assignments
 intact.
 
-### Melodic patterns
+### Melodic and percussion patterns
 
 The **Patterns** workspace contains reusable, persistent MIDI loops. Create a
 pattern, select a CoreMIDI destination and channel, and launch it on the next beat
 or bar. Each pattern has its own transport; several can play together. The audio
 engine must be running. Patterns keep the master beat moving even when both decks
 are stopped, and use the same master tempo as the decks.
+
+Choose **+ Melodic pattern** for the existing scale-relative piano roll, or
+**+ Percussion pattern** for a loop that starts with zero rows. In a percussion
+pattern, click **+ Add row**, then configure its name, fixed MIDI note (0–127)
+and optional channel (1–16). Click a row header to reopen its configuration.
+An empty channel uses the routed channel; a row channel overrides it. Percussion
+notes keep their fixed pitch across root/scale changes. Row edits apply to its
+existing notes, and deleting a row removes its notes. Both pattern types support
+the same note gestures, velocity, timing, duplication, persistence and routing.
 
 Several patterns can connect to the same device MIDI input. Drag from each
 pattern's MIDI output to that input, or from the device input to each pattern's
@@ -1010,7 +1027,8 @@ master phase jumps. In either mode loops repeat at their own step length, withou
 resetting at bar boundaries. Changing alignment applies to subsequent transport
 commands without restarting a running loop. Edits to a
 running pattern preserve its scheduling cursor unless its destination changes.
-Master phase jumps release and requeue events; tempo-only patterns retain their loop phase. Missing audio clock, MIDI device
+Master phase jumps release and requeue events at the next selected master beat/bar
+boundary; tempo-only patterns retain their loop phase. Missing audio clock, MIDI device
 disconnection and application exit release owned notes. A stalled worker skips
 stale events instead of emitting a burst of old note-ons.
 
@@ -1229,3 +1247,21 @@ launches. Pausing or stopping a deck brakes its audio over 300 ms, lowering spee
 and pitch to silence. Pause resumes from the brake’s final position at the normal
 selected tempo; Stop returns to the track start. Cue release and cancelled
 scheduled starts stay immediate. Disable Vinyl stop for immediate transport stops.
+
+
+In **Instruments → MIDI output**, **Send MIDI clock** sends 24 clock pulses per
+master beat while the global clock advances. **Send transport messages** reveals
+**Send Play every**, with intervals of **1, 2, 4, 16 or 32 bars** (default: 1).
+It sends MIDI Start at the first beat of each selected global bar group, anchored
+to global beat zero; a bar is four beats. Enabling it mid-group waits for the next
+boundary. Track Play, Pause and Stop do not trigger transport messages. This
+feature sends no MIDI Stop, Continue or Song Position Pointer messages.
+
+Both options default off and are saved per instrument. They work without a
+Patterns cable. Timing advance sends pattern notes, MIDI clock and periodic Play
+messages early by the configured milliseconds, using a five millisecond queue
+horizon. Instruments sharing a physical output use one MIDI clock stream with
+the greatest clock-enabled advance. Each instrument’s Play schedule uses its own
+timing advance. Their Play schedules combine and simultaneous
+identical Play messages are sent once. External hardware timing requires macOS
+testing.

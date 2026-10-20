@@ -145,3 +145,41 @@ test('partial-beat lengths clip notes and legacy bar lengths remain readable', (
   p.notes = [{ id: 'a', beat: 1.5, duration: 1, degree: 1, octave: 0, velocity: 100 }, { id: 'b', beat: 1.75, duration: 1, degree: 5, octave: 0, velocity: 100 }];
   expect(fitSteps(p, 7).notes).toEqual([{ ...p.notes[0], duration: .25 }]);
 });
+
+test('percussion starts empty and rows configure persistent fixed notes and optional channels', async () => {
+  class TestPointer extends MouseEvent { pointerId = 1; }
+  vi.stubGlobal('PointerEvent', TestPointer);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 800, height: 44, right: 800, bottom: 44, x: 0, y: 0, toJSON: () => ({}) });
+  render(<Patterns active />);
+  fireEvent.click(await screen.findByText('+ Percussion pattern'));
+  await waitFor(() => expect(bank.patterns).toHaveLength(2));
+  expect(bank.patterns[1]).toMatchObject({ kind: 'percussion', rows: [], notes: [] });
+  fireEvent.click(screen.getByLabelText('Expand Untitled percussion'));
+  expect(screen.queryByLabelText('Pattern key')).toBeNull();
+  expect(screen.getByLabelText('Percussion note grid').style.height).toBe('0px');
+  fireEvent.click(screen.getByText('+ Add row'));
+  fireEvent.change(screen.getByLabelText('Row name'), { target: { value: 'Kick' } });
+  fireEvent.change(screen.getByLabelText('Row note'), { target: { value: '36' } });
+  fireEvent.change(screen.getByLabelText('Row channel'), { target: { value: '10' } });
+  fireEvent.click(screen.getByText('Save row'));
+  await waitFor(() => expect(bank.patterns[1].rows?.[0]).toMatchObject({ name: 'Kick', note: 36, channel: 10 }));
+  fireEvent.pointerDown(screen.getByLabelText('Percussion note grid'), { button: 0, clientX: 100, clientY: 10 });
+  await waitFor(() => expect(bank.patterns[1].notes).toHaveLength(1));
+  expect(bank.patterns[1].notes[0]).toMatchObject({ row: bank.patterns[1].rows![0].id, beat: 1 });
+  fireEvent.click(screen.getByLabelText('Configure Kick'));
+  fireEvent.change(screen.getByLabelText('Row note'), { target: { value: '38' } });
+  fireEvent.change(screen.getByLabelText('Row channel'), { target: { value: '' } });
+  fireEvent.click(screen.getByText('Save row'));
+  await waitFor(() => expect(bank.patterns[1].rows![0]).toMatchObject({ note: 38, channel: null }));
+  expect(screen.getByRole('button', { name: /Kick, D2/ })).toBeTruthy();
+  fireEvent.click(screen.getByText('Duplicate'));
+  await waitFor(() => expect(bank.patterns).toHaveLength(3));
+  expect(bank.patterns[2].notes[0].id).not.toBe(bank.patterns[1].notes[0].id);
+  fireEvent.click(screen.getByLabelText('Configure Kick'));
+  fireEvent.click(screen.getByText('Delete row'));
+  await waitFor(() => expect(bank.patterns[2].rows).toHaveLength(0));
+  expect(bank.patterns[2].notes).toHaveLength(0);
+  expect(bank.patterns[1].rows).toHaveLength(1);
+  expect(bank.patterns[1].notes).toHaveLength(1);
+  vi.unstubAllGlobals();
+});

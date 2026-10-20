@@ -12,6 +12,15 @@ pub struct AudioPort {
 pub struct MidiPort {
     pub device: i32,
     pub channel: Option<u8>,
+    #[serde(default)]
+    pub send_clock: bool,
+    #[serde(default)]
+    pub send_transport: bool,
+    #[serde(default = "default_transport_bars")]
+    pub transport_bars: u8,
+}
+fn default_transport_bars() -> u8 {
+    1
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Instrument {
@@ -115,6 +124,12 @@ pub fn validate(items: &[Instrument]) -> Result<()> {
                 "Select one mono channel or two different stereo channels"
             );
         }
+        if let Some(port) = &item.midi_output {
+            ensure!(
+                matches!(port.transport_bars, 1 | 2 | 4 | 16 | 32),
+                "Transport Play interval must be 1, 2, 4, 16 or 32 bars"
+            );
+        }
         for port in [&item.midi_input, &item.midi_output].into_iter().flatten() {
             ensure!(
                 port.device != 0 && port.channel.is_none_or(|c| (1..=16).contains(&c)),
@@ -205,6 +220,22 @@ mod tests {
     use serde_json::json;
     fn synth() -> Instrument {
         serde_json::from_value(json!({"id":"synth","name":"My synth","audio_input":{"device":"Interface","channels":[3,4]},"audio_output":null,"midi_input":{"device":41,"channel":2},"midi_output":{"device":42,"channel":9}})).unwrap()
+    }
+    #[test]
+    fn transport_interval_defaults_to_one_bar_and_validates_and_roundtrips() {
+        let mut item = synth();
+        assert_eq!(item.midi_output.as_ref().unwrap().transport_bars, 1);
+        for bars in [1, 2, 4, 16, 32] {
+            item.midi_output.as_mut().unwrap().transport_bars = bars;
+            validate(&[item.clone()]).unwrap();
+            let restored: Instrument =
+                serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
+            assert_eq!(restored, item);
+        }
+        for bars in [0, 3, 8, 64] {
+            item.midi_output.as_mut().unwrap().transport_bars = bars;
+            assert!(validate(&[item.clone()]).is_err());
+        }
     }
     #[test]
     fn timing_flows_back_through_transformations_per_instrument_route() {

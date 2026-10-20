@@ -9,6 +9,40 @@ beforeEach(() => { localStorage.clear(); HTMLDialogElement.prototype.showModal =
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const state = { generation: '7', runtimeGeneration: '7', record: null, editorOpen: false, peak: 0, renderFailures: 0, restoreError: null, running: true };
 const loaded = { ...state, record: { name: 'Gain.json', prepared: prepare(gainPatch), overrides: {}, bypass: false } };
+test('bypass disables ON/OFF until processing is restored', async () => {
+  let current = { ...loaded, record: { ...loaded.record, passthrough: false } };
+  invoke.mockImplementation((command: string, args?: { action: string; value: number }) => {
+    if (command === 'teia_library') return Promise.resolve({ files: ['Gain.json'] });
+    if (command === 'patches_state') return Promise.resolve([{ slot: 2, state: current }]);
+    if (command === 'patches_control') {
+      current = { ...current, record: { ...current.record, [args!.action]: Boolean(args!.value) } };
+      return Promise.resolve(current);
+    }
+    return Promise.resolve();
+  });
+  render(<Patches />);
+  const bypass = await screen.findByRole('button', { name: 'Bypass Gain' });
+  fireEvent.click(bypass);
+  await waitFor(() => expect(bypass.getAttribute('aria-pressed')).toBe('true'));
+  expect(invoke).toHaveBeenCalledWith('patches_control', { slot: 2, action: 'passthrough', parameter: null, value: 1, generation: '7' });
+  expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true');
+  fireEvent.click(screen.getByRole('switch'));
+  expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
+  expect(invoke).not.toHaveBeenCalledWith('patches_control', expect.objectContaining({ action: 'bypass' }));
+  expect(bypass.getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(bypass);
+  await waitFor(() => expect(bypass.getAttribute('aria-pressed')).toBe('false'));
+  expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole('switch'));
+  await waitFor(() => expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false'));
+  expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+});
+test('bypass is unavailable for patches without audio inputs', async () => {
+  const record = { ...loaded.record, installed_document: { nodes: [], links: [] } };
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : [{ slot: 0, state: { ...loaded, record } }]));
+  render(<Patches />);
+  expect((await screen.findByRole('button', { name: 'Bypass Gain' }) as HTMLButtonElement).disabled).toBe(true);
+});
 test('clears a transient library error after polling recovers', async () => {
   let failed = true;
   invoke.mockImplementation((command: string) => command === 'teia_library'

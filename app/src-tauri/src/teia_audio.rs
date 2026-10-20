@@ -22,6 +22,143 @@ pub struct Telemetry {
     pub alive: AtomicBool,
     pub values: [AtomicU64; 2048],
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn off_and_passthrough_freeze_dsp_and_resume_with_latest_parameter() {
+        let prepared: crate::teia::Prepared = serde_json::from_value(serde_json::json!({
+            "profile":"native-scalar-v1", "layout":"pause-test", "diagnostics":[], "parameters":[],
+            "program":{"version":1,"values":[0.5],"ops":[{"opcode":0,"out":0,"a":0},{"opcode":5,"a":0,"b":0},{"opcode":5,"a":0,"b":1}]}
+        })).unwrap();
+        let program = crate::teia::validate_prepared(&prepared, 1).unwrap();
+        let instance =
+            Instance::new(&program, crate::sample_rate::get() as f64, PRODUCER_FRAMES).unwrap();
+        let (mut ports, mut driver) = channel();
+        driver.silent_bypass = true;
+        ports
+            .commands
+            .push(Command {
+                id: 1,
+                action: Action::Install {
+                    ticket: 0,
+                    live: Box::new(Live {
+                        instance,
+                        generation: 1,
+                        values: vec![0.5],
+                    }),
+                },
+            })
+            .ok()
+            .unwrap();
+        driver.commands();
+        let mut block = [Frame {
+            samples: [0.2, -0.3],
+            master_bpm: 120.,
+            ..Frame::default()
+        }; PRODUCER_FRAMES];
+        driver.process(&mut block);
+        let rendered = driver
+            .live
+            .as_ref()
+            .unwrap()
+            .instance
+            .feedback()
+            .rendered_frames;
+        for passthrough in [false, true] {
+            ports
+                .commands
+                .push(Command {
+                    id: 2,
+                    action: if passthrough {
+                        Action::Passthrough(true)
+                    } else {
+                        Action::Bypass(true)
+                    },
+                })
+                .ok()
+                .unwrap();
+            driver.commands();
+            for i in 0..300 {
+                ports
+                    .commands
+                    .push(Command {
+                        id: 3,
+                        action: Action::Values {
+                            generation: 1,
+                            ticket: 0,
+                            values: vec![ControlEvent {
+                                offset: 0,
+                                value_index: 0,
+                                value: i as f64 / 1000.,
+                                generation: 1,
+                            }]
+                            .into_boxed_slice(),
+                        },
+                    })
+                    .ok()
+                    .unwrap();
+                driver.commands();
+                block.fill(Frame {
+                    samples: [0.2, -0.3],
+                    master_bpm: 120.,
+                    ..Frame::default()
+                });
+                driver.process(&mut block);
+                while ports.acks.pop().is_ok() {}
+                while ports.retired.pop().is_ok() {}
+            }
+            assert_eq!(
+                driver
+                    .live
+                    .as_ref()
+                    .unwrap()
+                    .instance
+                    .feedback()
+                    .rendered_frames,
+                rendered
+            );
+            assert_eq!(
+                block[127].samples,
+                if passthrough { [0.2, -0.3] } else { [0.; 2] }
+            );
+            ports
+                .commands
+                .push(Command {
+                    id: 4,
+                    action: Action::Bypass(false),
+                })
+                .ok()
+                .unwrap();
+            driver.commands();
+        }
+        ports
+            .commands
+            .push(Command {
+                id: 5,
+                action: Action::Passthrough(false),
+            })
+            .ok()
+            .unwrap();
+        driver.commands();
+        for _ in 0..4 {
+            driver.process(&mut block);
+        }
+        assert!(
+            driver
+                .live
+                .as_ref()
+                .unwrap()
+                .instance
+                .feedback()
+                .rendered_frames
+                > rendered
+        );
+        assert!((block[127].samples[0] - 0.299).abs() < 1e-6);
+        assert_eq!(driver.telemetry.failures.load(SeqCst), 0);
+    }
+}
 impl Default for Telemetry {
     fn default() -> Self {
         Self {
@@ -57,6 +194,7 @@ pub enum Action {
         values: Box<[ControlEvent]>,
     },
     Bypass(bool),
+    Passthrough(bool),
     Clock(bool),
     Reset(u64),
     Remove,
@@ -100,6 +238,7 @@ pub struct Driver {
     pub telemetry: Arc<Telemetry>,
     live: Option<Box<Live>>,
     bypass: bool,
+    passthrough: bool,
     transition: usize,
     from: [f32; 2],
     last: [f32; 2],
@@ -135,6 +274,7 @@ pub fn channel() -> (Ports, Driver) {
             telemetry,
             live: None,
             bypass: false,
+            passthrough: false,
             transition: 0,
             from: [0.; 2],
             last: [0.; 2],
@@ -203,6 +343,7 @@ impl Driver {
                     self.midi.host.muted.store(false, SeqCst);
                     self.midi.host.invalidate();
                     self.previous = None;
+                    self.staged_len = 0;
                     self.from = self.last;
                     self.transition = crate::sample_rate::fine_frames();
                     self.midi_overflows = 0;
@@ -223,8 +364,16 @@ impl Driver {
                     let _ = live;
                     // Controls execute before sample zero of the next full block.
                     for value in values.iter() {
-                        self.staged[self.staged_len] = *value;
-                        self.staged_len += 1;
+                        // Keep the latest value per parameter while DSP is paused.
+                        if let Some(staged) = self.staged[..self.staged_len]
+                            .iter_mut()
+                            .find(|staged| staged.value_index == value.value_index)
+                        {
+                            *staged = *value;
+                        } else {
+                            self.staged[self.staged_len] = *value;
+                            self.staged_len += 1;
+                        }
                         self.telemetry.values[value.value_index]
                             .store(value.value.to_bits(), SeqCst);
                     }
@@ -242,6 +391,12 @@ impl Driver {
             Action::Bypass(bypass) => {
                 self.midi.host.invalidate();
                 self.bypass = bypass;
+                self.from = self.last;
+                self.transition = crate::sample_rate::fine_frames();
+            }
+            Action::Passthrough(passthrough) => {
+                self.midi.host.invalidate();
+                self.passthrough = passthrough;
                 self.from = self.last;
                 self.transition = crate::sample_rate::fine_frames();
             }
@@ -310,6 +465,16 @@ impl Driver {
         }
         self.facilities
             .boundary(self.live.as_mut().map(|l| &mut l.instance));
+        if self.bypass || self.passthrough {
+            // Service control/editor requests without advancing the DSP, its clock,
+            // observers or input buffers. Parameter updates wait for reactivation.
+            self.previous = None;
+            self.midi.discard_input();
+            self.telemetry.timeline_running.store(false, SeqCst);
+            self.telemetry.peak.store(0f64.to_bits(), SeqCst);
+            self.finish_block(block, routed, false);
+            return;
+        }
         for (i, frame) in block.iter().enumerate() {
             for c in 0..2 {
                 self.input[c][i] = frame.samples[c];
@@ -435,7 +600,10 @@ impl Driver {
             };
             valid = result.is_ok();
             if let Ok(count) = result {
-                if !self.bypass && self.midi.host.generation.load(SeqCst) == live.generation {
+                if !self.bypass
+                    && !self.passthrough
+                    && self.midi.host.generation.load(SeqCst) == live.generation
+                {
                     for event in self.midi_output[..count].iter().copied() {
                         self.midi.output(crate::teia_midi::Output {
                             epoch: midi_epoch,
@@ -476,11 +644,29 @@ impl Driver {
                 .store((live.instance.feedback().peak as f64).to_bits(), SeqCst);
         }
         self.staged_len = 0;
+        self.finish_block(block, routed, valid);
+    }
+    fn finish_block(
+        &mut self,
+        block: &mut [Frame; PRODUCER_FRAMES],
+        routed: Option<&[[[f32; PRODUCER_FRAMES]; 2]]>,
+        valid: bool,
+    ) {
         if let Some(ack) = self.pending_ack.take() {
             let _ = self.acks.push(ack);
         }
         for (i, frame) in block.iter_mut().enumerate() {
-            let target = if valid && !self.bypass {
+            let target = if self.bypass && self.silent_bypass {
+                [0.; 2]
+            } else if self.passthrough && !self.bypass {
+                // All exposed stereo inputs feed the patch's existing audio output.
+                // Sum before the final safety clamp, preserving left/right channels.
+                routed.map_or(frame.samples, |inputs| {
+                    inputs.iter().fold([0.; 2], |sum, input| {
+                        [sum[0] + input[0][i], sum[1] + input[1][i]]
+                    })
+                })
+            } else if valid && !self.bypass {
                 [self.output[0][i], self.output[1][i]]
             } else {
                 if self.silent_bypass {

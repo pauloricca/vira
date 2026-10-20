@@ -27,6 +27,15 @@ pub struct Note {
     pub degree: u8,
     pub octave: i8,
     pub velocity: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PercussionRow {
+    pub id: String,
+    pub name: String,
+    pub note: u8,
+    pub channel: Option<u8>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +60,8 @@ pub struct Pattern {
     pub quantum: u8,
     pub compensation: Option<f64>,
     pub notes: Vec<Note>,
+    #[serde(default)]
+    pub rows: Vec<PercussionRow>,
     #[serde(skip)]
     pub destination: Option<Destination>,
     #[serde(skip)]
@@ -76,7 +87,25 @@ impl Pattern {
             steps as f64 / self.step_division as f64
         })
     }
+    fn note_channel(&self, n: &Note) -> u8 {
+        if self.kind == "percussion" {
+            self.rows
+                .iter()
+                .find(|r| Some(&r.id) == n.row.as_ref())
+                .and_then(|r| r.channel)
+                .unwrap_or(self.channel)
+        } else {
+            self.channel
+        }
+    }
     fn pitch(&self, n: &Note) -> u8 {
+        if self.kind == "percussion" {
+            return self
+                .rows
+                .iter()
+                .find(|r| Some(&r.id) == n.row.as_ref())
+                .map_or(0, |r| r.note);
+        }
         (12 * (self.octave as i16 + 1 + n.octave as i16)
             + self.key as i16
             + SCALES[self.scale][n.degree as usize - 1]) as u8
@@ -90,7 +119,7 @@ impl Pattern {
             "Invalid pattern name or ID"
         );
         ensure!(
-            self.kind == "melodic" && self.mode == "relative",
+            ["melodic", "percussion"].contains(&self.kind.as_str()) && self.mode == "relative",
             "Unsupported pattern type"
         );
         ensure!(
@@ -111,6 +140,20 @@ impl Pattern {
             "Compensation must be 0–100 ms"
         );
         ensure!(self.notes.len() <= 1024, "At most 1024 notes per pattern");
+        ensure!(self.rows.len() <= 128, "At most 128 percussion rows");
+        let mut row_ids = HashSet::new();
+        for row in &self.rows {
+            ensure!(
+                row_ids.insert(&row.id)
+                    && !row.id.is_empty()
+                    && row.id.len() <= 100
+                    && !row.name.trim().is_empty()
+                    && row.name.len() <= 200
+                    && row.note <= 127
+                    && row.channel.is_none_or(|ch| (1..=16).contains(&ch)),
+                "Invalid percussion row"
+            );
+        }
         let mut ids = HashSet::new();
         for n in &self.notes {
             ensure!(
@@ -127,6 +170,13 @@ impl Pattern {
                     && (1..=127).contains(&n.velocity),
                 "Invalid note"
             );
+            if self.kind == "percussion" {
+                ensure!(
+                    n.row.as_ref().is_some_and(|id| row_ids.contains(id)),
+                    "Missing percussion row"
+                );
+                continue;
+            }
             let pitch = 12 * (self.octave as i16 + 1 + n.octave as i16)
                 + self.key as i16
                 + SCALES[self.scale][n.degree as usize - 1];
@@ -174,7 +224,7 @@ struct Voice {
     start: Option<f64>,
     stop: Option<f64>,
     cursor: f64,
-    active: HashMap<String, u8>,
+    active: HashMap<String, (u8, u8)>,
     stop_sent: bool,
 }
 // A held note can survive an edit only if its scheduled note-off is unchanged.
@@ -184,6 +234,7 @@ fn keeps_held_note(old: &Pattern, new: &Pattern, id: &str) -> bool {
             new.notes.iter().find(|n| n.id == id).is_some_and(|b| {
                 a.beat == b.beat
                     && a.duration == b.duration
+                    && old.note_channel(a) == new.note_channel(b)
                     && pattern_routing::transform(old.pitch(a), &old.transformations)
                         == pattern_routing::transform(new.pitch(b), &new.transformations)
             })
@@ -204,6 +255,7 @@ struct State {
 pub struct Host {
     playing: AtomicBool,
     halt: AtomicBool,
+    master_running: AtomicBool,
     seq: AtomicU64,
     beat: AtomicU64,
     bpm: AtomicU64,
@@ -300,6 +352,7 @@ fn host() -> &'static Host {
         Host {
             playing: false.into(),
             halt: false.into(),
+            master_running: false.into(),
             seq: 0.into(),
             beat: 0.into(),
             bpm: 120_f64.to_bits().into(),
@@ -341,16 +394,17 @@ pub fn shutdown() {
     }
 }
 /// Single writer: Core Audio callback. No allocation, lock or device call.
-pub fn anchor(beat: f64, bpm: f64, ns: u64) {
+pub fn anchor(beat: f64, bpm: f64, running: bool, ns: u64) {
     if let Some(h) = HOST.get() {
         h.seq.fetch_add(1, SeqCst);
         h.beat.store(beat.to_bits(), SeqCst);
         h.bpm.store(bpm.to_bits(), SeqCst);
         h.ns.store(ns, SeqCst);
+        h.master_running.store(running, SeqCst);
         h.seq.fetch_add(1, SeqCst);
     }
 }
-fn clock(h: &Host) -> (f64, f64, u64) {
+fn clock(h: &Host) -> (f64, f64, u64, bool) {
     loop {
         let seq = h.seq.load(SeqCst);
         if seq % 2 != 0 {
@@ -360,6 +414,7 @@ fn clock(h: &Host) -> (f64, f64, u64) {
             f64::from_bits(h.beat.load(SeqCst)),
             f64::from_bits(h.bpm.load(SeqCst)),
             h.ns.load(SeqCst),
+            h.master_running.load(SeqCst),
         );
         if seq == h.seq.load(SeqCst) {
             return v;
@@ -378,7 +433,7 @@ pub fn state() -> Value {
     start();
     let h = host();
     let s = h.state.lock().unwrap();
-    let (beat, bpm, ns) = clock(h);
+    let (beat, bpm, ns, _) = clock(h);
     #[cfg(target_os = "macos")]
     let ready = ns != 0 && unsafe { crate::teia_midi::now_ns() }.saturating_sub(ns) < 100_000_000;
     #[cfg(not(target_os = "macos"))]
@@ -470,21 +525,10 @@ fn recovery_start(
         let elapsed = last_beat.unwrap() - v.start.unwrap();
         return beat - elapsed.rem_euclid(p.length_beats());
     }
-    // A clock reset restarts an already playing pattern without launch quantization.
-    // Allow the old MIDI horizon to drain and its note-offs to precede new ons.
-    // Share the restart time across routes, including compensated outputs.
-    let owner = p.owner.as_ref().unwrap_or(&p.id);
-    let compensation = bank
-        .patterns
-        .iter()
-        .filter(|route| route.owner.as_ref().unwrap_or(&route.id) == owner)
-        .map(|route| {
-            route
-                .compensation
-                .unwrap_or(*bank.output_compensation.get(&route.output).unwrap_or(&0.))
-        })
-        .fold(0., f64::max);
-    beat + (compensation + 6.) / 1000. * bpm / 60.
+    // Rejoin the master grid after a phase jump. Restarting at beat + a small
+    // delay gives the loop a permanent fractional-beat offset. The shared launch
+    // boundary also leaves enough scheduling lead for every destination.
+    launch_boundary(bank, p, beat, bpm)
 }
 #[derive(Debug)]
 struct Edge {
@@ -492,6 +536,7 @@ struct Edge {
     on: bool,
     id: String,
     pitch: u8,
+    channel: u8,
     velocity: u8,
 }
 fn edges(p: &Pattern, start: f64, from: f64, to: f64, stop: Option<f64>) -> Vec<Edge> {
@@ -516,6 +561,7 @@ fn edges(p: &Pattern, start: f64, from: f64, to: f64, stop: Option<f64>) -> Vec<
                         on: on_event,
                         id: n.id.clone(),
                         pitch,
+                        channel: p.note_channel(n),
                         velocity: n.velocity,
                     });
                 }
@@ -668,8 +714,8 @@ mod mac {
             Ok(())
         }
         fn finish(&mut self, p: &Pattern, v: &mut Voice, ns: u64) {
-            for (_, pitch) in v.active.drain() {
-                let _ = self.send(p, p.channel, pitch, 0, false, ns);
+            for (_, (channel, pitch)) in v.active.drain() {
+                let _ = self.send(p, channel, pitch, 0, false, ns);
             }
         }
         fn release(&mut self, p: &Pattern, v: &mut Voice, ns: u64) {
@@ -680,10 +726,10 @@ mod mac {
                 v.active.clear();
                 return;
             }
-            for (_, pitch) in v.active.drain() {
+            for (_, (channel, pitch)) in v.active.drain() {
                 let mut release = p.clone();
                 release.route = u16::MAX;
-                let _ = self.send(&release, p.channel, pitch, 0, false, ns);
+                let _ = self.send(&release, channel, pitch, 0, false, ns);
             }
         }
     }
@@ -808,17 +854,21 @@ mod mac {
         let mut previous_active = usize::MAX;
         let mut generations = Vec::new();
         let mut last_beat = None;
+        let mut sync = crate::midi_sync::Scheduler::default();
+        let mut sync_outputs = Vec::new();
+        let mut halted = false;
         let mut polls = 0;
         let mut available = HashSet::new();
         loop {
             let now = unsafe { crate::teia_midi::now_ns() };
-            let (base, bpm, anchor) = clock(h);
+            let (base, bpm, anchor, master_running) = clock(h);
             let ready = anchor != 0 && now.saturating_sub(anchor) < 100_000_000;
             let beat = base + (now as i128 - anchor as i128) as f64 / 1e9 * bpm / 60.;
             let mut s = h.state.lock().unwrap();
             if h.halt.load(SeqCst) {
                 live.clear(&mut ports, now + 6_000_000);
                 live_running = false;
+                halted = true;
                 for (id, mut v) in s.voices.drain() {
                     if let Some(p) = previous.patterns.iter().find(|p| p.id == id) {
                         ports.release(p, &mut v, now + 6_000_000);
@@ -860,8 +910,30 @@ mod mac {
             let revision = crate::instruments::revision();
             if revision != instrument_revision || !Arc::ptr_eq(&definition_source, &s.bank) {
                 resolved_source = Arc::new(crate::instruments::resolve(&s.bank));
+                sync_outputs = crate::instruments::list();
                 definition_source = s.bank.clone();
                 instrument_revision = revision;
+            }
+            for event in sync.tick(
+                &sync_outputs,
+                &available,
+                ready && master_running && !halted,
+                if master_running { beat } else { base },
+                bpm,
+                now,
+            ) {
+                crate::midi_live::Sink::raw(
+                    &mut ports,
+                    &Destination::Midi {
+                        output: event.output,
+                    },
+                    u16::MAX,
+                    &event.bytes,
+                    event.ns,
+                );
+            }
+            if !master_running {
+                halted = false;
             }
             let active = active_deck();
             let roots = if live_running {
@@ -969,8 +1041,8 @@ mod mac {
                                 .filter(|(id, _)| !keeps_held_note(old, new, id))
                                 .map(|(id, pitch)| (id.clone(), *pitch))
                                 .collect();
-                            for (id, pitch) in removed {
-                                let _ = ports.send(old, old.channel, pitch, 0, false, stamp);
+                            for (id, (channel, pitch)) in removed {
+                                let _ = ports.send(old, channel, pitch, 0, false, stamp);
                                 v.active.remove(&id);
                             }
                             continue;
@@ -1124,21 +1196,21 @@ mod mac {
                     let stamp = (anchor as f64 + (edge.beat - base) * 60. / bpm * 1e9 - comp * 1e6)
                         .max(now as f64) as u64;
                     if edge.on {
-                        v.active.insert(edge.id, edge.pitch);
+                        v.active.insert(edge.id, (edge.channel, edge.pitch));
                     } else if v.active.remove(&edge.id).is_none() {
                         continue;
                     }
                     if p.note_source && edge.on {
                         live.pattern_note(
                             p.owner.as_deref().unwrap_or(&p.id),
-                            p.channel,
+                            edge.channel,
                             edge.pitch,
                             edge.velocity,
                             stamp,
                         );
                     }
                     if let Err(e) =
-                        ports.send(p, p.channel, edge.pitch, edge.velocity, edge.on, stamp)
+                        ports.send(p, edge.channel, edge.pitch, edge.velocity, edge.on, stamp)
                     {
                         send_error = Some(e.to_string());
                         finished.push(p.id.clone());
@@ -1181,6 +1253,46 @@ mod tests {
     use super::*;
     fn pattern() -> Pattern {
         serde_json::from_value(json!({"id":"a","name":"Melody","kind":"melodic","mode":"relative","output":1,"channel":1,"bars":1,"grid":4,"key":0,"scale":0,"octave":4,"quantum":4,"compensation":null,"notes":[{"id":"n","beat":0.,"duration":4.,"degree":3,"octave":0,"velocity":100}]})).unwrap()
+    }
+    #[test]
+    fn percussion_rows_roundtrip_and_schedule_fixed_notes_and_channels() {
+        let mut p = pattern();
+        p.kind = "percussion".into();
+        p.rows = vec![PercussionRow {
+            id: "kick".into(),
+            name: "Kick".into(),
+            note: 36,
+            channel: Some(10),
+        }];
+        p.notes[0].row = Some("kick".into());
+        p.key = 11;
+        p.scale = 2;
+        p.channel = 3;
+        p.validate().unwrap();
+        let restored: Pattern = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert_eq!(restored, p);
+        let events = edges(&p, 0., -0.01, 4., None);
+        assert!(events.iter().all(|e| e.pitch == 36 && e.channel == 10));
+        assert!(events.iter().any(|e| !e.on));
+        let mut changed = p.clone();
+        changed.rows[0].channel = None;
+        assert_eq!(edges(&changed, 0., -0.01, 1., None)[0].channel, 3);
+        assert!(!keeps_held_note(&p, &changed, "n"));
+        changed = p.clone();
+        changed.rows[0].note = 38;
+        assert!(!keeps_held_note(&p, &changed, "n"));
+        changed.rows.clear();
+        assert!(changed.validate().is_err());
+        changed.notes.clear();
+        changed.validate().unwrap(); // Empty percussion patterns are valid.
+        changed = p.clone();
+        changed.rows[0].channel = Some(0);
+        assert!(changed.validate().is_err());
+        changed.rows[0].channel = Some(17);
+        assert!(changed.validate().is_err());
+        changed.rows[0].channel = None;
+        changed.rows[0].note = 128;
+        assert!(changed.validate().is_err());
     }
     #[test]
     fn step_lengths_loop_without_realigning_to_bars_and_validate() {
@@ -1255,6 +1367,7 @@ mod tests {
         let mut new = old.clone();
         new.name = "Edited".into();
         new.notes.push(Note {
+            row: None,
             id: "added".into(),
             beat: 2.,
             duration: 1.,
@@ -1334,7 +1447,7 @@ mod tests {
         assert_eq!(launch_boundary(&bank, &teia, 3.95, 120.), 8.);
     }
     #[test]
-    fn clock_reset_restarts_running_pattern_without_waiting_for_quantum() {
+    fn clock_reset_restarts_synced_pattern_on_master_boundary() {
         let p = pattern();
         let bank = Bank {
             patterns: vec![p.clone()],
@@ -1345,10 +1458,11 @@ mod tests {
             cursor: 12.1,
             ..Voice::default()
         };
-        // Both backward resets and forward jumps restart from the first note.
-        for beat in [0.03, 25.03] {
+        // Starting a deck or correcting its grid can jump the master phase.
+        // Both backward and forward jumps must retain beat/bar alignment.
+        for (beat, expected) in [(-1.3, 0.), (0.03, 4.), (25.03, 28.)] {
             let start = recovery_start(&bank, &p, &voice, Some(12.), beat, 120.);
-            assert!((start - beat - 0.012).abs() < 1e-9);
+            assert_eq!(start, expected);
             let events = edges(&p, start, start - 1e-8, start + 0.01, None);
             assert_eq!(events.len(), 1);
             assert!(events[0].on);
@@ -1384,6 +1498,35 @@ mod tests {
             start,
             recovery_start(&bank, &teia, &voice, Some(12.), 0.03, 120.)
         );
-        assert!((start - 0.062).abs() < 1e-9);
+        assert_eq!(start, 4.);
+        // Internal destinations need enough lead to reach the audio producer.
+        // Both routes skip a boundary that is too close for the slower route.
+        for route in [&p, &teia] {
+            assert_eq!(
+                recovery_start(&bank, route, &voice, Some(12.), 3.95, 120.),
+                8.
+            );
+        }
+    }
+    #[test]
+    fn clock_reset_respects_next_beat_quantisation_at_different_tempos() {
+        let mut p = pattern();
+        p.quantum = 1;
+        let bank = Bank {
+            patterns: vec![p.clone()],
+            ..Bank::default()
+        };
+        let voice = Voice {
+            start: Some(4.),
+            ..Voice::default()
+        };
+        for bpm in [60., 120., 180.] {
+            for (beat, expected) in [(-1.3, -1.), (0.03, 1.), (25.03, 26.)] {
+                assert_eq!(
+                    recovery_start(&bank, &p, &voice, Some(12.), beat, bpm),
+                    expected
+                );
+            }
+        }
     }
 }

@@ -1899,6 +1899,7 @@ fn native_output(
                                 crate::patterns::anchor(
                                     frame.global_beat,
                                     frame.master_bpm,
+                                    frame.master_running,
                                     playback_ns
                                         + index as u64 * 1_000_000_000
                                             / crate::sample_rate::get() as u64,
