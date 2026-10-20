@@ -14,6 +14,7 @@ import { useTempoDrag } from './tempoDrag';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RenderProbe } from './RenderProbe';
+import { LevelMeter, useMeterFeed } from './LevelMeter';
 import { Deck, Mixer, RollingWaveforms, TRACK_MIME, canLoadDeck, useDecks } from './Decks';
 import { TrackArtwork } from './artwork';
 import { waitForDeckLoads } from './loadPriority';
@@ -122,6 +123,7 @@ function Workspace() {
     return () => observer.disconnect();
   }, []);
   const decks = useDecks();
+  const meters = useMeterFeed(decks.audio.running);
   const tags = useTags();
   const [tempoEntry, setTempoEntry] = useState<string | null>(null);
   const masterTempoDragged = useRef(false);
@@ -668,6 +670,10 @@ function Workspace() {
         }} />}<span className="tempo-drag" onPointerDown={dragMasterTempo}>bpm</span>{decks.audio.drift_target != null && <small>DRIFT TO {decks.audio.drift_target === 0 ? 'A' : 'B'}</small>}</div>
         <MidiButton className="master-drift deck-1" aria-label="Drift master tempo to deck B; double-click to set instantly" title="Click to drift · double-click to set instantly" disabled={!decks.audio.decks[1].grid || decks.audio.decks[1].grid.bpm.toFixed(1) === (decks.audio.master_bpm ?? 120).toFixed(1)} onClick={event => driftOrSet(1, event.detail)} onDoubleClick={() => setFromDeck(1)}>→ {decks.audio.decks[1].grid?.bpm.toFixed(1) ?? '—'} B</MidiButton>
       </div>
+      <div className="header-master-meters" role="group" aria-label="Stereo master meters">
+        <span>L</span><LevelMeter meter={meters[2]} label="Master left level" horizontal />
+        <span>R</span><LevelMeter meter={meters[3]} label="Master right level" horizontal />
+      </div>
       <div className="output-volumes" role="group" aria-label="Output volumes">
         {(['master', 'cue'] as const).map(output => <label key={output}>
           <span>{output === 'master' ? 'MASTER' : 'CUE'}</span>
@@ -676,10 +682,10 @@ function Workspace() {
       </div>
     </header>
     {(patternsVisited || mappedPatterns) && <Patterns active={view === 'patterns'} />}
-    {(routingVisited || mappedRouting) && <Routing active={view === 'routing'} />}
+    {(routingVisited || mappedRouting) && <Routing active={view === 'routing'} audio={decks.audio} control={decks.control} />}
     <div className="midi-page-host" hidden={view !== 'decks'}>
     <RollingWaveforms audio={decks.audio} beats={beats} onZoomChange={setBeats} control={decks.control} onInteract={setActiveDeck} activeDeck={activeDeck} />
-    <Mixer audio={decks.audio} control={decks.control} showCrossfader={showCrossfader}
+    <Mixer audio={decks.audio} meters={meters} control={decks.control} showCrossfader={showCrossfader}
       deckA={<Deck otherPlaying={decks.audio.decks[1].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(0)} autoMode={decks.audio.auto_mode?.[0]} otherKey={soundingKeys[1]} state={decks.audio.decks[0]} running={decks.audio.running} loading={decks.loading[0]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[0])?.title} error={decks.errors[0]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 0} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[0].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[0].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[0].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[0].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[0].track?.track_id ?? '']} />}
       deckB={<Deck otherPlaying={decks.audio.decks[0].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(1)} autoMode={decks.audio.auto_mode?.[1]} otherKey={soundingKeys[0]} state={decks.audio.decks[1]} running={decks.audio.running} loading={decks.loading[1]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[1])?.title} error={decks.errors[1]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 1} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[1].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[1].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[1].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[1].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[1].track?.track_id ?? '']} />} />
     {(decks.audio.error || decks.pollError) && <p className="error" role="alert">{decks.audio.error || decks.pollError}</p>}

@@ -17,6 +17,7 @@ pub enum Kind {
     Fader,
     Crossfader,
     Cue,
+    CueSwitch,
     Output,
     Gain,
     Compressor,
@@ -42,6 +43,8 @@ pub struct Node {
     pub value: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_inputs: Option<Vec<PatchInput>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<[f32; 3]>,
 }
 impl Node {
     pub fn display_label(&self) -> &str {
@@ -86,6 +89,8 @@ pub struct Graph {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeValue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<[f32; 3]>,
     pub id: String,
     pub value: f32,
 }
@@ -109,10 +114,23 @@ impl Graph {
                 .find(|n| n.id == parameter.id)
                 .ok_or_else(|| anyhow::anyhow!("Routing node is not applied"))?;
             ensure!(
-                matches!(node.kind, Kind::Gain | Kind::Compressor | Kind::Oscillator),
+                matches!(
+                    node.kind,
+                    Kind::Gain
+                        | Kind::Compressor
+                        | Kind::Oscillator
+                        | Kind::Trim
+                        | Kind::Eq
+                        | Kind::Filter
+                        | Kind::Fader
+                        | Kind::CueSwitch
+                ),
                 "Node has no editable parameter"
             );
             node.value = parameter.value;
+            if parameter.eq.is_some() {
+                node.eq = parameter.eq;
+            }
         }
         for parameter in parameters.wires {
             let wire = self
@@ -151,20 +169,34 @@ impl Default for Graph {
                 ("eq", Kind::Eq),
                 ("filter", Kind::Filter),
                 ("fader", Kind::Fader),
+                ("cue-switch", Kind::CueSwitch),
             ];
             for (i, (name, kind)) in stages.iter().enumerate() {
                 nodes.push(Node {
                     custom_label: None,
                     patch_inputs: None,
+                    eq: None,
                     id: format!("{prefix}-{name}"),
                     kind: *kind,
                     deck: Some(d),
                     label: name.to_uppercase(),
-                    x: 40. + i as f32 * 170.,
-                    y: 80. + d as f32 * 250.,
+                    x: if i == 0 {
+                        if d == 0 {
+                            55.
+                        } else {
+                            715.
+                        }
+                    } else {
+                        300. + d as f32 * 185.
+                    },
+                    y: if i == 0 {
+                        100.
+                    } else {
+                        110. + (i - 1) as f32 * 64.
+                    },
                     value: 1.,
                 });
-                if i > 0 {
+                if i > 0 && *kind != Kind::CueSwitch {
                     wire(
                         &format!("{prefix}-{}", stages[i - 1].0),
                         &format!("{prefix}-{name}"),
@@ -179,19 +211,20 @@ impl Default for Graph {
             );
             wire(
                 &format!("{prefix}-filter"),
-                "cue",
-                if d == 0 { "A" } else { "B" },
+                &format!("{prefix}-cue-switch"),
+                "audio",
             );
+            wire(&format!("{prefix}-cue-switch"), "headphones", "audio");
         }
         for (id, kind, label, x, y) in [
-            ("mix", Kind::Crossfader, "Crossfader / mix", 940., 100.),
-            ("cue", Kind::Cue, "Cue mix", 940., 350.),
-            ("master", Kind::Output, "Master output", 1160., 100.),
-            ("headphones", Kind::Output, "Cue output", 1160., 350.),
+            ("mix", Kind::Crossfader, "Crossfader / mix", 300., 510.),
+            ("master", Kind::Output, "Master output", 300., 700.),
+            ("headphones", Kind::Output, "Cue output", 485., 700.),
         ] {
             nodes.push(Node {
                 custom_label: None,
                 patch_inputs: None,
+                eq: None,
                 id: id.into(),
                 kind,
                 deck: None,
@@ -202,7 +235,11 @@ impl Default for Graph {
             });
         }
         wire("mix", "master", "audio");
-        wire("cue", "headphones", "audio");
+        for send in &mut wires {
+            if send.to == "headphones" {
+                send.gain = 0.45;
+            }
+        }
         Self { nodes, wires }
     }
 }
@@ -268,7 +305,117 @@ impl Graph {
                 n.kind != Kind::Input || graph.wires.iter().any(|w| w.from == n.id || w.to == n.id)
             });
         }
+        for prefix in ["a", "b"] {
+            let id = format!("{prefix}-cue-switch");
+            if graph
+                .nodes
+                .iter()
+                .any(|n| n.id == format!("{prefix}-filter"))
+                && !graph.nodes.iter().any(|n| n.id == id)
+            {
+                let default = Graph::default();
+                graph
+                    .nodes
+                    .push(default.nodes.into_iter().find(|n| n.id == id).unwrap());
+                for w in &mut graph.wires {
+                    if w.from == format!("{prefix}-filter") && w.to == "cue" {
+                        w.from = id.clone();
+                    }
+                }
+                graph.wires.push(Wire {
+                    from: format!("{prefix}-filter"),
+                    output: "audio".into(),
+                    to: id,
+                    input: "audio".into(),
+                    gain: 1.,
+                });
+            }
+        }
+        graph.remove_legacy_cue_mix();
         Ok(graph)
+    }
+    /// Outputs sum their incoming cables, so flatten the former cue bus while
+    /// retaining its level and any user-edited sends or additional destinations.
+    fn remove_legacy_cue_mix(&mut self) {
+        let Some(bus) = self
+            .nodes
+            .iter()
+            .find(|n| n.id == "cue" && n.kind == Kind::Cue)
+            .cloned()
+        else {
+            return;
+        };
+        let incoming: Vec<_> = self
+            .wires
+            .iter()
+            .filter(|w| w.to == bus.id)
+            .cloned()
+            .collect();
+        let outgoing: Vec<_> = self
+            .wires
+            .iter()
+            .filter(|w| w.from == bus.id)
+            .cloned()
+            .collect();
+        self.nodes.retain(|n| n.id != bus.id);
+        self.wires.retain(|w| w.from != bus.id && w.to != bus.id);
+        for source in incoming {
+            for destination in &outgoing {
+                let gain = source.gain * 0.45 * destination.gain;
+                if let Some(existing) = self.wires.iter_mut().find(|w| {
+                    w.from == source.from
+                        && w.output == source.output
+                        && w.to == destination.to
+                        && w.input == destination.input
+                }) {
+                    existing.gain += gain;
+                } else {
+                    self.wires.push(Wire {
+                        from: source.from.clone(),
+                        output: source.output.clone(),
+                        to: destination.to.clone(),
+                        input: destination.input.clone(),
+                        gain,
+                    });
+                }
+            }
+        }
+        // Parallel legacy sends can sum above the cable's supported gain range.
+        // Preserve those uncommon levels using a gain processor rather than clipping.
+        let combined = std::mem::take(&mut self.wires);
+        for wire in combined {
+            if wire.gain <= 2. {
+                self.wires.push(wire);
+                continue;
+            }
+            let mut index = 0;
+            let id = loop {
+                let candidate = format!("cue-send-{index}");
+                if !self.nodes.iter().any(|n| n.id == candidate) {
+                    break candidate;
+                }
+                index += 1;
+            };
+            self.nodes.push(Node {
+                id: id.clone(),
+                kind: Kind::Gain,
+                label: "Cue send level".into(),
+                value: wire.gain,
+                ..bus.clone()
+            });
+            self.wires.push(Wire {
+                to: id.clone(),
+                input: "audio".into(),
+                gain: 1.,
+                ..wire.clone()
+            });
+            self.wires.push(Wire {
+                from: id,
+                output: "audio".into(),
+                gain: 1.,
+                ..wire
+            });
+        }
     }
     pub fn saved_value(&self) -> Result<serde_json::Value> {
         let mut value = serde_json::to_value(self)?;
@@ -285,6 +432,7 @@ impl Graph {
                         && n.deck == o.deck
                         && n.value == o.value
                         && n.patch_inputs == o.patch_inputs
+                        && n.eq == o.eq
                 })
             })
             && self.wires.iter().all(|w| other.wires.contains(w))
@@ -311,8 +459,15 @@ impl Graph {
                             && name.chars().count() <= 80)
                     && n.x.is_finite()
                     && n.y.is_finite()
-                    && n.value.is_finite(),
+                    && n.value.is_finite()
+                    && n.eq.is_none_or(|bands| bands
+                        .iter()
+                        .all(|v| v.is_finite() && (0. ..=1.).contains(v))),
                 "Invalid node"
+            );
+            ensure!(
+                n.deck.is_none_or(|deck| deck < 2),
+                "Only A and B can own players and automatic transition controls"
             );
             ensure!(
                 n.patch_inputs.as_ref().is_none_or(|p| p.len() <= 32
@@ -344,6 +499,11 @@ impl Graph {
                                 | Kind::Oscillator
                                 | Kind::RingModulation
                                 | Kind::Patch
+                                | Kind::Trim
+                                | Kind::Eq
+                                | Kind::Filter
+                                | Kind::Fader
+                                | Kind::CueSwitch
                         )),
                 "Unsupported processing node"
             );
@@ -353,6 +513,10 @@ impl Graph {
                         n.id.starts_with("instrument-out-")
                             || default.nodes.iter().any(|b| b.id == n.id),
                     Kind::Patch => patch_slot(&n.id).is_some(),
+                    Kind::Trim if n.deck.is_none() => (-12. ..=12.).contains(&n.value),
+                    Kind::Filter if n.deck.is_none() => (-1. ..=1.).contains(&n.value),
+                    Kind::Fader | Kind::CueSwitch if n.deck.is_none() =>
+                        (0. ..=1.).contains(&n.value),
                     Kind::Gain => n.value >= 0.,
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
                     Kind::Oscillator => (20. ..=2000.).contains(&n.value),
@@ -461,35 +625,47 @@ impl Graph {
 }
 impl Plan {
     #[cfg(target_os = "macos")]
-    pub fn bind_inputs(
+    pub fn bind_inputs(&mut self, graph: &Graph, sources: &crate::audio_inputs::Inputs) {
+        self.bind_endpoints(
+            graph,
+            |id| sources.open(id),
+            |id| {
+                crate::instruments::audio(id, false)
+                    .and_then(crate::instrument_output::Output::open)
+            },
+        );
+    }
+    #[cfg(any(target_os = "macos", test))]
+    fn bind_endpoints(
         &mut self,
         graph: &Graph,
-        sources: &crate::audio_inputs::Inputs,
-    ) -> Result<()> {
-        let mut error = None;
+        mut input: impl FnMut(&str) -> Result<std::sync::Arc<crate::audio_inputs::Capture>>,
+        mut output: impl FnMut(&str) -> Result<crate::instrument_output::Output>,
+    ) {
+        // Hardware is optional when planning a session. Keep unavailable endpoints
+        // in the saved graph; unbound inputs render silence and outputs discard audio.
         let live = graph.live_nodes();
         for step in &mut self.steps {
             if step.node.kind == Kind::Output
                 && step.node.id.starts_with("instrument-out-")
                 && graph.wires.iter().any(|w| w.to == step.node.id)
             {
-                match crate::instruments::audio(&step.node.id, false)
-                    .and_then(crate::instrument_output::Output::open)
-                {
-                    Ok(send) => step.send = Some(send),
-                    Err(e) => error = Some(e),
-                }
+                step.send = output(&step.node.id)
+                    .map_err(|e| {
+                        eprintln!("Routing output {} unavailable: {e:#}", step.node.id);
+                        e
+                    })
+                    .ok();
             }
             if step.node.kind == Kind::Input && live[step.index] {
-                match sources.open(&step.node.id) {
-                    Ok(capture) => step.capture = Some(capture),
-                    Err(e) => {
-                        error = Some(e);
-                    }
-                }
+                step.capture = input(&step.node.id)
+                    .map_err(|e| {
+                        eprintln!("Routing input {} unavailable: {e:#}", step.node.id);
+                        e
+                    })
+                    .ok();
             }
         }
-        error.map_or(Ok(()), Err)
     }
     // Preserve processor history across edits; bounded swaps do not allocate or free.
     pub fn inherit(&mut self, previous: &mut Self) {
@@ -559,6 +735,78 @@ mod tests {
 
     use super::*;
     #[test]
+    fn offline_instrument_routes_save_and_leave_connected_inputs_audible() {
+        let mut graph = Graph::default();
+        graph.wires.clear();
+        for (id, kind) in [
+            ("instrument-in-offline", Kind::Input),
+            ("input-connected", Kind::Input),
+            ("instrument-out-offline", Kind::Output),
+        ] {
+            graph.nodes.push(Node {
+                id: id.into(),
+                kind,
+                deck: None,
+                label: id.into(),
+                x: 0.,
+                y: 0.,
+                value: 1.,
+                custom_label: None,
+                patch_inputs: None,
+                eq: None,
+            });
+        }
+        for (from, to) in [
+            ("instrument-in-offline", "headphones"),
+            ("input-connected", "master"),
+            ("input-connected", "instrument-out-offline"),
+        ] {
+            graph.wires.push(Wire {
+                from: from.into(),
+                to: to.into(),
+                output: "audio".into(),
+                input: "audio".into(),
+                gain: 1.,
+            });
+        }
+        let saved = graph.saved_value().unwrap();
+        let restored = Graph::from_saved(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut plan = restored.compile().unwrap();
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        plan.bind_endpoints(
+            &restored,
+            |id| {
+                inputs.push(id.to_owned());
+                if id == "input-connected" {
+                    Ok(crate::audio_inputs::test_capture(2048, [0.4, -0.2], 44100))
+                } else {
+                    anyhow::bail!("Input device disconnected")
+                }
+            },
+            |id| {
+                outputs.push(id.to_owned());
+                anyhow::bail!("Output device disconnected")
+            },
+        );
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(outputs, ["instrument-out-offline"]);
+        let mut block = [crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES];
+        plan.render_block(&mut block, &mut []);
+        assert!(block
+            .iter()
+            .all(|f| f.samples == [0.4, -0.2] && f.cue_samples == [0.; 2]));
+        assert_eq!(restored.saved_value().unwrap(), saved);
+        // Reapplying after connecting the instrument opens its existing route.
+        plan.bind_endpoints(
+            &restored,
+            |_| Ok(crate::audio_inputs::test_capture(2048, [0.1, 0.1], 44100)),
+            |_| anyhow::bail!("Output still disconnected"),
+        );
+        plan.render_block(&mut block, &mut []);
+        assert!(block.iter().all(|f| f.cue_samples == [0.1, 0.1]));
+    }
+    #[test]
     fn live_input_routes_through_gain_to_cue_without_leaking_to_master() {
         let mut graph = Graph::default();
         graph.wires.clear();
@@ -572,6 +820,7 @@ mod tests {
             value: 1.,
             custom_label: None,
             patch_inputs: None,
+            eq: None,
         });
         graph.nodes.push(Node {
             id: "input-gain".into(),
@@ -583,6 +832,7 @@ mod tests {
             value: 0.5,
             custom_label: None,
             patch_inputs: None,
+            eq: None,
         });
         for (from, to) in [("input-test", "input-gain"), ("input-gain", "headphones")] {
             graph.wires.push(Wire {
@@ -637,6 +887,7 @@ mod tests {
                 value: 1.,
                 custom_label: None,
                 patch_inputs: None,
+                eq: None,
             });
         }
         graph.wires.push(Wire {
@@ -675,6 +926,7 @@ mod tests {
         g.nodes.push(Node {
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             id: "comp".into(),
             kind: Kind::Compressor,
             deck: None,
@@ -719,6 +971,7 @@ mod tests {
         graph.nodes.push(Node {
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             id: "test-gain".into(),
             kind: Kind::Gain,
             deck: None,
@@ -744,6 +997,7 @@ mod tests {
         graph.nodes.push(Node {
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             id: "unused".into(),
             kind: Kind::Gain,
             deck: None,
@@ -785,6 +1039,7 @@ mod tests {
         graph.nodes.push(Node {
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             id: "comp".into(),
             kind: Kind::Compressor,
             deck: None,
@@ -930,8 +1185,25 @@ impl Step {
             Kind::Player => players[d],
             Kind::Input => [0.; 2],
             Kind::Trim | Kind::Eq | Kind::Filter => {
-                if self.dsp.settings != settings[d] {
-                    self.dsp.set(settings[d]);
+                let settings = if self.node.deck.is_some() {
+                    settings[d]
+                } else {
+                    Settings {
+                        trim: if self.node.kind == Kind::Trim {
+                            self.node.value
+                        } else {
+                            0.
+                        },
+                        eq: self.node.eq.unwrap_or([0.5; 3]),
+                        filter: if self.node.kind == Kind::Filter {
+                            self.node.value
+                        } else {
+                            0.
+                        },
+                    }
+                };
+                if self.dsp.settings != settings {
+                    self.dsp.set(settings);
                 }
                 self.dsp.process_stage(
                     input[0],
@@ -942,13 +1214,24 @@ impl Step {
                     },
                 )
             }
-            Kind::Fader => input[0].map(|v| v * gains[d]),
+            Kind::Fader => input[0].map(|v| {
+                v * if self.node.deck.is_some() {
+                    gains[d]
+                } else {
+                    self.node.value
+                }
+            }),
+            Kind::CueSwitch => input[0].map(|v| {
+                v * if self.node.deck.is_some() {
+                    cue[d]
+                } else {
+                    self.node.value
+                }
+            }),
             Kind::Crossfader => {
                 std::array::from_fn(|c| 0.45 * (input[0][c] * cross[0] + input[1][c] * cross[1]))
             }
-            Kind::Cue => {
-                std::array::from_fn(|c| 0.45 * (input[0][c] * cue[0] + input[1][c] * cue[1]))
-            }
+            Kind::Cue => std::array::from_fn(|c| 0.45 * (input[0][c] + input[1][c])),
             Kind::Output | Kind::Patch => input[0],
             Kind::Gain => input[0].map(|v| v * self.node.value),
             Kind::Compressor => {
@@ -989,6 +1272,7 @@ impl Graph {
             return;
         }
         self.nodes.push(Node {
+            eq: None,
             custom_label: None,
             patch_inputs: Some(Vec::new()),
             id: id.clone(),
@@ -1060,7 +1344,9 @@ impl Plan {
         for index in self.history.indices() {
             let output = self.history.output(index);
             for (i, frame) in block.iter().enumerate() {
-                let sample = if self.conventional {
+                let sample = if self.conventional && self.faders.contains(&index) {
+                    frame.deck_samples[if index == self.faders[0] { 0 } else { 1 }]
+                } else if self.conventional {
                     std::array::from_fn(|c| {
                         (frame.deck_samples[0][c] * frame.routing_cross[0]
                             + frame.deck_samples[1][c] * frame.routing_cross[1])
@@ -1318,7 +1604,13 @@ mod rolling_tests {
             plan.capture_waveforms(&block);
         }
         let snapshot = plan.history.snapshot(&["mix".into()], 0, 256);
-        let peak = snapshot["sources"][0]["peaks"][0][1].as_f64().unwrap();
+        let mix = snapshot["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "mix")
+            .unwrap();
+        let peak = mix["peaks"][0][1].as_f64().unwrap();
         assert!((peak - 0.45).abs() < 1e-6);
     }
     #[test]
@@ -1334,6 +1626,7 @@ mod rolling_tests {
             value: 440.,
             custom_label: None,
             patch_inputs: None,
+            eq: None,
         });
         graph.wires.push(Wire {
             from: "synth".into(),
@@ -1377,6 +1670,7 @@ mod parameter_tests {
             label: "Gain".into(),
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             x: 10.,
             y: 20.,
             value: 1.,
@@ -1387,6 +1681,7 @@ mod parameter_tests {
         let updated = graph
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    eq: None,
                     id: "test-gain".into(),
                     value: 3.,
                 }],
@@ -1404,6 +1699,7 @@ mod parameter_tests {
             .clone()
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    eq: None,
                     id: "draft-node".into(),
                     value: 2.
                 }],
@@ -1413,6 +1709,7 @@ mod parameter_tests {
         let invalid = original
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    eq: None,
                     id: "test-gain".into(),
                     value: -1.,
                 }],
@@ -1420,5 +1717,248 @@ mod parameter_tests {
             })
             .unwrap();
         assert!(invalid.compile().is_err());
+    }
+}
+
+#[cfg(test)]
+mod mixer_line_tests {
+    use super::*;
+    fn extra_line() -> Graph {
+        let mut graph = Graph::default();
+        let template = graph
+            .nodes
+            .iter()
+            .find(|n| n.id == "a-trim")
+            .unwrap()
+            .clone();
+        for (stage, kind, value) in [
+            ("trim", Kind::Trim, 0.),
+            ("eq", Kind::Eq, 0.),
+            ("filter", Kind::Filter, 0.),
+            ("fader", Kind::Fader, 0.),
+            ("cue-switch", Kind::CueSwitch, 1.),
+        ] {
+            graph.nodes.push(Node {
+                id: format!("line-2-{stage}"),
+                kind,
+                deck: None,
+                value,
+                eq: Some([0.5; 3]),
+                ..template.clone()
+            });
+        }
+        graph.wires.clear();
+        for (from, to, gain) in [
+            ("a-player", "line-2-trim", 1.),
+            ("line-2-trim", "line-2-eq", 1.),
+            ("line-2-eq", "line-2-filter", 1.),
+            ("line-2-filter", "line-2-fader", 1.),
+            ("line-2-filter", "line-2-cue-switch", 1.),
+            ("line-2-fader", "master", 0.45),
+            ("line-2-cue-switch", "headphones", 0.45),
+        ] {
+            graph.wires.push(Wire {
+                from: from.into(),
+                to: to.into(),
+                input: "audio".into(),
+                output: "audio".into(),
+                gain,
+            });
+        }
+        graph
+    }
+    #[test]
+    fn independent_cue_is_pre_fader_and_unaffected_by_ab_crossfader() {
+        let graph = extra_line();
+        let restored =
+            Graph::from_saved(&serde_json::to_vec(&graph.saved_value().unwrap()).unwrap()).unwrap();
+        assert_eq!(graph, restored);
+        let mut plan = graph.compile().unwrap();
+        assert!(!plan.conventional);
+        let (out, _) = plan.render(
+            [[0.2; 2], [0.; 2]],
+            [Settings::default(); 2],
+            [0.; 2],
+            [0.; 2],
+            [0.; 2],
+        );
+        assert_eq!(out[0], [0.; 2]);
+        assert!((out[1][0] - 0.09).abs() < 1e-6);
+        let changed = graph
+            .clone()
+            .with_parameters(Parameters {
+                nodes: vec![
+                    NodeValue {
+                        id: "line-2-fader".into(),
+                        value: 1.,
+                        eq: None,
+                    },
+                    NodeValue {
+                        id: "line-2-cue-switch".into(),
+                        value: 0.,
+                        eq: None,
+                    },
+                ],
+                wires: vec![],
+            })
+            .unwrap();
+        let (out, _) = changed.compile().unwrap().render(
+            [[0.2; 2], [0.; 2]],
+            [Settings::default(); 2],
+            [0.; 2],
+            [0.; 2],
+            [0.; 2],
+        );
+        assert!((out[0][0] - 0.09).abs() < 1e-6);
+        assert_eq!(out[1], [0.; 2]);
+        assert_eq!(
+            graph.nodes.iter().find(|n| n.id == "a-fader").unwrap(),
+            changed.nodes.iter().find(|n| n.id == "a-fader").unwrap()
+        );
+    }
+    #[test]
+    fn all_lines_are_waveform_options_even_with_no_master_connection() {
+        let graph = extra_line();
+        let snapshot = graph.compile().unwrap().history.snapshot(&[], 0, 0);
+        let sources = snapshot["sources"].as_array().unwrap();
+        for id in ["a-fader", "b-fader", "line-2-fader"] {
+            assert!(sources.iter().any(|s| s["id"] == id));
+        }
+        assert!(sources.iter().any(|s| s["label"] == "Mixer line C"));
+        assert!(!sources.iter().any(|s| s["id"] == "line-2-trim"));
+    }
+    #[test]
+    fn channel_eq_parameters_validate_each_band_and_preserve_topology() {
+        let graph = extra_line();
+        let changed = graph
+            .clone()
+            .with_parameters(Parameters {
+                nodes: vec![NodeValue {
+                    id: "line-2-eq".into(),
+                    value: 0.,
+                    eq: Some([0., 0.6, 0.8]),
+                }],
+                wires: vec![],
+            })
+            .unwrap();
+        assert!(changed.compile().is_ok());
+        assert_eq!(changed.wires, graph.wires);
+        let bad = graph
+            .with_parameters(Parameters {
+                nodes: vec![NodeValue {
+                    id: "line-2-eq".into(),
+                    value: 0.,
+                    eq: Some([0.5, f32::NAN, 0.5]),
+                }],
+                wires: vec![],
+            })
+            .unwrap();
+        assert!(bad.compile().is_err());
+    }
+}
+
+#[cfg(test)]
+mod direct_cue_tests {
+    use super::*;
+    fn legacy() -> Graph {
+        let mut graph = Graph::default();
+        graph.wires.retain(|w| w.to != "headphones");
+        let template = graph
+            .nodes
+            .iter()
+            .find(|n| n.id == "master")
+            .unwrap()
+            .clone();
+        graph.nodes.push(Node {
+            id: "cue".into(),
+            kind: Kind::Cue,
+            label: "Cue mix".into(),
+            ..template
+        });
+        for (from, to, input, gain) in [
+            ("a-cue-switch", "cue", "A", 1.4),
+            ("b-cue-switch", "cue", "B", 0.6),
+            ("cue", "headphones", "audio", 0.7),
+            ("cue", "master", "audio", 0.3),
+        ] {
+            graph.wires.push(Wire {
+                from: from.into(),
+                to: to.into(),
+                input: input.into(),
+                output: "audio".into(),
+                gain,
+            });
+        }
+        graph
+    }
+    #[test]
+    fn defaults_send_cue_switches_directly_to_output_at_existing_level() {
+        let graph = Graph::default();
+        assert!(!graph.nodes.iter().any(|n| n.kind == Kind::Cue));
+        for prefix in ["a", "b"] {
+            assert!(graph
+                .wires
+                .iter()
+                .any(|w| w.from == format!("{prefix}-cue-switch")
+                    && w.to == "headphones"
+                    && w.gain == 0.45));
+        }
+        let mut plan = graph.compile().unwrap();
+        assert!(plan.conventional);
+        let (out, _) = plan.render(
+            [[0.2; 2], [0.4; 2]],
+            [Settings::default(); 2],
+            [0.; 2],
+            [0.; 2],
+            [1., 0.5],
+        );
+        assert!((out[1][0] - 0.18).abs() < 1e-6);
+    }
+    #[test]
+    fn saved_cue_mix_migration_keeps_custom_levels_and_destinations() {
+        let mut old = legacy();
+        // Also cover sessions saved before per-line cue-switch nodes existed.
+        old.nodes.retain(|n| n.id != "a-cue-switch");
+        old.wires.retain(|w| w.to != "a-cue-switch");
+        for wire in &mut old.wires {
+            if wire.from == "a-cue-switch" {
+                wire.from = "a-filter".into();
+            }
+        }
+        let graph = Graph::from_saved(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert!(!graph.nodes.iter().any(|n| n.id == "cue"));
+        assert!(!graph.wires.iter().any(|w| w.from == "cue" || w.to == "cue"));
+        let (out, _) = graph.compile().unwrap().render(
+            [[0.2; 2], [0.4; 2]],
+            [Settings::default(); 2],
+            [0.; 2],
+            [0.; 2],
+            [1., 0.5],
+        );
+        assert!((out[1][0] - 0.126).abs() < 1e-6);
+        assert!((out[0][0] - 0.054).abs() < 1e-6);
+        let restored =
+            Graph::from_saved(&serde_json::to_vec(&graph.saved_value().unwrap()).unwrap()).unwrap();
+        assert_eq!(graph, restored);
+    }
+    #[test]
+    fn parallel_direct_and_legacy_sends_preserve_levels_above_cable_limit() {
+        let mut graph = legacy();
+        graph.wires.push(Wire {
+            from: "a-cue-switch".into(),
+            to: "headphones".into(),
+            output: "audio".into(),
+            input: "audio".into(),
+            gain: 2.,
+        });
+        let migrated = Graph::from_saved(&serde_json::to_vec(&graph).unwrap()).unwrap();
+        let (out, _) = migrated.compile().unwrap().render(
+            [[0.2; 2], [0.; 2]],
+            [Settings::default(); 2],
+            [0.; 2],
+            [0.; 2],
+            [1., 0.],
+        );
+        assert!((out[1][0] - 0.4882).abs() < 1e-6);
     }
 }

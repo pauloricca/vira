@@ -1,3 +1,5 @@
+import { useMixerGraph, mixerLines, lineId, lineColours, lineName } from './mixerLines';
+import type { CSSProperties } from 'react';
 import { MidiButton, MidiInput, MidiSelect, useMidiControl } from './MidiMapping';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -14,7 +16,7 @@ import { DisplayPosition, animate } from './transport';
 import { Grid, TimingRecord, dragGrid, gridForReferenceBeats, markers, shiftBarStart, validGrid } from './Timing';
 import { TrackArtwork } from './artwork';
 import { beginDeckLoad } from './loadPriority';
-import { LevelMeter, useMeterFeed } from './LevelMeter';
+import { LevelMeter } from './LevelMeter';
 import { PeakMeter } from './meter';
 import { KeySelector } from './KeySelector';
 
@@ -526,8 +528,8 @@ const dialNames = { GN: 'Gain', HI: 'High EQ', MD: 'Mid EQ', LO: 'Low EQ', FL: '
 type DialLabel = keyof typeof dialNames;
 
 function MixerDial({ label, state, running, control }: { label: DialLabel; state: DeckState; running: boolean; control: (deck: number, action: string, value?: number) => Promise<void> }) {
-  const deck = state.deck === 0 ? 'A' : 'B';
-  const enabled = Boolean(state.track) && running;
+  const deck = lineName(state.deck);
+  const enabled = (Boolean(state.track) || state.deck > 1) && running;
   const reported = label === 'GN' ? ((state.trim_db ?? 0) + 12) / 24 : label === 'FL' ? ((state.filter ?? 0) + 1) / 2 : (state.eq ?? [.5, .5, .5])[label === 'LO' ? 0 : label === 'MD' ? 1 : 2];
   const inputAt = useRef(-Infinity);
   const generation = useRef(state.generation);
@@ -565,7 +567,7 @@ function MixerDial({ label, state, running, control }: { label: DialLabel; state
 }
 
 function ChannelFader({ state, running, control, meter }: { state: DeckState; running: boolean; control: (deck: number, action: string, value?: number) => Promise<void>; meter: PeakMeter }) {
-  const name = state.deck === 0 ? 'A' : 'B';
+  const name = lineName(state.deck);
   const [gain, setGain] = useState(state.gain);
   const gainLabel = gain > 0 ? `${(20 * Math.log10(gain)).toFixed(1)} dB` : '−∞ dB';
   const inputAt = useRef(-Infinity);
@@ -574,15 +576,37 @@ function ChannelFader({ state, running, control, meter }: { state: DeckState; ru
     if (generation.current !== state.generation || performance.now() - inputAt.current > 500) setGain(state.gain);
     generation.current = state.generation;
   }, [state]);
-  return <div className={`mixer-channel deck-${state.deck}`} aria-label={`Deck ${name} mixer controls`}>
+  return <div className={`mixer-channel deck-${state.deck}`} style={{'--deck-color':lineColours[state.deck]} as CSSProperties} aria-label={`Deck ${name} mixer controls`}>
     <div className="mixer-eq" aria-label={`Gain, EQ and filter deck ${name}`}>{(['GN', 'HI', 'MD', 'LO', 'FL'] as const).map(label => <MixerDial key={label} label={label} state={state} running={running} control={control} />)}</div>
-    <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={!state.track || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
+    <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={(!state.track && state.deck < 2) || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
     <MidiButton className={`mixer-headphones${state.headphone_cue ? ' active' : ''}`} disabled={!running} aria-pressed={!!state.headphone_cue} aria-label={`Headphone cue deck ${name}`} title="Send this deck to cue headphones before the channel fader" onClick={() => void control(state.deck, 'headphone_cue', state.headphone_cue ? 0 : 1)}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v7H5a2 2 0 0 1-2-2v-3a2 2 0 0 0-1-2Zm16 0h-3v7h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-1-2Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg></MidiButton>
   </div>;
 }
 
-export function Mixer({ audio, control, showCrossfader = true, deckA, deckB }: { showCrossfader?: boolean; deckA?: ReactNode; deckB?: ReactNode; audio: AudioState; control: (deck: number, action: string, value?: number) => Promise<void> }) {
-  const meters = useMeterFeed(audio.running);
+export function Mixer({ audio, meters, control, showCrossfader = true, deckA, deckB }: { meters: readonly PeakMeter[]; showCrossfader?: boolean; deckA?: ReactNode; deckB?: ReactNode; audio: AudioState; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+  const lines = useMixerGraph();
+  const extra = mixerLines(lines.graph).filter(line => line > 1);
+  const extraMeters = useRef(Array.from({length:7}, () => new PeakMeter()));
+  const extraKey = extra.join(',');
+  const hasCentre = extra.length > 0 || showCrossfader || !!lines.error;
+  useEffect(() => {
+    if (!audio.running || !extraKey) { extraMeters.current.forEach(m => m.reset(performance.now())); return; }
+    let stopped = false, timer: ReturnType<typeof setTimeout>, after = 0;
+    async function poll() {
+      try {
+        const feed = await invoke<{output_frame:number;sources:{id:string;peaks:[number,number][]}[]}>('get_rolling_waveforms', {selected:after ? extraKey.split(',').map(i => lineId(Number(i),'fader')) : [],after});
+        if (!stopped && feed?.sources) {
+          for (const line of extraKey.split(',').map(Number)) {
+            const peaks = feed.sources.find(s => s.id === lineId(line,'fader'))?.peaks ?? [];
+            extraMeters.current[line].update(peaks.reduce((peak, p) => Math.max(peak,p[1]),0), performance.now());
+          }
+          after = Math.max(1,feed.output_frame - 240);
+        }
+      } catch { /* Meters decay if the feed stalls. */ }
+      if (!stopped) timer = setTimeout(() => void poll(),60);
+    }
+    void poll(); return () => {stopped = true; clearTimeout(timer);};
+  }, [audio.running, extraKey]);
   const [position, setPosition] = useState(audio.crossfader ?? 0);
   const inputAt = useRef(-Infinity);
   useEffect(() => {
@@ -594,9 +618,18 @@ export function Mixer({ audio, control, showCrossfader = true, deckA, deckB }: {
     setPosition(value);
     void control(0, 'crossfader', value);
   };
-  return <section className="decks" aria-label="Decks">
+  return <section className="decks" aria-label="Decks" style={{gridTemplateColumns:hasCentre ? `minmax(0,1fr) ${extra.length ? Math.max(showCrossfader ? 68 : 0, extra.length * 40 + (extra.length - 1) * 4) : 68}px minmax(0,1fr)` : 'minmax(0,1fr) minmax(0,1fr)'}}>
     <div className="deck-unit deck-0">{deckA}<ChannelFader state={audio.decks[0]} running={audio.running} control={control} meter={meters[0]} /></div>
-    <section className={`mixer${showCrossfader ? '' : ' mixer-no-crossfader'}`} aria-label="Mixer"><div className="mixer-master"><div className="stereo-meters" aria-label="Stereo master meters"><LevelMeter meter={meters[2]} label="Master left level" /><LevelMeter meter={meters[3]} label="Master right level" /></div><div className="mixer-stereo-labels"><span>L</span><span>R</span></div></div>{showCrossfader && <div className="mixer-crossfader"><MidiInput className="crossfader" type="range" min="-1" max="1" step=".01" value={position} disabled={!audio.running} aria-label="Crossfader" aria-valuetext={position === 0 ? 'Centre · equal power' : `${Math.round(Math.abs(position) * 100)}% toward deck ${position < 0 ? 'A' : 'B'}`} title="Equal power · double-click to centre" onChange={event => moveCrossfader(Number(event.target.value))} onDoubleClick={() => moveCrossfader(0)} /></div>}</section>
+    {hasCentre && <section className="mixer" aria-label="Mixer">{extra.length > 0 && <div className="extra-mixer-lines">{extra.map(line => {
+      const node = (kind:string) => lines.graph.nodes.find(n => n.id === lineId(line,kind));
+      const state: DeckState = {...empty(line),gain:node('fader')?.value ?? .8,trim_db:node('trim')?.value ?? 0,eq:node('eq')?.eq ?? [.5,.5,.5],filter:node('filter')?.value ?? 0,headphone_cue:!!node('cue_switch')?.value};
+      const controlLine = async (_deck:number, action:string, value = 0) => {
+        const kind = action === 'gain' ? 'fader' : action === 'headphone_cue' ? 'cue_switch' : action.startsWith('eq_') ? 'eq' : action;
+        if (kind === 'eq') lines.parameter(lineId(line,kind), current => { const eq = [...(current.eq ?? [.5,.5,.5])] as [number,number,number]; eq[action === 'eq_low' ? 0 : action === 'eq_mid' ? 1 : 2] = value; return {eq}; });
+        else lines.parameter(lineId(line,kind),{value});
+      };
+      return <div className="extra-mixer-line" key={line} style={{'--deck-color':lineColours[line]} as CSSProperties}><ChannelFader state={state} running={audio.running} control={controlLine} meter={extraMeters.current[line]} /></div>;
+    })}</div>}{lines.error && <span role="alert" className="routing-error">{lines.error}</span>}{showCrossfader && <div className="mixer-crossfader"><MidiInput className="crossfader" type="range" min="-1" max="1" step=".01" value={position} disabled={!audio.running} aria-label="Crossfader" aria-valuetext={position === 0 ? 'Centre · equal power' : `${Math.round(Math.abs(position) * 100)}% toward deck ${position < 0 ? 'A' : 'B'}`} title="Equal power · double-click to centre" onChange={event => moveCrossfader(Number(event.target.value))} onDoubleClick={() => moveCrossfader(0)} /></div>}</section>}
     <div className="deck-unit deck-1"><ChannelFader state={audio.decks[1]} running={audio.running} control={control} meter={meters[1]} />{deckB}</div>
   </section>;
 }

@@ -88,6 +88,7 @@ fn run_mode(seconds: u64, report: &Path, timing: bool, routing: bool) -> Result<
         graph.nodes.push(Node {
             custom_label: None,
             patch_inputs: None,
+            eq: None,
             id: "compressor".into(),
             kind: Kind::Compressor,
             deck: None,

@@ -135,6 +135,10 @@ h1 { font-size: 28px; letter-spacing: 5px; font-weight: 400; color: #bfc8d0; }
 .vertical-fader { writing-mode: vertical-lr; direction: rtl; width: 22px; height: 180px; accent-color: #b6c2c8 !important; }
 .level-meter { position: relative; overflow: hidden; width: 6px; height: 150px; background: repeating-linear-gradient(to top,#293b43 0,#293b43 5px,#121c21 6px,#121c21 8px); }
 .level-meter-fill { position: absolute; inset: 0; opacity: .82; background: repeating-linear-gradient(to top,transparent 0,transparent 6px,#121c21 6px,#121c21 8px), linear-gradient(to top,#62a3bd 0%,#8fb8c9 65%,#c9d8df 87%,#c66e65 100%); clip-path: inset(100% 0 0); }
+.header-master-meters { display: grid; grid-template-columns: 7px 88px; align-items: center; gap: 4px; flex-shrink: 0; }
+.header-master-meters > span { color: var(--muted); font-size: 8px; line-height: 6px; }
+.header-master-meters .level-meter-horizontal { width: 88px; height: 6px; background: repeating-linear-gradient(to right,#293b43 0,#293b43 3px,#121c21 3px,#121c21 4px); }
+.level-meter-horizontal .level-meter-fill { background: repeating-linear-gradient(to right,transparent 0,transparent 3px,#121c21 3px,#121c21 4px), linear-gradient(to right,#62a3bd 0%,#8fb8c9 65%,#c9d8df 87%,#c66e65 100%); clip-path: inset(0 100% 0 0); }
 .stereo-meters { display: flex; gap: 3px; }
 .mixer-channel output { font-size: 8px; color: #768e9a; }
 .crossfader { width: 100%; margin: 16px 0 4px; height: 16px; }
@@ -232,7 +236,7 @@ main { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; 
 .lower-panels.patches-hidden > .performance-slots { display: none; }
 .table-wrap { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
 .slots-empty { min-height: 0; }
-/* Each deck owns its channel strip; the narrow centre keeps master levels and crossfader. */
+/* Each deck owns its channel strip; the centre reserves room for more channels. */
 .mixer { display: flex; flex-direction: column; align-items: center; gap: 0; padding: 10px 7px 12px; }
 .mixer-channel { flex: 0 0 38px; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 4px; border: 1px solid var(--line); background: linear-gradient(120deg,#15212799,#0e191d99); display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .mixer-dial { position: relative; z-index: 1; width: 24px; height: 24px; color: var(--deck-color); cursor: ns-resize; touch-action: none; user-select: none; }
@@ -254,12 +258,7 @@ main { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; 
 .metered-fader .vertical-fader::-webkit-slider-thumb { width: 22px; height: 7px; margin-left: -9px; border-color: #c1dbe980; background: #aec9d65c; transition: background .12s, border-color .12s; }
 .metered-fader .vertical-fader::-moz-range-thumb { width: 22px; height: 7px; }
 .metered-fader .vertical-fader:hover:not(:disabled)::-webkit-slider-thumb,.metered-fader .vertical-fader:active:not(:disabled)::-webkit-slider-thumb { border-color: #edf8ff; background: #bcd6e3; }
-.mixer-master { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; align-items: center; color: #cbd8de; font-size: 11px; gap: 5px; }
-.mixer-master .stereo-meters { flex: 0 0 140px; height: 140px; min-height: 0; width: 20px; justify-content: center; gap: 6px; }
-.mixer-no-crossfader .mixer-master .stereo-meters { flex: 1 1 0; height: auto; }
-.mixer-master .level-meter { width: 5px; height: 100%; }
-.mixer-stereo-labels { width: 22px; display: flex; justify-content: space-around; font-size: 10px; }
-.mixer-crossfader { width: 68px; display: flex; align-items: center; padding-top: 8px; }
+.mixer-crossfader { width: 68px; display: flex; align-items: center; padding-top: 8px; margin-top: auto; }
 .mixer-crossfader .crossfader { width: 100%; margin: 0; }
 @media (max-width: 900px) { .decks { grid-template-columns: minmax(0,1fr) 84px minmax(0,1fr); } .mixer { grid-column: auto; grid-row: auto; min-height: 0; } }
 @media (max-width: 560px) { .decks { height: auto; flex: none; grid-template-columns: 1fr; } .deck-unit,.mixer { height: 218px; } .mixer { grid-row: 2; } }
@@ -601,3 +600,14 @@ html,body,#root,#root * { -webkit-user-select: none; user-select: none; -webkit-
 .deck-settings .timing-monitor:has(.timing-volume) label { flex-direction: row; justify-content: space-between; height: 24px; }
 .deck-settings input[type=range] { min-width: 40px; width: 50px; height: 14px; margin: 0; accent-color: var(--deck-color); }
 .deck-actions > [hidden] { display: none; }
+
+.extra-mixer-lines { display:flex; flex:1; gap:4px; min-height:0; }
+.extra-mixer-line { display:flex; flex-direction:column; min-height:0; width:40px; color:var(--deck-color); }
+.extra-mixer-line .mixer-channel { flex:1; width:100%; }
+.mixer:has(.extra-mixer-lines) { padding-top:0; }
+.mixer:has(.extra-mixer-lines) .mixer-crossfader { flex:none; padding-top:4px; }
+
+/* The centre is open space; only actual channel strips have a panel. */
+.decks > .mixer {background:none;border:0;box-shadow:none;padding:0;}
+.decks > .mixer .extra-mixer-lines {align-self:stretch;justify-content:center;}
+.decks > .mixer .extra-mixer-line .mixer-channel {background:linear-gradient(120deg,#15212799,#0e191d99);}

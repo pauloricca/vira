@@ -120,13 +120,13 @@ test('palette adds an effect without changing existing connections', async () =>
   expect(screen.getByRole('button', { name: /input sidechain/ })).toBeTruthy();
   expect(screen.getByRole('button', { name: /output dry/ })).toBeTruthy();
   const value = await applied();
-  expect(value.nodes.at(-1)).toMatchObject({ kind: 'compressor', x: 727.5, y: 440 });
+  expect(value.nodes.at(-1)).toMatchObject({ kind: 'compressor', x: 720, y: 440 });
   expect(value.wires).toEqual(graph.wires);
   expect(screen.queryByRole('combobox', { name: 'Insert into wire' })).toBeNull();
 });
 test('empty-space categories create an instrument without inserting a wire', async () => {
   await mount(); create('Sine instrument');
-  const value = await applied(); expect(value.nodes.at(-1)).toMatchObject({ kind: 'oscillator', x: 727.5, y: 440 }); expect(value.wires).toEqual(graph.wires);
+  const value = await applied(); expect(value.nodes.at(-1)).toMatchObject({ kind: 'oscillator', x: 720, y: 440 }); expect(value.wires).toEqual(graph.wires);
 });
 test('draft, selection and undo history survive navigating away and back', async () => {
   const view = await mount(); create();
@@ -367,7 +367,7 @@ test('loads a library patch into the shared session and places its audio node wi
   render(<Routing />); await screen.findByRole('button',{name:'a-eq output audio'});
   create('Gain'); fireEvent.doubleClick(await screen.findByRole('button',{name:'Saved synth'}));
   await screen.findByRole('button',{name:'patch-2 output audio'});
-  expect(document.querySelector('[data-node-id="patch-2"]')?.getAttribute('style')).toContain('left: 727.5px');
+  expect(document.querySelector('[data-node-id="patch-2"]')?.getAttribute('style')).toContain('left: 720px');
   expect(screen.getByRole('spinbutton',{name:/value$/})).toBeTruthy();
   expect(invoke).toHaveBeenCalledWith('patches_add',expect.objectContaining({name:'Saved synth.json',savedHash:'hash'}));
   expect(screen.queryByRole('menu')).toBeNull(); expect(document.querySelector('.routing-inspector')).toBeNull();
@@ -516,4 +516,61 @@ test('custom hardware names survive canonical instrument name updates and endpoi
   expect((field as HTMLInputElement).value).toBe('Bass synth');
   field.focus(); fireEvent.change(field, { target: { value: 'Lead synth' } }); fireEvent.blur(field);
   expect((await applied()).nodes.find(n => n.id === node.id)?.custom_label).toBe('Lead synth');
+});
+
+test('node dragging snaps to the dot grid and undo restores the prior grid position', async () => {
+  await mount(); create('Gain');
+  const node = document.querySelector<HTMLElement>('[data-node-id^="fx-"]')!;
+  const id = node.dataset.nodeId!;
+  const origin = {x:parseFloat(node.style.left),y:parseFloat(node.style.top)};
+  fireEvent.pointerDown(node.querySelector('.routing-node-title')!, {button:0,pointerId:9,clientX:400,clientY:400});
+  fireEvent.pointerMove(canvas(), {pointerId:9,clientX:413,clientY:427});
+  fireEvent.pointerUp(canvas(), {pointerId:9});
+  expect(node.style.left).toBe(`${origin.x + 20}px`);
+  expect(node.style.top).toBe(`${origin.y + 40}px`);
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  expect(node.style.left).toBe(`${origin.x}px`);
+  fireEvent.click(screen.getByRole('button',{name:'Redo'}));
+  const stored = (await applied()).nodes.find(n => n.id === id)!;
+  expect(stored.x).toBe(origin.x + 20); expect(stored.y).toBe(origin.y + 40);
+});
+
+test('box selection moves and deletes multiple nodes as single undoable edits', async () => {
+  const nodes: Graph['nodes'] = [{id:'fx-one',kind:'gain',deck:null,label:'One',x:800,y:120,value:1},{id:'fx-two',kind:'gain',deck:null,label:'Two',x:1040,y:180,value:1}];
+  const wire = {from:'fx-one',output:'audio',to:'fx-two',input:'audio',gain:1};
+  await mount({...graph,nodes:[...graph.nodes,...nodes],wires:[...graph.wires,wire]});
+  const p = (x:number,y:number) => ({button:0,pointerId:12,clientX:80+x*.8,clientY:200+y*.8});
+  fireEvent.pointerDown(canvas(),p(780,80)); fireEvent.pointerMove(canvas(),p(1240,380));
+  expect(screen.getByTestId('patching-marquee')).toBeTruthy();
+  fireEvent.pointerUp(canvas(),p(1240,380));
+  expect(screen.queryByTestId('patching-marquee')).toBeNull();
+  expect(screen.getByText('2 objects selected')).toBeTruthy();
+  const one = document.querySelector<HTMLElement>('[data-node-id="fx-one"]')!, two = document.querySelector<HTMLElement>('[data-node-id="fx-two"]')!;
+  fireEvent.pointerDown(one.querySelector('.routing-node-title')!,p(820,140));
+  fireEvent.pointerMove(canvas(),p(860,160)); fireEvent.pointerUp(canvas(),p(860,160));
+  expect(one.style.left).toBe('840px'); expect(one.style.top).toBe('140px');
+  expect(two.style.left).toBe('1080px'); expect(two.style.top).toBe('200px');
+  fireEvent.keyDown(window,{key:'Delete'});
+  expect(document.querySelector('[data-node-id="fx-one"]')).toBeNull(); expect(document.querySelector('[data-node-id="fx-two"]')).toBeNull();
+  expect(document.querySelectorAll('[data-wire]')).toHaveLength(graph.wires.length);
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  expect(document.querySelector<HTMLElement>('[data-node-id="fx-one"]')!.style.left).toBe('840px');
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  expect(document.querySelector<HTMLElement>('[data-node-id="fx-one"]')!.style.left).toBe('800px');
+  expect(document.querySelector<HTMLElement>('[data-node-id="fx-two"]')!.style.left).toBe('1040px');
+});
+
+test('a partial box hit selects and removes a whole added mixer line; Escape cancels a new box', async () => {
+  const {lineStages,lineStagePosition,lineId} = await import('./mixerLines');
+  const nodes: Graph['nodes'] = lineStages.map(kind => ({id:lineId(2,kind),kind,deck:null,label:kind,value:0,...lineStagePosition(kind,{x:800,y:120})}));
+  await mount({...graph,nodes:[...graph.nodes,...nodes]});
+  const p = (x:number,y:number) => ({button:0,pointerId:13,clientX:80+x*.8,clientY:200+y*.8});
+  fireEvent.pointerDown(canvas(),p(760,100));fireEvent.pointerMove(canvas(),p(820,150));fireEvent.pointerUp(canvas(),p(820,150));
+  expect(document.querySelectorAll('[data-node-id^="line-2-"].selected')).toHaveLength(5);
+  fireEvent.keyDown(window,{key:'Delete'});
+  expect(document.querySelectorAll('[data-node-id^="line-2-"]')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  expect(document.querySelectorAll('[data-node-id^="line-2-"]')).toHaveLength(5);
+  fireEvent.pointerDown(canvas(),p(1100,450));fireEvent.pointerMove(canvas(),p(700,80));fireEvent.keyDown(window,{key:'Escape'});
+  expect(screen.queryByTestId('patching-marquee')).toBeNull();expect(document.querySelectorAll('.routing-node.selected')).toHaveLength(0);
 });

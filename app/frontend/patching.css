@@ -17,7 +17,7 @@
 .routing-error { color:#ffb496; margin:0; font-size:12px; }
 .routing-body { display:flex; flex:1; min-height:0; border:1px solid #2a353d; border-radius:0; overflow:hidden; }
 .routing-scroll { flex:1; overflow:auto; }
-.routing-canvas { position:relative; background-color:#121a20; background-image:radial-gradient(#35424c .7px,transparent .7px); background-size:20px 20px; touch-action:none; }
+.routing-canvas { position:relative; background-color:#121a20; background-image:radial-gradient(#35424c .7px,transparent .7px); background-size:20px 20px; background-position:-10px -10px; touch-action:none; }
 .routing-group { position:absolute; left:20px; width:890px; height:215px; background:#16232b88; border:1px solid #344c5b; border-radius:0; pointer-events:none; }
 .routing-group.deck-1 { background:#2b211688; border-color:#594432; }
 .routing-group button { pointer-events:auto; margin:5px; padding:4px 8px; }
@@ -27,7 +27,7 @@
 .routing-wire-hit { stroke:transparent; stroke-width:16; fill:none; pointer-events:stroke; cursor:pointer; }
 .routing-wires .selected .routing-wire { stroke:#eddb8a; stroke-width:3; }
 .routing-wire.preview { stroke:#eddb8a; stroke-dasharray:5 4; }
-.routing-node { position:absolute; width:var(--patch-node-width); min-height:115px; background:#222c34; border:1px solid #596d7b; border-radius:0; box-shadow:none; font-size:11px; }
+.routing-node { position:absolute; width:var(--patch-node-width); min-height:120px;box-sizing:border-box; background:#222c34; border:1px solid #596d7b; border-radius:0; box-shadow:none; font-size:11px; }
 .routing-node.deck-0 { border-color:#417798; } .routing-node.deck-1 { border-color:#b37c44; }
 .routing-node-title { height:40px; padding:6px 10px; cursor:grab; border-bottom:1px solid #3a4954; box-sizing:border-box; font-weight:600; }
 .routing-node-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -69,3 +69,27 @@
 
 .patching-palette section button {touch-action:none; user-select:none; -webkit-user-select:none;}
 .patching-drag-preview {position:fixed; z-index:50; padding:8px 12px; border:1px solid #67b9cf; background:#222c34; color:#dce6eb; font-size:12px; pointer-events:none;}
+
+/* Channel strips contain a compact vertical signal chain. */
+.routing-mixer-line { position:absolute; width:220px;box-sizing:border-box; border:1px solid var(--line-colour); background:color-mix(in srgb,var(--line-colour) 7%,#121a20); border-radius:6px; }
+.routing-line-heading { height:40px; display:flex; align-items:center; gap:10px; padding:0 12px; cursor:grab; color:var(--line-colour); }
+.routing-line-heading strong { font-size:19px; }
+.routing-line-heading span { font-size:9px; letter-spacing:1px; }
+.routing-page .routing-line-heading button { margin-left:auto; padding:0 4px; color:var(--line-colour); background:transparent; border:0; }
+.routing-node.routing-line-node { height:40px; min-height:40px; border-color:var(--line-colour); background:#1d2830; border-radius:3px; }
+.routing-line-node .routing-node-title { height:40px; padding:11px 10px; border:0; }
+.routing-line-node .routing-node-title small,.routing-line-node .routing-port span { display:none; }
+.routing-line-node .routing-ports { height:0 !important; }
+.routing-page .routing-line-node .routing-port { width:24px; height:24px; justify-content:center; right:auto; }
+.routing-line-node .routing-port i { border-color:var(--line-colour); width:7px; height:7px; }
+.routing-page .routing-cue-toggle { position:absolute; top:21px; right:25px; padding:1px 4px; font-size:9px; color:#92a0a9; }
+.routing-page .routing-cue-toggle[aria-pressed=true] { color:#0c1820; background:var(--line-colour); border-color:var(--line-colour); }
+
+.routing-page .routing-player-right .routing-port.output {left:-12px;right:auto;width:24px;justify-content:center;}
+.routing-player-right .routing-port.output span {position:absolute;left:24px;}
+
+.routing-line-node.stage-cue_switch .routing-node-title {padding:3px 8px;}
+.routing-line-node.stage-cue_switch .routing-node-name {font-size:9px;}
+
+.patching-marquee {position:absolute;z-index:4;pointer-events:none;border:1px solid #93cbd5;background:#93cbd51c;}
+.routing-mixer-line.selected {border-color:#eddb8a;box-shadow:0 0 0 2px #eddb8a66;}

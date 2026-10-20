@@ -735,7 +735,7 @@ impl EngineHandle {
     pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
         let mut plan = graph.compile()?;
         #[cfg(target_os = "macos")]
-        plan.bind_inputs(&graph, &self.shared.inputs)?;
+        plan.bind_inputs(&graph, &self.shared.inputs);
         let mut current = self.graph.lock().unwrap();
         if !graph.same_audio(&current)
             || graph.nodes.iter().any(|n| {
@@ -1717,7 +1717,7 @@ fn native_output(
     let mut initial_plan = initial_graph.compile()?;
     initial_plan.history = history;
     // A disconnected saved input should not prevent deck playback on launch.
-    let _ = initial_plan.bind_inputs(&initial_graph, &shared.inputs);
+    initial_plan.bind_inputs(&initial_graph, &shared.inputs);
     let worker = thread::spawn(move || -> Result<()> {
         for driver in &drivers {
             driver.telemetry.alive.store(true, Release);

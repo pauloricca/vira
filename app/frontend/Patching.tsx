@@ -3,7 +3,12 @@ import type { CSSProperties, HTMLAttributes, PointerEventHandler, ReactNode } fr
 import './patching.css';
 
 // Geometry and CSS consume the same node dimensions in both patching workspaces.
-export const PATCH_NODE_WIDTH = 145;
+export const PATCH_GRID = 20;
+export const PATCH_NODE_WIDTH = 160;
+export const snapPatch = (value: number) => Math.round(value / PATCH_GRID) * PATCH_GRID;
+export const patchSize = (value: number) => Math.ceil(value / PATCH_GRID) * PATCH_GRID;
+export const snapPatchPoint = (point: PatchPoint): PatchPoint => ({x:snapPatch(point.x),y:snapPatch(point.y)});
+export function snapPatchGraph<N extends PatchPoint, G extends {nodes:N[]}>(graph:G):G { return {...graph,nodes:graph.nodes.map(node => ({...node,...snapPatchPoint(node)}))}; }
 export const patchPortTop = (row: number) => 44 + row * 26;
 export const patchPortPoint = (node: { x: number; y: number }, row: number, output: boolean) => ({ x: node.x + (output ? PATCH_NODE_WIDTH : 0), y: node.y + patchPortTop(row) + 12 });
 
@@ -48,7 +53,7 @@ export function NodePalette({ categories, actions, onAdd, disabled }: { categori
 export function nodePlacement(canvas: HTMLElement, width: number, zoom: number, event?: {clientX:number;clientY:number}): PatchPoint {
   const rect = canvas.getBoundingClientRect(), viewport = canvas.closest('.routing-scroll')!.getBoundingClientRect();
   const scale = rect.width > 0 ? rect.width / width : zoom;
-  return {x: Math.max(10, Math.min(Math.min(1500, width - 160), ((event?.clientX ?? (viewport.left + viewport.width / 2)) - rect.left) / scale - (event ? 0 : PATCH_NODE_WIDTH / 2))), y: Math.max(10, Math.min(900, ((event?.clientY ?? (viewport.top + viewport.height / 2)) - rect.top) / scale - (event ? 0 : 60)))};
+  return snapPatchPoint({x: Math.max(20, Math.min(Math.min(1500, width - 160), ((event?.clientX ?? (viewport.left + viewport.width / 2)) - rect.left) / scale - (event ? 0 : PATCH_NODE_WIDTH / 2))), y: Math.max(20, Math.min(900, ((event?.clientY ?? (viewport.top + viewport.height / 2)) - rect.top) / scale - (event ? 0 : 60)))});
 }
 export function paletteDrop(event: import('react').DragEvent, add: (id:string, point:PatchPoint) => void, canvas: HTMLElement, width:number, zoom:number) {
   const id = event.dataTransfer.getData(NODE_MIME);
@@ -71,4 +76,23 @@ export function usePatchingKeys(active: boolean, actions: {cancel:()=>void; remo
     if (actions.finish) window.addEventListener('pointerup', actions.finish);
     return () => {window.removeEventListener('keydown', key); window.removeEventListener('blur', actions.cancel); if (actions.finish) window.removeEventListener('pointerup', actions.finish);};
   }, [active, disabled, actions.cancel, actions.remove, actions.undo, actions.redo, actions.finish]);
+}
+
+export type PatchRect = PatchPoint & {width:number;height:number};
+export type PatchMarquee = {pointer:number;start:PatchPoint;end:PatchPoint};
+export const patchSelectionRect = (start:PatchPoint,end:PatchPoint):PatchRect => ({x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)});
+export const patchIntersects = (a:PatchRect,b:PatchRect) => a.x <= b.x+b.width && a.x+a.width >= b.x && a.y <= b.y+b.height && a.y+a.height >= b.y;
+export function PatchSelectionBox({box}:{box:PatchMarquee|null}) {
+  if (!box) return null;
+  const rect = patchSelectionRect(box.start,box.end);
+  return <div className="patching-marquee" data-testid="patching-marquee" style={{left:rect.x,top:rect.y,width:rect.width,height:rect.height}} />;
+}
+export function movePatchGroup<N extends PatchPoint & {id:string},G extends {nodes:N[]}>(graph:G,ids:readonly string[],delta:PatchPoint,bounds:PatchRect,size:(node:N)=>{width:number;height:number}):G {
+  const selected = graph.nodes.filter(n => ids.includes(n.id));
+  if (!selected.length) return graph;
+  const left = Math.min(...selected.map(n => n.x)), top = Math.min(...selected.map(n => n.y));
+  const right = Math.max(...selected.map(n => n.x+size(n).width)), bottom = Math.max(...selected.map(n => n.y+size(n).height));
+  const x = snapPatch(Math.max(bounds.x-left,Math.min(bounds.x+bounds.width-right,delta.x)));
+  const y = snapPatch(Math.max(bounds.y-top,Math.min(bounds.y+bounds.height-bottom,delta.y)));
+  return {...graph,nodes:graph.nodes.map(n => ids.includes(n.id) ? {...n,x:n.x+x,y:n.y+y} : n)};
 }

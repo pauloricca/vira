@@ -217,6 +217,7 @@ pub fn nodes() -> Result<Vec<crate::routing::Node>> {
             value: 1.,
             custom_label: None,
             patch_inputs: None,
+            eq: None,
         })
         .collect())
 }

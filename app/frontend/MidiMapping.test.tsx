@@ -1,5 +1,10 @@
 import { JogSettings, useJogTargets } from './Jog';
-import { Mixer, type AudioState } from './Decks';
+import { Mixer as DeckMixer, type AudioState } from './Decks';
+import { useMeterFeed } from './LevelMeter';
+function Mixer(props: Omit<Parameters<typeof DeckMixer>[0], 'meters'>) {
+ const meters = useMeterFeed(props.audio.running);
+ return <DeckMixer {...props} meters={meters} />;
+}
 // @vitest-environment jsdom
 import { invoke } from '@tauri-apps/api/core';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -19,7 +24,7 @@ test('crossfader MIDI mapping is inactive while hidden and resumes when shown', 
  const control = vi.fn().mockResolvedValue(undefined);
  const audio:AudioState = {running:true,error:null,telemetry:{},decks:[0,1].map(deck => ({deck,loading:false,error:null,playing:false,position_seconds:0,gain:1,generation:0,requested_generation:0,track:null}))};
  const view = render(<Shell><Mixer audio={audio} control={control} showCrossfader={false} /></Shell>);
- expect(screen.getByRole('region',{name:'Mixer'}).classList.contains('mixer-no-crossfader')).toBe(true);
+ expect(screen.queryByRole('slider',{name:'Crossfader'})).toBeNull();
  await tick([cc(127)]); expect(control).not.toHaveBeenCalled();
  view.rerender(<Shell><Mixer audio={audio} control={control} /></Shell>);
  await tick([cc(0)]); expect(control).toHaveBeenLastCalledWith(0,'crossfader',-1);

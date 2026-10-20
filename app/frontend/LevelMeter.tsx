@@ -31,7 +31,7 @@ export function useMeterFeed(running: boolean) {
   return meters.current;
 }
 
-export function LevelMeter({ meter, label }: { meter: PeakMeter; label: string }) {
+export function LevelMeter({ meter, label, horizontal = false }: { meter: PeakMeter; label: string; horizontal?: boolean }) {
   const element = useRef<HTMLDivElement>(null);
   const fill = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -41,7 +41,8 @@ export function LevelMeter({ meter, label }: { meter: PeakMeter; label: string }
       const peak = meter.at(now);
       const db = meterDb(peak);
       if (db !== lastDb) {
-        if (fill.current) fill.current.style.clipPath = `inset(${100 - (db - METER_FLOOR_DB) / -METER_FLOOR_DB * 100}% 0 0)`;
+        const hidden = 100 - (db - METER_FLOOR_DB) / -METER_FLOOR_DB * 100;
+        if (fill.current) fill.current.style.clipPath = horizontal ? `inset(0 ${hidden}% 0 0)` : `inset(${hidden}% 0 0)`;
         lastDb = db;
       }
       const reading = peak > 0 ? `${(20 * Math.log10(peak)).toFixed(1)} dBFS peak` : 'Silent';
@@ -54,8 +55,8 @@ export function LevelMeter({ meter, label }: { meter: PeakMeter; label: string }
     };
     draw(performance.now());
     return animate(draw);
-  }, [meter]);
-  return <div ref={element} className="level-meter" role="meter" aria-label={label} aria-valuemin={METER_FLOOR_DB} aria-valuemax={0}>
+  }, [meter, horizontal]);
+  return <div ref={element} className={`level-meter${horizontal ? ' level-meter-horizontal' : ''}`} role="meter" aria-label={label} aria-valuemin={METER_FLOOR_DB} aria-valuemax={0}>
     <div ref={fill} className="level-meter-fill" />
   </div>;
 }

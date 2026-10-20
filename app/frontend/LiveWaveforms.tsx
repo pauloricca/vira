@@ -1,3 +1,4 @@
+import { lineColours } from './mixerLines';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { animate } from './transport';
@@ -80,7 +81,8 @@ export function LiveRollingRow({ source, feed, window: span, running }: { source
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
       const head = feed.output_frame + (running ? Math.min(100, Math.max(0, now - feed.sampled_at)) * (feed.sample_rate ?? 48000) / 1000 : 0);
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, width / 2, height); ctx.clip();
-      ctx.strokeStyle = '#a8d6b0'; ctx.lineWidth = 1;
+      const line = source.id === 'a-fader' ? 0 : source.id === 'b-fader' ? 1 : /^line-([2-6])-fader$/.exec(source.id)?.[1];
+      ctx.strokeStyle = line !== undefined ? lineColours[Number(line)] : '#a8d6b0'; ctx.lineWidth = 1;
       // Aggregate into screen columns, preserving transients when zoomed out.
       const columns = new Float32Array(Math.ceil(width / 2));
       for (const [frame, peak] of source.peaks) {

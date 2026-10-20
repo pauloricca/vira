@@ -3,7 +3,12 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@t
 import { afterEach, expect, test, vi } from 'vitest';
 import { RollingRow } from './RollingRow';
 import { MidiProvider, MidiToggle, MidiEditor } from './MidiMapping';
-import { AudioState, Deck, DeckState, Mixer, RollingWaveforms, TRACK_MIME, useDecks } from './Decks';
+import { AudioState, Deck, DeckState, Mixer as DeckMixer, RollingWaveforms, TRACK_MIME, useDecks } from './Decks';
+import { LevelMeter, useMeterFeed } from './LevelMeter';
+function Mixer(props: Omit<Parameters<typeof DeckMixer>[0], 'meters'>) {
+  const meters = useMeterFeed(props.audio.running);
+  return <><header><LevelMeter meter={meters[2]} label="Master left level" horizontal /><LevelMeter meter={meters[3]} label="Master right level" horizontal /></header><DeckMixer {...props} meters={meters} /></>;
+}
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
@@ -542,7 +547,7 @@ test('mixer changes the selected native deck gain with immediate feedback', () =
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '1' } });
   expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('0.0 dB');
   expect(screen.queryByText('0.0 dB')).toBeNull();
-  expect(screen.getByLabelText('Stereo master meters')).toBeTruthy();
+  expect(screen.queryByLabelText('Stereo master meters')).toBeNull();
   expect((screen.getByRole('slider', { name: 'Crossfader' }) as HTMLInputElement).disabled).toBe(false);
 });
 
@@ -552,7 +557,8 @@ test('channel controls sit with their decks and centre mixer has no A, B or mast
   expect(screen.getByTestId('deck-a').parentElement?.querySelector('[aria-label="Deck A mixer controls"]')).toBeTruthy();
   expect(screen.getByTestId('deck-b').parentElement?.querySelector('[aria-label="Deck B mixer controls"]')).toBeTruthy();
   const centre = screen.getByRole('region', { name: 'Mixer' });
-  expect(centre.textContent).toBe('LR');
+  expect(centre.textContent).toBe('');
+  expect(centre.querySelectorAll('[role="meter"]')).toHaveLength(0);
   expect(centre.querySelectorAll('.mixer-channel')).toHaveLength(0);
 });
 
@@ -577,12 +583,13 @@ test('meters refresh independently at 30 Hz without React commits or transport r
     expect(screen.getByRole('meter', { name: 'Deck B level' }).getAttribute('aria-valuetext')).toBe('Silent');
     expect(screen.getByRole('meter', { name: 'Master left level' }).getAttribute('aria-valuetext')).toBe('-6.0 dBFS peak');
     expect(screen.getByRole('meter', { name: 'Master right level' }).getAttribute('aria-valuetext')).toBe('-12.0 dBFS peak');
+    expect(screen.getByRole('meter', { name: 'Master left level' }).firstElementChild?.getAttribute('style')).toContain('inset(0 12.');
     for (let i = 0; i < 5; i++) {
       now += 34;
       await act(async () => { await vi.advanceTimersByTimeAsync(34); callbacks.shift()?.(now); });
     }
     expect(invoke.mock.calls.length).toBeGreaterThanOrEqual(6);
-    expect(invoke.mock.calls.every(([command]) => command === 'get_audio_levels')).toBe(true);
+    expect(invoke.mock.calls.every(([command]) => command === 'get_audio_levels' || command === 'get_routing_graph')).toBe(true);
     expect(commits.mock.calls.length).toBe(mounted);
   } finally { cleanup(); clock.mockRestore(); vi.unstubAllGlobals(); vi.useRealTimers(); }
 });

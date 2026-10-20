@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { NodePalette, nodePlacement, paletteDrop } from './Patching';
+import { NodePalette, nodePlacement, paletteDrop, PATCH_GRID, PATCH_NODE_WIDTH, patchSize, snapPatchPoint, snapPatchGraph } from './Patching';
 afterEach(() => cleanup());
 test('palette drags the same node identity it adds on double-click', () => {
   const add = vi.fn(), setData = vi.fn();
@@ -16,7 +16,7 @@ test('drop and visible-center placement account for zoom and scroll', () => {
   const canvas = document.createElement('div'); viewport.append(canvas);
   vi.spyOn(canvas,'getBoundingClientRect').mockReturnValue({left:-200,top:-80,width:1280,height:800} as DOMRect);
   vi.spyOn(viewport,'getBoundingClientRect').mockReturnValue({left:200,top:120,width:800,height:600} as DOMRect);
-  expect(nodePlacement(canvas,1600,.8)).toEqual({x:927.5,y:565});
+  expect(nodePlacement(canvas,1600,.8)).toEqual({x:920,y:560});
   const add = vi.fn(), preventDefault = vi.fn();
   paletteDrop({dataTransfer:{getData:()=> 'compressor'},clientX:440,clientY:320,preventDefault} as never,add,canvas,1600,.8);
   expect(add).toHaveBeenCalledWith('compressor',{x:800,y:500}); expect(preventDefault).toHaveBeenCalled();
@@ -37,4 +37,14 @@ test('pointer dragging creates a node only inside this workspace and Escape canc
   fireEvent.pointerDown(item,{button:0}); fireEvent.pointerMove(item,{clientX:600,clientY:500}); fireEvent.keyDown(window,{key:'Escape'}); fireEvent.pointerUp(item,{clientX:600,clientY:500});
   expect(add).toHaveBeenCalledTimes(1); expect(viewport.className).toBe('routing-scroll');
   vi.unstubAllGlobals(); vi.restoreAllMocks();
+});
+
+test('shared canvas grid snaps positions and sizes to the visible dot pitch', () => {
+  expect(PATCH_NODE_WIDTH % PATCH_GRID).toBe(0);
+  expect(snapPatchPoint({x:113,y:347})).toEqual({x:120,y:340});
+  expect(snapPatchPoint({x:99,y:101})).toEqual({x:100,y:100});
+  expect(patchSize(173)).toBe(180);
+  const graph = {nodes:[{id:'one',x:113,y:347}],wires:[]};
+  expect(snapPatchGraph(graph).nodes[0]).toEqual({id:'one',x:120,y:340});
+  expect(graph.nodes[0]).toEqual({id:'one',x:113,y:347});
 });

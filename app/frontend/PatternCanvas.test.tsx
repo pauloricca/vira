@@ -304,3 +304,39 @@ test('named instruments keep their identity and expose MIDI source and target po
   expect(screen.getByLabelText('instrument-synth input midi')).toBeTruthy();
   expect(screen.queryByLabelText('Device MIDI channel')).toBeNull();
 });
+
+test('musical nodes snap to the dot grid while dragging and retain undo', async () => {
+  await mount();
+  const node = document.querySelector<HTMLElement>('[data-musical-node="pattern-p"]')!;
+  const origin = {x:parseFloat(node.style.left),y:parseFloat(node.style.top)};
+  const wires = structuredClone(bank.graph!.wires);
+  fireEvent.pointerDown(node.querySelector('.routing-node-title')!,{button:0,pointerId:9,clientX:400,clientY:400});
+  fireEvent.pointerMove(canvas(),{pointerId:9,clientX:413,clientY:427});
+  expect(node.style.left).toBe(`${origin.x + 20}px`);
+  expect(node.style.top).toBe(`${origin.y + 40}px`);
+  fireEvent.pointerUp(canvas(),{pointerId:9});
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')).toMatchObject({x:origin.x + 20,y:origin.y + 40}));
+  expect(bank.graph!.wires).toEqual(wires);
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')).toMatchObject(origin));
+});
+
+test('reverse box selection moves and deletes musical nodes together without deleting patterns', async () => {
+  bank.graph!.nodes = bank.graph!.nodes.filter(n => ['pattern-p','midi-42'].includes(n.id)).map(n => ({...n,x:n.kind === 'pattern' ? 120 : 440,y:n.kind === 'pattern' ? 120 : 160}));
+  await mount();
+  const p = (x:number,y:number) => ({button:0,pointerId:14,clientX:80+x*.8,clientY:100+y*.8});
+  fireEvent.pointerDown(canvas(),p(620,400));fireEvent.pointerMove(canvas(),p(100,100));fireEvent.pointerUp(canvas(),p(100,100));
+  expect(screen.getByText('2 objects selected')).toBeTruthy();
+  const node = document.querySelector('[data-musical-node="pattern-p"]')!;
+  fireEvent.pointerDown(node.querySelector('.routing-node-title')!,p(140,140));fireEvent.pointerMove(canvas(),p(180,160));fireEvent.pointerUp(canvas(),p(180,160));
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')).toMatchObject({x:160,y:140}));
+  expect(bank.graph!.nodes.find(n => n.id === 'midi-42')).toMatchObject({x:480,y:180});
+  fireEvent.click(screen.getByRole('button',{name:'Remove selected'}));
+  await waitFor(() => expect(bank.graph!.nodes).toHaveLength(0));
+  expect(bank.patterns.map(p => p.name)).toEqual(['Melody']); expect(bank.graph!.wires).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  await waitFor(() => expect(bank.graph!.nodes).toHaveLength(2));
+  fireEvent.click(screen.getByRole('button',{name:'Undo'}));
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')).toMatchObject({x:120,y:120}));
+  expect(bank.graph!.nodes.find(n => n.id === 'midi-42')).toMatchObject({x:440,y:160});
+});

@@ -47,7 +47,12 @@ impl History {
                 .iter()
                 .enumerate()
                 .filter(|(_, n)| {
-                    n.deck.is_none() && n.kind != Kind::Output && connected.contains(&n.id)
+                    let line =
+                        n.kind == Kind::Fader && (n.deck.is_some() || n.id.starts_with("line-"));
+                    line || (n.deck.is_none()
+                        && !n.id.starts_with("line-")
+                        && n.kind != Kind::Output
+                        && connected.contains(&n.id))
                 })
                 .map(|(index, n)| Source {
                     index,
@@ -64,7 +69,19 @@ impl History {
                         })
                         .unwrap_or(0),
                     id: n.id.clone(),
-                    label: n.display_label().to_string(),
+                    label: if n.kind == Kind::Fader
+                        && (n.deck.is_some() || n.id.starts_with("line-"))
+                    {
+                        let line = n.deck.unwrap_or_else(|| {
+                            n.id.split('-')
+                                .nth(1)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0)
+                        });
+                        format!("Mixer line {}", (b'A' + line as u8) as char)
+                    } else {
+                        n.display_label().to_string()
+                    },
                     peaks: (0..CAPACITY)
                         .map(|_| Peak {
                             frame: AtomicU64::new(u64::MAX),
@@ -134,7 +151,11 @@ mod tests {
         assert_eq!(graph, restored);
         let plan = restored.compile().unwrap();
         let snapshot = plan.history.snapshot(&[], 0, 0);
-        assert_eq!(snapshot["sources"][0]["label"], "Main mix");
+        assert!(snapshot["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["label"] == "Main mix"));
         graph
             .nodes
             .iter_mut()
@@ -157,11 +178,12 @@ mod tests {
             value: 440.,
             custom_label: None,
             patch_inputs: None,
+            eq: None,
         });
         let wire = crate::routing::Wire {
             from: "source".into(),
-            to: "cue".into(),
-            input: "A".into(),
+            to: "headphones".into(),
+            input: "audio".into(),
             output: "audio".into(),
             gain: 1.,
         };
@@ -174,37 +196,41 @@ mod tests {
                 .map(|s| s["id"].as_str().unwrap().to_string())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(labels(&graph), vec!["mix"]);
+        assert_eq!(labels(&graph), vec!["a-fader", "b-fader", "mix"]);
         graph.wires.push(crate::routing::Wire {
             to: "master".into(),
             input: "audio".into(),
             gain: 0.,
             ..wire
         });
-        assert_eq!(labels(&graph), vec!["mix"]);
+        assert_eq!(labels(&graph), vec!["a-fader", "b-fader", "mix"]);
         graph.wires.last_mut().unwrap().gain = 1.;
-        assert_eq!(labels(&graph), vec!["mix", "source"]);
+        assert_eq!(labels(&graph), vec!["a-fader", "b-fader", "mix", "source"]);
     }
     #[test]
     fn rolling_history_filters_future_audio_and_survives_ring_wrap() {
         let history = History::new(&Graph::default());
-        let index = history.indices().next().unwrap();
+        let index = Graph::default()
+            .nodes
+            .iter()
+            .position(|n| n.id == "mix")
+            .unwrap();
         let selected = vec!["mix".into()];
         history.write(index, 0, 0.7);
         history.write(index, peak_frames(), 0.9);
         let snapshot = history.snapshot(&selected, 0, peak_frames());
-        assert_eq!(snapshot["sources"][0]["peaks"].as_array().unwrap().len(), 1);
-        assert!((snapshot["sources"][0]["peaks"][0][1].as_f64().unwrap() - 0.7).abs() < 1e-6);
+        assert_eq!(snapshot["sources"][2]["peaks"].as_array().unwrap().len(), 1);
+        assert!((snapshot["sources"][2]["peaks"][0][1].as_f64().unwrap() - 0.7).abs() < 1e-6);
         let wrapped = CAPACITY as u64 * peak_frames();
         history.write(index, wrapped, 0.2);
         assert!(
-            history.snapshot(&selected, 0, peak_frames())["sources"][0]["peaks"]
+            history.snapshot(&selected, 0, peak_frames())["sources"][2]["peaks"]
                 .as_array()
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            history.snapshot(&selected, wrapped, wrapped + peak_frames())["sources"][0]["peaks"][0]
+            history.snapshot(&selected, wrapped, wrapped + peak_frames())["sources"][2]["peaks"][0]
                 [0],
             wrapped
         );

@@ -2,10 +2,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App, Library, duration } from './App';
-const { invoke, audioInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'midi_mapping_poll' ? Promise.resolve({ devices: [], messages: [] }) : command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
-beforeEach(() => { audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
-afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); });
+const { invoke, audioInvoke, routingInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn(), routingInvoke:vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'midi_mapping_poll' ? Promise.resolve({ devices: [], messages: [] }) : command === 'get_routing_graph' ? routingInvoke(command, ...args) : command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
+beforeEach(() => { routingInvoke.mockResolvedValue({nodes:[],wires:[]}); audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
+afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); routingInvoke.mockReset(); });
 const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', music_bin: '/fixed/music', tracks: [{
   id: 'one', filename: 'Artist - Filename.wav', title: 'Artist - Filename', artist: 'Unknown artist',
   duration_seconds: 125.4, size_bytes: 100, modified_ns: '123', status: 'ready', error: null,
@@ -413,6 +413,12 @@ test('master BPM is unset at startup until playback establishes it', async () =>
   render(<App />);
   await screen.findByText('Unknown artist');
   expect(screen.getByLabelText('Master BPM').textContent).toBe('—');
+  const meters = screen.getByRole('group', { name: 'Stereo master meters' });
+  expect(meters.closest('header')).toBeTruthy();
+  expect(screen.getByLabelText('Master BPM').compareDocumentPosition(meters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(meters.compareDocumentPosition(screen.getByRole('group', { name: 'Output volumes' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(meters.querySelectorAll('.level-meter-horizontal')).toHaveLength(2);
+  expect(screen.getByRole('region', { name: 'Mixer' }).querySelector('[role="meter"]')).toBeNull();
 });
 
 test('master BPM is independent of deck tempos and search filters title, artist and filename', async () => {
@@ -697,10 +703,10 @@ test('timing shortcuts use the last touched rolling waveform with the panel clos
   } : undefined));
   render(<App />);
   await screen.findAllByText('Needs review');
-  expect(document.querySelectorAll('.deck-badge.active')).toHaveLength(2);
-  expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(2);
+  expect(document.querySelectorAll('.deck-badge.active')).toHaveLength(1);
+  expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(1);
   fireEvent.pointerDown(screen.getByRole('img', { name: 'Rolling waveform deck B' }));
-  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(2);
+  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(1);
   expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(0);
   fireEvent.keyDown(window, { key: 'b', metaKey: true });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('track_timing', expect.objectContaining({ trackId: 'loaded-1', referenceBeats: [12] })));
@@ -806,11 +812,11 @@ test('Alt arrows select the active deck; Cmd L locks and Cmd Shift L unlocks it'
   render(<App />);
   await screen.findByRole('button', { name: 'Pause deck B' });
   fireEvent.keyDown(window, { key: 'ArrowRight', altKey: true });
-  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(2);
+  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(1);
   fireEvent.keyDown(window, { key: 'l', metaKey: true });
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 1, action: 'sync', value: 1, generation: 2 }));
   fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true });
-  expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(2);
+  expect(document.querySelectorAll('.deck-0 .deck-badge.active')).toHaveLength(1);
   fireEvent.keyDown(window, { key: 'L', metaKey: true });
   await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('deck_control', { deck: 0, action: 'sync', value: 1, generation: 1 }));
   fireEvent.keyDown(window, { key: 'L', metaKey: true, shiftKey: true });
@@ -825,7 +831,7 @@ test('Alt arrows select the active deck; Cmd L locks and Cmd Shift L unlocks it'
   fireEvent.keyDown(search, { key: 'ArrowRight', altKey: true });
   fireEvent.keyDown(search, { key: 'l', metaKey: true });
   fireEvent.keyDown(search, { key: 'L', metaKey: true, shiftKey: true });
-  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(2);
+  expect(document.querySelectorAll('.deck-1 .deck-badge.active')).toHaveLength(1);
   expect(audioInvoke.mock.calls.filter(([command, args]) => command === 'deck_control' && args.action === 'sync')).toEqual(calls);
   expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
 });
@@ -1111,7 +1117,8 @@ test('crossfader visibility persists and hiding bypasses the native fader', asyn
 
 test('Routing keeps an unapplied patch and undo history across workspace pages', async () => {
   const routing = { nodes: [{ id: 'a-player', label: 'PLAYER', kind: 'player', deck: 0, x: 40, y: 80, value: 1 }], wires: [] };
-  invoke.mockImplementation(command => Promise.resolve(command === 'get_routing_graph' ? routing : library));
+  routingInvoke.mockResolvedValue(routing);
+  invoke.mockResolvedValue(library);
   render(<App />);
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'ROUTING' }));
@@ -1124,7 +1131,7 @@ test('Routing keeps an unapplied patch and undo history across workspace pages',
   expect((screen.getByRole('button', { name: 'Apply routing' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.keyDown(window, { key: 'z', metaKey: true });
   expect(screen.queryByRole('button', { name: /input sidechain/ })).toBeNull();
-  expect(invoke.mock.calls.filter(([command]) => command === 'get_routing_graph')).toHaveLength(2);
+  expect(routingInvoke.mock.calls).toHaveLength(3);
   expect(invoke.mock.calls.some(([command]) => command === 'set_routing_graph')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'SHORTCUTS' }));
   for (const key of ['Delete / Backspace', 'Cmd + Z', 'Cmd + Shift + Z', 'Escape']) expect(screen.getAllByText(key).length).toBeGreaterThan(0);

@@ -1,32 +1,55 @@
+import { addMixerLine, arrangeMixerLines, mixerLine, mixerLines, lineColours, lineName, lineNodeWidth, compactMixerGraph } from './mixerLines';
+import type { AudioState } from './Decks';
+import type { CSSProperties } from 'react';
 import { Slider } from './Slider';
 import { MidiButton, MidiSelect, useMidiTargets, useMidiMarkers } from './MidiMapping';
 import { instrumentGraph, engineGraph } from './routingInstruments';
 import { useInstruments } from './instrumentModel';
-import { PatchingPage, PatchingHeading, PatchingNodeHeader, patchPortTop, patchPortPoint, NodePalette, nodePlacement, paletteDrop, paletteDragOver, withoutPatchNode, usePatchingKeys, type PatchPoint } from './Patching';
+import { PatchSelectionBox, patchSelectionRect, patchIntersects, movePatchGroup, type PatchMarquee, snapPatchPoint, patchSize, PatchingPage, PatchingHeading, PatchingNodeHeader, patchPortTop, patchPortPoint, NodePalette, nodePlacement, paletteDrop, paletteDragOver, usePatchingKeys, type PatchPoint } from './Patching';
 import { canvasPosition, cablePath as path } from './routingGeometry';
 import { useEffect, useRef, useState } from 'react';
 import { addSessionPatch, usePatchLibrary, patchAudioInputs } from './patchLibrary';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
-type Kind = 'instrument' | 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
-export type RoutingNode = { id: string; kind: Kind; deck: number | null; label: string; custom_label?: string; x: number; y: number; value: number; instrument_input?: boolean; instrument_output?: boolean; patch_inputs?: { id: string; label: string }[] };
+type Kind = 'instrument' | 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'cue_switch' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
+export type RoutingNode = { id: string; kind: Kind; deck: number | null; label: string; custom_label?: string; x: number; y: number; value: number; eq?: [number, number, number]; instrument_input?: boolean; instrument_output?: boolean; patch_inputs?: { id: string; label: string }[] };
 export type Wire = { from: string; output: string; to: string; input: string; gain: number };
 export type Graph = { nodes: RoutingNode[]; wires: Wire[] };
 export const inputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_input ? ['audio'] : [] : node.kind === 'patch' && node.patch_inputs ? node.patch_inputs.map(p => p.id) : node.kind === 'input' || node.kind === 'player' || node.kind === 'oscillator' ? [] : node.kind === 'crossfader' || node.kind === 'cue' ? ['A', 'B'] : node.kind === 'compressor' ? ['audio', 'sidechain'] : node.kind === 'ring_modulation' ? ['audio', 'carrier'] : ['audio'];
 const outputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_output ? ['audio'] : [] : node.kind === 'output' ? [] : node.kind === 'compressor' || node.kind === 'ring_modulation' ? ['audio', 'dry'] : node.kind === 'oscillator' ? ['audio', 'cosine'] : ['audio'];
-const removable = (node: RoutingNode) => node.kind === 'input' || node.kind === 'patch' || node.kind === 'instrument' || isProcessor(node);
+const removable = (node: RoutingNode) => (mixerLine(node) ?? -1) > 1 || node.kind === 'input' || node.kind === 'patch' || node.kind === 'instrument' || isProcessor(node);
+const liveParameter = (node: RoutingNode) => isProcessor(node) || (mixerLine(node) !== null && node.deck === null);
 const isProcessor = (node: RoutingNode) => ['gain', 'compressor', 'oscillator', 'ring_modulation'].includes(node.kind);
-const point = (node: RoutingNode, port: string, output: boolean) => patchPortPoint(node, (output ? outputs(node) : inputs(node)).indexOf(port), output);
+const point = (node: RoutingNode, port: string, output: boolean) => {
+  if (node.kind === 'player' && node.deck === 1 && output) return {x:node.x,y:node.y + patchPortTop(0) + 12};
+  if (mixerLine(node) === null) return patchPortPoint(node, (output ? outputs(node) : inputs(node)).indexOf(port), output);
+  const width = lineNodeWidth(node);
+  if (output) return {x:node.x + width / 2,y:node.y + 40};
+  return node.kind === 'trim' ? {x:node.x + (mixerLine(node) === 1 ? width : 0),y:node.y + 20} : {x:node.x + width / 2,y:node.y};
+};
+const wirePath = (from: RoutingNode, to: RoutingNode, wire: Wire) => {
+  const a = point(from, wire.output, true), b = point(to, wire.input, false);
+  if (mixerLine(from) !== null && mixerLine(from) === mixerLine(to)) {
+    const middle = a.y + (b.y - a.y) / 2;
+    return `M ${a.x} ${a.y} L ${a.x} ${middle} L ${b.x} ${middle} L ${b.x} ${b.y}`;
+  }
+  if (from.kind === 'player' && from.deck === 1 && mixerLine(to) === 1) return `M ${a.x} ${a.y} C ${a.x - 70} ${a.y}, ${b.x + 70} ${b.y}, ${b.x} ${b.y}`;
+  if (mixerLine(from) !== null && b.y > a.y) return `M ${a.x} ${a.y} C ${a.x} ${a.y + 60}, ${b.x - 60} ${b.y}, ${b.x} ${b.y}`;
+  return path(a,b);
+};
+const nodeSize = (node:RoutingNode) => ({width:mixerLine(node) !== null ? lineNodeWidth(node) : 160,height:mixerLine(node) !== null ? 40 : patchSize(Math.max(120,70+Math.max(inputs(node).length,outputs(node).length)*26)+(isProcessor(node) && node.kind !== 'ring_modulation' ? 52 : 0))});
+const selectionIds = (selection:Selection) => selection && 'node' in selection ? selection.nodes ?? [selection.node] : [];
+const expandLines = (graph:Graph,ids:string[]) => graph.nodes.filter(n => ids.includes(n.id) || mixerLine(n) !== null && graph.nodes.some(other => ids.includes(other.id) && mixerLine(other) === mixerLine(n))).map(n => n.id);
 const sameWire = (a:Wire,b:Wire) => a.from === b.from && a.to === b.to && a.input === b.input && a.output === b.output;
 const wireMidiId = (w:Wire) => `routing:wire:${JSON.stringify([w.from,w.output,w.to,w.input])}`;
 const equal = (a: Graph | null, b: Graph | null) => JSON.stringify(a) === JSON.stringify(b);
-type Selection = { node: string } | { wire: number } | null;
+type Selection = { node: string; nodes?: string[] } | { wire: number } | null;
 type Patch = { from: string; output: string; x: number; y: number; pointer: number; reconnect?: { index: number; wire: Wire; end: 'source' | 'target' } };
-type Moving = { id: string; x: number; y: number; startX: number; startY: number; before: Graph; pointer: number };
+type Moving = { ids: string[]; startX: number; startY: number; before: Graph; pointer: number };
 const processors: Record<string, string> = { compressor: 'Compressor', gain: 'Gain', ring_modulation: 'Ring modulator', oscillator: 'Sine instrument' };
 
-export function Routing({ active = true }: { active?: boolean }) {
+export function Routing({ active = true, audio, control }: { active?: boolean; audio?: AudioState; control?: (deck:number, action:string, value?:number) => Promise<void> }) {
   const instruments = useInstruments(active);
   const [audioInputs, setAudioInputs] = useState<RoutingNode[]>([]);
   const [graph, setGraph] = useState<Graph | null>(null);
@@ -45,12 +68,37 @@ export function Routing({ active = true }: { active?: boolean }) {
   const [patch, setPatch] = useState<Patch | null>(null);
   const patchRef = useRef<Patch | null>(null);
   const moving = useRef<Moving | null>(null);
+  const marquee = useRef<PatchMarquee|null>(null);
+  const [box,setBox] = useState<PatchMarquee|null>(null);
+  const selectedIds = selectionIds(selected);
+  const selectedObjects = new Set(graph?.nodes.filter(n => selectedIds.includes(n.id)).map(n => mixerLine(n) === null ? n.id : `line:${mixerLine(n)}`)).size;
+  const selectNodes = (ids:string[]) => setSelected(ids.length ? {node:ids[0],nodes:ids} : null);
+  const selectNode = (id:string) => { if (current.current && !selectedIds.includes(id)) selectNodes(expandLines(current.current,[id])); };
+  const beginMove = (e:React.PointerEvent,ids:string[]) => {
+    if (busy || e.button !== 0 || !current.current) return;
+    e.preventDefault(); e.stopPropagation();
+    const chosen = ids.some(id => selectedIds.includes(id)) ? selectedIds : expandLines(current.current,ids);
+    selectNodes(chosen); const p = position(e); canvas.current?.setPointerCapture(e.pointerId);
+    moving.current = {ids:chosen,startX:p.x,startY:p.y,before:current.current,pointer:e.pointerId};
+  };
+  const updateMarquee = (p:PatchPoint) => {
+    const drag = marquee.current, g = current.current; if (!drag || !g) return;
+    const next = {...drag,end:p}; marquee.current = next; setBox(next);
+    const rect = patchSelectionRect(drag.start,p);
+    const ids = g.nodes.filter(n => {
+      const line = mixerLine(n), nodes = line === null ? [n] : g.nodes.filter(other => mixerLine(other) === line);
+      const bounds = line === null ? {...n,...nodeSize(n)} : {x:Math.min(...nodes.map(n => n.x))-20,y:Math.min(...nodes.map(n => n.y))-60,width:220,height:Math.max(...nodes.map(n => n.y))-Math.min(...nodes.map(n => n.y))+120};
+      return patchIntersects(rect,bounds);
+    }).map(n => n.id);
+    selectNodes(expandLines(g,ids));
+  };
   const [, setHistoryRevision] = useState(0);
   const past = useRef<Graph[]>([]), future = useRef<Graph[]>([]);
   const gesture = useRef<Graph | null>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const dirty = !equal(graph, accepted);
-  const canvasHeight = Math.max(1000, ...(graph?.nodes.map(n => n.y + 180) ?? []));
+  const canvasWidth = Math.max(1600, ...(graph?.nodes.map(n => n.x + 220) ?? []));
+  const canvasHeight = Math.max(900, ...(graph?.nodes.map(n => n.y + 180) ?? []));
   const showGraph = (value: Graph) => { current.current = value; setGraph(value); };
   const record = (before: Graph, after: Graph) => {
     if (equal(before, after)) return;
@@ -64,12 +112,15 @@ export function Routing({ active = true }: { active?: boolean }) {
   const endGesture = () => { if (gesture.current && current.current) record(gesture.current, current.current); gesture.current = null; };
   const cancelPatch = () => { patchRef.current = null; setPatch(null); };
   const cancelInteraction = () => {
+    if (marquee.current) selectNodes([]);
+    marquee.current = null; setBox(null);
     cancelPatch();
     if (moving.current) { showGraph(moving.current.before); moving.current = null; }
     endGesture();
   };
   const receiveGraph = (raw: Graph) => {
-    const value = instrumentGraph(raw, instruments);
+    const normalized = instrumentGraph(raw, instruments);
+    const value = normalized.nodes.find(n => n.id === 'a-trim')?.y === normalized.nodes.find(n => n.id === 'a-eq')?.y && normalized.nodes.some(n => n.id === 'a-trim') ? arrangeMixerLines(normalized) : compactMixerGraph(normalized);
     const previous = acceptedRef.current;
     const added = value.nodes.filter(n => n.kind === 'patch' && !previous?.nodes.some(old => old.id === n.id));
     const removed = previous?.nodes.filter(n => (n.kind === 'patch' || n.id.startsWith('instrument-')) && !value.nodes.some(next => next.id === n.id)).map(n => n.id) ?? [];
@@ -77,6 +128,9 @@ export function Routing({ active = true }: { active?: boolean }) {
       draft = instrumentGraph(draft, instruments);
       const nodes = [...draft.nodes.filter(n => !removed.includes(n.id)).map(n => {
         const live = value.nodes.find(next => (next.kind === 'patch' || next.kind === 'input' || next.kind === 'instrument' || next.id === 'headphones') && next.id === n.id);
+        const previousNode = previous?.nodes.find(old => old.id === n.id);
+        const parameters = value.nodes.find(next => next.id === n.id);
+        if (parameters && previousNode) n = {...n, ...(n.value === previousNode.value ? {value:parameters.value} : {}), ...(JSON.stringify(n.eq) === JSON.stringify(previousNode.eq) ? {eq:parameters.eq} : {})};
         return live ? { ...n, label: live.label, patch_inputs: live.patch_inputs, instrument_input: live.instrument_input, instrument_output: live.instrument_output } : n;
       }), ...added.filter(n => !draft.nodes.some(old => old.id === n.id))];
       const valid = (w: Wire) => { const target = nodes.find(n => n.id === w.to); const source = nodes.find(n => n.id === w.from); return source && outputs(source).includes(w.output) && target && inputs(target).includes(w.input); };
@@ -116,7 +170,7 @@ export function Routing({ active = true }: { active?: boolean }) {
   // unlike CSS zoom's client-coordinate behavior. Include scroll/actual scale.
   const position = (event: { clientX: number; clientY: number }) => {
     const rect = canvas.current!.getBoundingClientRect();
-    return canvasPosition(event, rect, 1600, zoom);
+    return canvasPosition(event, rect, canvasWidth, zoom);
   };
   const undo = () => {
     if (busy || !current.current) return;
@@ -133,15 +187,16 @@ export function Routing({ active = true }: { active?: boolean }) {
     cancelPatch();
     if ('wire' in selected) edit({ ...graph, wires: graph.wires.filter((_, i) => i !== selected.wire) });
     else {
-      const node = graph.nodes.find(n => n.id === selected.node);
-      if (!node || !removable(node)) return;
-      edit(withoutPatchNode(graph, node.id));
+      const ids = selectedIds.filter(id => { const node = graph.nodes.find(n => n.id === id); return node && removable(node); });
+      if (!ids.length) return;
+      edit({nodes:graph.nodes.filter(n => !ids.includes(n.id)),wires:graph.wires.filter(w => !ids.includes(w.from) && !ids.includes(w.to))});
     }
     setSelected(null);
   };
-  usePatchingKeys(active, {cancel:cancelInteraction, remove:removeSelection, undo, redo, finish:endGesture}, busy);
+  usePatchingKeys(active, {cancel:() => {cancelInteraction();if (selected && 'node' in selected) setSelected(null);}, remove:removeSelection, undo, redo, finish:endGesture}, busy);
   // Pointer capture on the canvas ensures release outside a port/window cancels.
   const finishPointer = (e: React.PointerEvent) => {
+    if (marquee.current?.pointer === e.pointerId) { updateMarquee(position(e)); marquee.current = null; setBox(null); }
     const drag = moving.current;
     if (drag && drag.pointer === e.pointerId) {
       if (current.current) record(drag.before, current.current);
@@ -181,7 +236,7 @@ export function Routing({ active = true }: { active?: boolean }) {
   const apply = async () => {
     if (!graph) return;
     endGesture(); setBusy(true); writeInFlight.current = true; setError(null);
-    try { await invoke('set_routing_graph', { graph: engineGraph(graph) }); acceptedRef.current = graph; setAccepted(graph); }
+    try { await invoke('set_routing_graph', { graph: engineGraph(graph) }); acceptedRef.current = graph; setAccepted(graph); window.dispatchEvent(new Event('vira-routing-applied')); }
     catch (e) { setError(String(e)); }
     finally { writeInFlight.current = false; setBusy(false); }
   };
@@ -190,7 +245,7 @@ export function Routing({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (busy || liveApplying || !graph || !accepted) return;
     const parameters = {
-      nodes:graph.nodes.filter(n => isProcessor(n) && n.kind !== 'ring_modulation' && accepted.nodes.some(old => old.id === n.id && old.kind === n.kind && old.value !== n.value)).map(n => ({id:n.id,value:n.value})),
+      nodes:graph.nodes.filter(n => liveParameter(n) && n.kind !== 'ring_modulation' && accepted.nodes.some(old => old.id === n.id && old.kind === n.kind && (old.value !== n.value || JSON.stringify(old.eq) !== JSON.stringify(n.eq)))).map(n => ({id:n.id,value:n.value,...(n.eq ? {eq:n.eq} : {})})),
       wires:graph.wires.filter(w => accepted.wires.some(old => sameWire(old,w) && old.gain !== w.gain)),
     };
     const signature = JSON.stringify(parameters);
@@ -204,11 +259,14 @@ export function Routing({ active = true }: { active?: boolean }) {
       acceptedRef.current = value; setAccepted(value);
     }).catch(e => setError(String(e))).finally(() => { writeInFlight.current = false; setLiveApplying(false); });
   }, [busy, liveApplying, graph, accepted]);
-  const add = async (id: string, point = nodePlacement(canvas.current!, 1600, zoom)) => {
+  const add = async (id: string, point = nodePlacement(canvas.current!, canvasWidth, zoom)) => {
     if (!current.current || busy) return;
+    point = snapPatchPoint(point);
     setBusy(true);
     try {
-      if (id.startsWith('instrument-')) {
+      if (id === 'mixer-line') {
+        edit(addMixerLine(current.current!));
+      } else if (id.startsWith('instrument-')) {
         const instrument = instruments.find(i => id === `instrument-${i.id}`);
         if (!instrument || !(instrument.audio_input || instrument.audio_output)) throw new Error('Instrument connection is unavailable');
         const g = current.current!;
@@ -245,34 +303,41 @@ export function Routing({ active = true }: { active?: boolean }) {
       <div className="routing-zoom"><label>Zoom <MidiSelect aria-label="Routing zoom" value={zoom} onChange={e => setZoom(Number(e.target.value))}>{[.5, .65, .8, 1, 1.25].map(value => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}</MidiSelect></label><MidiButton onClick={() => { if (!graph || !canvas.current) return; const width = Math.max(...graph.nodes.map(n => n.x + 170), 900); const available = canvas.current.parentElement!.parentElement!.clientWidth - 30; setZoom([1.25, 1, .8, .65, .5].find(value => width * value <= available) ?? .5); }}>Fit</MidiButton></div>
       <MidiButton disabled={busy || !past.current.length} onClick={undo}>Undo</MidiButton><MidiButton disabled={busy || !future.current.length} onClick={redo}>Redo</MidiButton>
       <MidiButton disabled={busy || !dirty} onClick={() => { if (accepted) edit(accepted); setSelected(null); }}>Revert edits</MidiButton>
-      <MidiButton disabled={busy} onClick={() => { setBusy(true); void invoke<Graph>('default_routing_graph').then(value => { edit(value); setSelected(null); }).catch(e => setError(String(e))).finally(() => setBusy(false)); }}>Default chain</MidiButton>
+      <MidiButton disabled={busy} onClick={() => { setBusy(true); void invoke<Graph>('default_routing_graph').then(value => { edit(arrangeMixerLines(value)); setSelected(null); }).catch(e => setError(String(e))).finally(() => setBusy(false)); }}>Default chain</MidiButton>
       <span className="settings-hint">Parameters are live · Apply cable and node edits</span>
       <MidiButton midiId="routing:apply" className="routing-apply" disabled={busy || liveApplying || !graph || (!dirty && !graph.nodes.some(n => n.kind === 'input' && graph.wires.some(w => w.from === n.id)))} onClick={() => void apply()}>{busy || liveApplying ? 'Applying…' : 'Apply routing'}</MidiButton>
     </PatchingHeading>
 
     {error && <p className="routing-error" role="alert">{error}</p>}
-    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label}))}, {label:'Instruments',items:instruments.filter(i => i.audio_input || i.audio_output).map(i => ({id:`instrument-${i.id}`,label:i.name})).filter(i => !graph?.nodes.some(n => n.id === i.id))}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<MidiButton disabled={busy} onClick={() => void add('new-patch')}>+ New patch</MidiButton>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, 1600, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: 1600 * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:1600, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
+    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Mixer lines',items:mixerLines(graph ?? {nodes:[],wires:[]}).length < 7 ? [{id:'mixer-line',label:'+ Mixer line'}] : []}, {label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label}))}, {label:'Instruments',items:instruments.filter(i => i.audio_input || i.audio_output).map(i => ({id:`instrument-${i.id}`,label:i.name})).filter(i => !graph?.nodes.some(n => n.id === i.id))}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<MidiButton disabled={busy} onClick={() => void add('new-patch')}>+ New patch</MidiButton>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, canvasWidth, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: canvasWidth * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:canvasWidth, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
       onPointerDownCapture={e => { const field = document.activeElement; if (field instanceof HTMLElement && field.matches('input, textarea, select') && field !== e.target && !field.contains(e.target as Node)) field.blur(); }}
-      onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}
+      onPointerDown={e => { if (e.target !== e.currentTarget || busy || e.button !== 0) return; e.preventDefault(); setSelected(null); const p = position(e); const drag = {pointer:e.pointerId,start:p,end:p}; marquee.current = drag; setBox(drag); e.currentTarget.setPointerCapture(e.pointerId); }}
       onPointerMove={e => {
         const p = position(e), wire = patchRef.current, drag = moving.current;
+        if (marquee.current?.pointer === e.pointerId) updateMarquee(p);
         if (wire && wire.pointer === e.pointerId) { const next = { ...wire, ...p }; patchRef.current = next; setPatch(next); }
-        if (drag && drag.pointer === e.pointerId && current.current && !busy) showGraph({ ...current.current, nodes: current.current.nodes.map(n => n.id === drag.id ? { ...n, x: Math.min(1440, Math.max(10, drag.x + p.x - drag.startX)), y: Math.min(800, Math.max(50, drag.y + p.y - drag.startY)) } : n) });
-      }} onPointerUp={finishPointer} onPointerCancel={cancelInteraction} onLostPointerCapture={() => { if (patchRef.current || moving.current) cancelInteraction(); }}>
-      {[0, 1].map(d => <div key={d} className={`routing-group deck-${d}`} style={{ top: 35 + d * 250 }}><strong>Deck {d === 0 ? 'A' : 'B'}</strong><span>Components controlled from the Decks page</span></div>)}
-      <svg className="routing-wires" width="1600" height={canvasHeight} aria-label="Audio connections">{graph?.wires.map((wire, i) => {
+        if (drag && drag.pointer === e.pointerId && !busy) showGraph(movePatchGroup(drag.before,drag.ids,{x:p.x-drag.startX,y:p.y-drag.startY},{x:20,y:60,width:canvasWidth-40,height:canvasHeight-80},nodeSize));
+      }} onPointerUp={finishPointer} onPointerCancel={cancelInteraction} onLostPointerCapture={() => { if (patchRef.current || moving.current || marquee.current) cancelInteraction(); }}>
+      {graph && mixerLines(graph).map(line => {
+        const nodes = graph.nodes.filter(n => mixerLine(n) === line), x = Math.min(...nodes.map(n => n.x)), y = Math.min(...nodes.map(n => n.y));
+        return <div key={line} className={`routing-mixer-line${nodes.some(n => selectedIds.includes(n.id)) ? ' selected' : ''}`} style={{left:x-20,top:y-60,height:Math.max(...nodes.map(n => n.y))-y+120,'--line-colour':lineColours[line]} as CSSProperties} aria-label={`Mixer line ${lineName(line)}`}>
+          <div className="routing-line-heading" onPointerDown={e => { beginMove(e,nodes.map(n => n.id)); }}><strong>{lineName(line)}</strong><span>MIXER LINE</span>{line > 1 && <button disabled={busy} aria-label={`Remove mixer line ${lineName(line)}`} onPointerDown={e => e.stopPropagation()} onClick={() => { const ids = nodes.map(n => n.id); edit({nodes:graph.nodes.filter(n => !ids.includes(n.id)),wires:graph.wires.filter(w => !ids.includes(w.from) && !ids.includes(w.to))}); }}>×</button>}</div>
+        </div>;
+      })}
+      <svg className="routing-wires" width={canvasWidth} height={canvasHeight} aria-label="Audio connections">{graph?.wires.map((wire, i) => {
         const from = graph.nodes.find(n => n.id === wire.from), to = graph.nodes.find(n => n.id === wire.to);
         if (!from || !to || patch?.reconnect?.index === i) return null;
-        return <g key={i} className={selected && 'wire' in selected && selected.wire === i ? 'selected' : ''}><path className="routing-wire" d={path(point(from, wire.output, true), point(to, wire.input, false))} /><path className="routing-wire-hit" data-wire={i} d={path(point(from, wire.output, true), point(to, wire.input, false))} onPointerDown={e => { e.stopPropagation(); setSelected({ wire: i }); }}><title>{wire.from} → {wire.to} ({wire.input}) · gain {wire.gain}</title></path></g>;
+        return <g key={i} className={selected && 'wire' in selected && selected.wire === i ? 'selected' : ''}><path className="routing-wire" style={selected && 'wire' in selected && selected.wire === i ? undefined : {stroke:lineColours[mixerLine(from) ?? from.deck ?? mixerLine(to) ?? to.deck ?? 0]}} d={wirePath(from, to, wire)} /><path className="routing-wire-hit" data-wire={i} d={wirePath(from, to, wire)} onPointerDown={e => { e.stopPropagation(); setSelected({ wire: i }); }}><title>{wire.from} → {wire.to} ({wire.input}) · gain {wire.gain}</title></path></g>;
       })}{patch && graph && (() => {
         const from = graph.nodes.find(n => n.id === patch.from);
         const to = graph.nodes.find(n => n.id === patch.reconnect?.wire.to);
         const source = patch.reconnect?.end === 'source';
         return from && (!source || to) && <path className="routing-wire preview" data-testid="wire-preview" d={source ? path(patch, point(to!, patch.reconnect!.wire.input, false)) : path(point(from, patch.output, true), patch)} />;
       })()}</svg>
-      {graph?.nodes.map(node => <div key={node.id} data-node-id={node.id} className={`routing-node ${node.deck === null ? '' : `deck-${node.deck}`} ${selected && 'node' in selected && selected.node === node.id ? 'selected' : ''}`} style={{ left: node.x, top: node.y, minHeight: Math.max(115, 70 + Math.max(inputs(node).length, outputs(node).length) * 26) }} onDoubleClick={e => { if (node.kind !== 'patch') return; e.stopPropagation(); void invoke('teia_open_editor', { slot: Number(node.id.replace('patch-', '')) }).catch(e => setError(String(e))); }} onPointerDown={e => { e.stopPropagation(); setSelected({ node: node.id }); }}>
-        <PatchingNodeHeader title={node.custom_label ?? node.label} nameLabel={`${node.id} name`} disabled={busy} onRename={name => { const value = current.current; if (value) edit({ ...value, nodes: value.nodes.map(n => n.id === node.id ? { ...n, custom_label: name } : n) }); }} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { if (busy || e.button !== 0 || !graph) return; e.preventDefault(); const p = position(e); canvas.current?.setPointerCapture(e.pointerId); moving.current = { id: node.id, x: node.x, y: node.y, startX: p.x, startY: p.y, before: graph, pointer: e.pointerId }; }} />
-        <div className="routing-ports" style={{ height: Math.max(72, Math.max(inputs(node).length, outputs(node).length) * 26 + 16) }}>{inputs(node).map((port, i) => <MidiButton key={port} className="routing-port input" style={{ top: patchPortTop(i) }} data-routing-input={port} data-node={node.id} aria-label={`${node.id} input ${port}`}><i /><span title={node.patch_inputs?.find(p => p.id === port)?.label ?? port}>{node.patch_inputs?.find(p => p.id === port)?.label ?? port}</span></MidiButton>)}{outputs(node).map((port, i) => <MidiButton key={port} className="routing-port output" style={{ top: patchPortTop(i) }} data-routing-output={port} data-node={node.id} aria-label={`${node.id} output ${port}`} disabled={busy} onPointerDown={e => { if (busy || e.button !== 0) return; e.preventDefault(); e.stopPropagation(); canvas.current?.setPointerCapture(e.pointerId); const wire = { from: node.id, output: port, ...position(e), pointer: e.pointerId }; patchRef.current = wire; setPatch(wire); }}><span>{port}</span><i /></MidiButton>)}</div>
+      {graph?.nodes.map(node => <div key={node.id} data-node-id={node.id} className={`routing-node ${node.kind === 'player' && node.deck === 1 ? 'routing-player-right' : ''} ${mixerLine(node) !== null ? `routing-line-node stage-${node.kind}` : ''} ${node.deck === null ? '' : `deck-${node.deck}`} ${selectedIds.includes(node.id) ? 'selected' : ''}`} style={{ left: node.x, top: node.y, '--line-colour':lineColours[mixerLine(node) ?? node.deck ?? 0], width:mixerLine(node) !== null ? lineNodeWidth(node) : undefined, height: mixerLine(node) !== null ? 40 : patchSize(Math.max(120, 70 + Math.max(inputs(node).length, outputs(node).length) * 26) + (isProcessor(node) && node.kind !== 'ring_modulation' ? 52 : 0)) } as CSSProperties} onDoubleClick={e => { if (node.kind !== 'patch') return; e.stopPropagation(); void invoke('teia_open_editor', { slot: Number(node.id.replace('patch-', '')) }).catch(e => setError(String(e))); }} onPointerDown={e => { e.stopPropagation(); selectNode(node.id); }}>
+        <PatchingNodeHeader title={node.custom_label ?? (node.kind === 'cue_switch' ? 'Cue' : node.label)} nameLabel={`${node.id} name`} disabled={busy} onRename={name => { const value = current.current; if (value) edit({ ...value, nodes: value.nodes.map(n => n.id === node.id ? { ...n, custom_label: name } : n) }); }} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { beginMove(e,[node.id]); }} />
+        <div className="routing-ports" style={{ height: Math.max(72, Math.max(inputs(node).length, outputs(node).length) * 26 + 16) }}>{inputs(node).map((port, i) => <MidiButton key={port} className="routing-port input" style={mixerLine(node) !== null ? {left:point(node,port,false).x-node.x-12,top:point(node,port,false).y-node.y-12} : { top: patchPortTop(i) }} data-routing-input={port} data-node={node.id} aria-label={`${node.id} input ${port}`}><i /><span title={node.patch_inputs?.find(p => p.id === port)?.label ?? port}>{node.patch_inputs?.find(p => p.id === port)?.label ?? port}</span></MidiButton>)}{outputs(node).map((port, i) => <MidiButton key={port} className="routing-port output" style={mixerLine(node) !== null ? {left:point(node,port,true).x-node.x-12,top:point(node,port,true).y-node.y-12} : { top: patchPortTop(i) }} data-routing-output={port} data-node={node.id} aria-label={`${node.id} output ${port}`} disabled={busy} onPointerDown={e => { if (busy || e.button !== 0) return; e.preventDefault(); e.stopPropagation(); canvas.current?.setPointerCapture(e.pointerId); const wire = { from: node.id, output: port, ...position(e), pointer: e.pointerId }; patchRef.current = wire; setPatch(wire); }}>{mixerLine(node) === null && <span>{port}</span>}<i /></MidiButton>)}</div>
+        {node.kind === 'cue_switch' && <MidiButton className="routing-cue-toggle" disabled={busy} aria-label={`Cue mixer line ${lineName(mixerLine(node) ?? 0)}`} aria-pressed={node.deck === null ? node.value > 0 : !!audio?.decks[node.deck]?.headphone_cue} onClick={() => { if (node.deck !== null) void control?.(node.deck,'headphone_cue',audio?.decks[node.deck]?.headphone_cue ? 0 : 1); else edit({...graph,nodes:graph.nodes.map(n => n.id === node.id ? {...n,value:n.value ? 0 : 1} : n)}); }}>{(node.deck === null ? node.value > 0 : audio?.decks[node.deck]?.headphone_cue) ? 'ON' : 'OFF'}</MidiButton>}
         {isProcessor(node) && <div className="routing-parameter">{node.kind !== 'ring_modulation' && <label>{node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}<input {...midi(`routing:${node.id}:value`)} aria-label={`${node.id} value`} disabled={busy} type="number" min={node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0} max={node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : undefined} step={node.kind === 'oscillator' ? 1 : .01} value={node.value} onFocus={() => { gesture.current = current.current; }} onBlur={endGesture} onChange={e => edit({ ...graph, nodes: graph.nodes.map(n => n.id === node.id ? { ...n, value: Number(e.target.value) } : n) })} /></label>}</div>}
       </div>)}
       {selectedWire && selected && 'wire' in selected && (['source', 'target'] as const).map(end => {
@@ -288,7 +353,8 @@ export function Routing({ active = true }: { active?: boolean }) {
           patchRef.current = drag; setPatch(drag);
         }} />;
       })}
+      <PatchSelectionBox box={box} />
     </div></div></div></div>
-    {selected && <div className="patching-selection"><span>{selectedNode?.label ?? `${selectedWire?.from} → ${selectedWire?.to}`}</span>{selectedWire && 'wire' in selected && <label>Wire gain <Slider {...midi(wireMidiId(selectedWire))} aria-label="Wire gain" disabled={busy} type="range" min="0" max="2" step="0.01" value={selectedWire.gain} onPointerDown={() => {gesture.current = current.current;}} onPointerUp={endGesture} onPointerCancel={endGesture} onChange={e => edit({...graph!, wires:graph!.wires.map((w,i) => i === selected.wire ? {...w,gain:Number(e.target.value)} : w)})} /><output>{selectedWire.gain.toFixed(2)}×</output></label>}<MidiButton disabled={busy || !!selectedNode && !removable(selectedNode)} title={selectedNode && !removable(selectedNode) ? 'Default routing nodes cannot be removed' : undefined} onClick={removeSelection}>{selectedNode ? 'Remove node' : 'Disconnect'}</MidiButton></div>}
+    {selected && <div className="patching-selection"><span>{selectedObjects > 1 ? `${selectedObjects} objects selected` : selectedNode?.label ?? `${selectedWire?.from} → ${selectedWire?.to}`}</span>{selectedWire && 'wire' in selected && <label>Wire gain <Slider {...midi(wireMidiId(selectedWire))} aria-label="Wire gain" disabled={busy} type="range" min="0" max="2" step="0.01" value={selectedWire.gain} onPointerDown={() => {gesture.current = current.current;}} onPointerUp={endGesture} onPointerCancel={endGesture} onChange={e => edit({...graph!, wires:graph!.wires.map((w,i) => i === selected.wire ? {...w,gain:Number(e.target.value)} : w)})} /><output>{selectedWire.gain.toFixed(2)}×</output></label>}<MidiButton disabled={busy || !!selectedNode && !graph?.nodes.some(n => selectedIds.includes(n.id) && removable(n))} title={selectedNode && !graph?.nodes.some(n => selectedIds.includes(n.id) && removable(n)) ? 'Default routing nodes cannot be removed' : undefined} onClick={removeSelection}>{selectedObjects > 1 ? 'Remove selected' : selectedNode ? 'Remove node' : 'Disconnect'}</MidiButton></div>}
   </PatchingPage>;
 }
