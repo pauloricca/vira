@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{io::Read, sync::Arc};
 
-pub const MAX_SOURCE_BYTES: usize = 256 * 1024 * 1024;
+pub const AUDITION_CACHE_BYTES: usize = 256 * 1024 * 1024;
+
+// Preserve the original ~11.65-minute capacity at every device sample rate.
+// The audition retention budget stays fixed independently of active sources.
+fn max_source_frames(sample_rate: usize) -> usize {
+    (256 * 1024 * 1024 / 8) * sample_rate / 48000
+}
 
 pub(crate) struct LoadPriority(String);
 impl LoadPriority {
@@ -112,9 +118,9 @@ impl Prepared {
         );
         ensure!(
             self.frames > 0
-                && self.frames <= MAX_SOURCE_BYTES / 8
+                && self.frames <= max_source_frames(crate::sample_rate::get())
                 && self.frames.checked_mul(8) == Some(self.pcm_bytes),
-            "Full-track preload exceeds the 256 MiB per-source development limit"
+            "Full-track preload exceeds the per-source development limit (about 11.65 minutes at every output sample rate)"
         );
         ensure!(
             self.duration_seconds.is_finite()
@@ -273,6 +279,23 @@ mod rate_tests {
             "pcm_hash":"c".repeat(64),"pcm_bytes":frames*8
         })).unwrap();
         prepared.validate(&track, &hash).unwrap();
+        // Ya Mahla is ~6:54: its 96 kHz PCM exceeds the old fixed byte limit.
+        for sample_rate in [44100, 48000, 96000, 192000] {
+            assert!(sample_rate * 414 <= max_source_frames(sample_rate));
+            assert!(sample_rate * 700 > max_source_frames(sample_rate));
+        }
+        let original_frames = prepared.frames;
+        prepared.frames = max_source_frames(rate);
+        prepared.pcm_bytes = prepared.frames * 8;
+        prepared.duration_seconds = prepared.frames as f64 / rate as f64;
+        prepared.validate_audio(&track, &hash).unwrap();
+        prepared.frames += 1;
+        prepared.pcm_bytes += 8;
+        prepared.duration_seconds = prepared.frames as f64 / rate as f64;
+        assert!(prepared.validate_audio(&track, &hash).is_err());
+        prepared.frames = original_frames;
+        prepared.pcm_bytes = original_frames * 8;
+        prepared.duration_seconds = original_frames as f64 / rate as f64;
         prepared.settings["sample_rate"] =
             serde_json::json!(if rate == 44100 { 48000 } else { 44100 });
         assert!(prepared.validate_audio(&track, &hash).is_err());

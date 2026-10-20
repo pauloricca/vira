@@ -35,8 +35,8 @@ def inspect_file(path: Path) -> dict:
             raise ValueError("Only regular files are supported.")
         stat = path.stat()
         row.update(size_bytes=stat.st_size, modified_ns=str(stat.st_mtime_ns))
-        if path.suffix.lower() not in (".mp3", ".wav"):
-            row.update(status="unsupported", error="Only MP3 and PCM WAV files are supported.")
+        if path.suffix.lower() not in (".mp3", ".wav", ".ogg"):
+            row.update(status="unsupported", error="Only MP3, PCM WAV and Ogg (Vorbis or Opus) files are supported.")
             return row
         probe = subprocess.run([
             "ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_format", "-show_streams", "-of", "json", str(path)
@@ -48,9 +48,10 @@ def inspect_file(path: Path) -> dict:
         codec = audio.get("codec_name", "")
         container = info.get("format", {}).get("format_name", "").split(",")
         supported = (path.suffix.lower() == ".mp3" and codec == "mp3" and "mp3" in container) or (
-            path.suffix.lower() == ".wav" and codec.startswith("pcm_") and "wav" in container)
+            path.suffix.lower() == ".wav" and codec.startswith("pcm_") and "wav" in container) or (
+            path.suffix.lower() == ".ogg" and codec in ("vorbis", "opus") and "ogg" in container)
         if not supported:
-            row.update(status="unsupported", error="File content is not MP3 or PCM WAV audio.")
+            row.update(status="unsupported", error="File content is not MP3, PCM WAV or Ogg (Vorbis or Opus) audio.")
             return row
         tags = {k.lower(): v for k, v in audio.get("tags", {}).items()}
         tags.update({k.lower(): v for k, v in info.get("format", {}).get("tags", {}).items()})

@@ -79,6 +79,23 @@ class MetadataTests(unittest.TestCase):
             worker.join()
             server.RequestHandlerClass.jobs.close()
 
+    def test_ogg_metadata_and_container_validation(self):
+        for codec, filename in (("libvorbis", "vorbis.ogg"), ("libopus", "opus.OGG")):
+            self.audio(filename, [("title", "Ogg title"), ("artist", "Ogg artist")], codec=codec)
+        self.audio("renamed.wav")
+        (self.music / "renamed.wav").rename(self.music / "renamed.ogg")
+        (self.music / "broken.ogg").write_text("broken audio")
+        rows = {row["filename"]: row for row in self.scan()}
+        for filename in ("vorbis.ogg", "opus.OGG"):
+            with self.subTest(filename=filename):
+                row = rows[filename]
+                self.assertEqual(row["status"], "ready")
+                self.assertEqual(row["title"], "Ogg title")
+                self.assertEqual(row["artist"], "Ogg artist")
+                self.assertAlmostEqual(row["duration_seconds"], 2, delta=.1)
+        self.assertEqual(rows["renamed.ogg"]["status"], "unsupported")
+        self.assertEqual(rows["broken.ogg"]["status"], "unreadable")
+
     def test_collections_have_unique_rows_but_identical_content_shares_timing(self):
         import shutil
         self.audio("same.wav")

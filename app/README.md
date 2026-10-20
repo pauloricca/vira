@@ -334,7 +334,7 @@ and reconfigures the mount on a background thread when needed. Neither the
 service nor app modifies source music.
 
 Startup and Refresh scan direct children, using FFprobe to read embedded title,
-artist and duration for MP3 and PCM WAV. Missing title uses the complete filename
+artist and duration for MP3, PCM WAV and Ogg (`.ogg`, Vorbis or Opus). Missing title uses the complete filename
 stem; missing artist uses `Unknown artist`. Source filenames are available in the
 title tooltip and library search. Subfolders are skipped. Unsupported, damaged, non-regular and
 symlink files get individual error rows. There is no recursive scan or watcher.
@@ -559,8 +559,9 @@ estimate, not physical speaker timing or measured end-to-end latency. The output
 status exposes starvation and device errors during development. Scheduling/output
 failure is explicit; automatic device/sleep recovery remains deferred.
 
-Full-track preloading is capped at **256 MiB stereo PCM per source** (about 11.65
-minutes at 48 kHz). Larger sources fail with an actionable limit message. The
+Full-track preloading is capped at **about 11.65 minutes per source**, independent
+of output sample rate (256 MiB stereo PCM at 48 kHz, 512 MiB at 96 kHz).
+Larger sources fail with an actionable limit message. The
 native cache holds weak references; source buffers are released after the last
 voice/preparation owner retires. Temporary replacement buffers can increase
 memory above the two active sources. Streaming, cache eviction and larger files
@@ -593,7 +594,7 @@ output/VIRA.app/Contents/MacOS/vira --native-check 30 output/native-decks-short.
 output/VIRA.app/Contents/MacOS/vira --native-check 600 output/native-decks-600.json
 ```
 
-Tests generate synthetic MP3/WAV fixtures in temporary container storage and
+Tests generate synthetic MP3/WAV/Ogg fixtures in temporary container storage and
 cover tags, fallback names, duration, bad-file isolation, source revisions,
 addition/removal, non-PCM WAV, symlinks, missing/empty bin, probing timeouts,
 files changing mid-scan, HTTP input restrictions, response validation and UI

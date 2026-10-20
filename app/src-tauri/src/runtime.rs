@@ -835,7 +835,7 @@ impl EngineHandle {
                     .iter()
                     .map(|(_, source)| source.bytes())
                     .sum::<usize>()
-                    > source::MAX_SOURCE_BYTES
+                    > source::AUDITION_CACHE_BYTES
             {
                 cache.remove(0);
             }

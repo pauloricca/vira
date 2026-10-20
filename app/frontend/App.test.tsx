@@ -36,6 +36,21 @@ test('startup lists metadata and refresh reconciles removed files', async () => 
   await screen.findByText(/No files in this collection/);
   expect(invoke.mock.calls).toEqual([['open_library'], ['refresh_library']]);
 });
+test('startup selects the next available collection when the saved drive is missing', async () => {
+  localStorage.setItem('vira.collections', JSON.stringify(['/Volumes/USB/Music']));
+  const next = '/fixed/Dance';
+  invoke.mockResolvedValue({ ...library, collections: [next, '/fixed/Jazz'], tracks: [{ ...library.tracks[0], collection: next }] });
+  try {
+    render(<App />);
+    await screen.findByText('Unknown artist');
+    expect(screen.getByRole('button', { name: 'Music collection' }).textContent).toContain('Dance');
+    expect(JSON.parse(localStorage.getItem('vira.collections')!)).toEqual([next]);
+    expect(screen.queryByText('Library unavailable')).toBeNull();
+  } finally {
+    localStorage.removeItem('vira.collections');
+    localStorage.removeItem('vira.collection');
+  }
+});
 test('stale analysis displays only its short status', async () => {
   const detail = 'Source or analyzer version changed. Reanalyse this file.';
   invoke.mockResolvedValue({ ...library, tracks: [{ ...library.tracks[0], analysis: { state: 'stale', result: estimate, error: detail } }] });
@@ -71,6 +86,30 @@ test('expanding and restoring the library preserves its search, selection and mo
   expect(search.value).toBe('Filename');
   expect(row.getAttribute('aria-selected')).toBe('true');
 });
+test('expanded library CSS hides deck panels and fills the page through the MIDI host', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const style = document.createElement('style');
+  const { readFileSync } = await vi.importActual<{ readFileSync(path: string, encoding: 'utf8'): string }>('node:fs');
+  style.textContent = readFileSync('frontend/style.css', 'utf8');
+  document.head.append(style);
+  try {
+    const workspace = screen.getByRole('region', { name: 'Music library' }).closest('main')!;
+    const rolling = workspace.querySelector('.rolling')!;
+    const decks = workspace.querySelector('.decks')!;
+    const patches = workspace.querySelector('.performance-slots')!;
+    const lower = workspace.querySelector('.lower-panels')!;
+    fireEvent.click(screen.getByRole('button', { name: 'Expand music library' }));
+    for (const panel of [rolling, decks, patches]) expect(getComputedStyle(panel).display, panel.className).toBe('none');
+    expect(getComputedStyle(lower).gridTemplateColumns).toBe('minmax(0,1fr)');
+    fireEvent.click(screen.getByRole('button', { name: 'Restore library size' }));
+    for (const panel of [rolling, decks, patches]) expect(getComputedStyle(panel).display).not.toBe('none');
+    expect(getComputedStyle(lower).gridTemplateColumns).toBe('minmax(0,1.7fr) minmax(0,.7fr)');
+  } finally {
+    style.remove();
+  }
+});
 test('library track actions do not open the timing dialog', async () => {
   invoke.mockResolvedValue(library);
   render(<App />);
@@ -99,6 +138,33 @@ test('refresh stays disabled until the scan completes', async () => {
   expect((screen.getByRole('button', { name: 'Scanning…' }) as HTMLButtonElement).disabled).toBe(true);
   finish(library);
   await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false));
+});
+test.each([false, true])('library loading hides premature empty states until scanning finishes (has files: %s)', async hasFiles => {
+  vi.useFakeTimers();
+  let open!: (value: Library) => void;
+  let current: Library = { ...library, tracks: [], scan_pending: true };
+  invoke.mockImplementation((command: string) => command === 'open_library'
+    ? new Promise<Library>(resolve => { open = resolve; })
+    : Promise.resolve(current));
+  await act(async () => { render(<App />); });
+  const panel = screen.getByRole('region', { name: 'Music library' });
+  const collection = screen.getByRole('button', { name: 'Music collection' });
+  expect(panel.getAttribute('aria-busy')).toBe('true');
+  expect(collection.textContent).toContain('Loading…');
+  expect((collection as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText('Loading library…')).toBeTruthy();
+  await act(async () => { open(current); });
+  expect(collection.textContent).toContain('music');
+  expect(screen.getByText('Verifying files…')).toBeTruthy();
+  expect(panel.getAttribute('aria-busy')).toBe('true');
+  expect(screen.queryByText(/No files in this collection/)).toBeNull();
+  expect(screen.queryByText(/0 files · 0 readable/)).toBeNull();
+  current = { ...library, tracks: hasFiles ? library.tracks : [], scan_pending: false };
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(panel.getAttribute('aria-busy')).toBe('false');
+  expect(screen.queryByText('Verifying files…')).toBeNull();
+  if (hasFiles) expect(screen.getByText('Unknown artist')).toBeTruthy();
+  else expect(screen.getByText(/No files in this collection/)).toBeTruthy();
 });
 test('startup reconnects automatically after the preparation service becomes available', async () => {
   vi.useFakeTimers();
@@ -856,7 +922,8 @@ test('Settings opens from the workspace tabs without a duplicate waveform zoom c
   await screen.findByText('Unknown artist');
   fireEvent.click(screen.getByRole('button', { name: 'SETTINGS' }));
   expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'Settings' })).getAllByText('/fixed/music').length).toBeGreaterThan(0);
+  expect(await within(screen.getByRole('region', { name: 'Settings' })).findByText('/fixed/music')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Music library' })).toBeNull();
   expect(screen.queryByRole('table')).toBeNull();
   expect(screen.getByRole('button', { name: 'SETTINGS' }).getAttribute('aria-current')).toBe('page');
   expect(screen.queryByRole('heading', { name: 'Display' })).toBeNull();
@@ -1033,7 +1100,7 @@ test('collection dropdown filters search and analysis while preserving the loade
   audioInvoke.mockClear();
   expect(screen.queryByText(second.title)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
-  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Dance' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Dance' }));
   await screen.findByText(second.title);
   expect(screen.queryByText(first.title)).toBeNull();
   expect(localStorage.getItem('vira.collection')).toBe('/other/Dance');
@@ -1045,9 +1112,10 @@ test('collection dropdown filters search and analysis while preserving the loade
   expect(invoke.mock.calls.filter(([command]) => command === 'analyse_track')).toHaveLength(1);
   expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track' || command === 'deck_control')).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
-  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Empty' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Empty' }));
   expect(screen.getByText(/No files in this collection/)).toBeTruthy();
   localStorage.removeItem('vira.collection');
+  localStorage.removeItem('vira.collections');
 });
 
 test('adding a music folder in Settings refreshes collections immediately', async () => {
@@ -1063,7 +1131,7 @@ test('adding a music folder in Settings refreshes collections immediately', asyn
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('refresh_library'));
   fireEvent.click(screen.getByRole('button', { name: 'DECKS' }));
   fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
-  expect(screen.getByRole('menuitemradio', { name: 'Jazz' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Jazz' })).toBeTruthy();
 });
 
 test('deck analysis refreshes BPM, key and grids on both loaded copies without reloading', async () => {
@@ -1599,4 +1667,43 @@ test.each(['Save grid', 'Cancel'])('unsaved grid disables approval everywhere un
   await waitFor(() => expect((approveA as HTMLButtonElement).disabled).toBe(false));
   expect((approveB as HTMLButtonElement).disabled).toBe(false);
   expect((rowApprove as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('category checkboxes mix tracks, preserve the open menu, persist selection and names select exclusively', async () => {
+  localStorage.removeItem('vira.collections');
+  localStorage.setItem('vira.collection', '/fixed/music');
+  const first = { ...library.tracks[0], collection: '/fixed/music' };
+  const second = { ...first, id: 'two', title: 'Dance track', collection: '/other/Dance' };
+  const third = { ...first, id: 'three', title: 'Jazz track', collection: '/other/Jazz' };
+  invoke.mockResolvedValue({ ...library, collections: ['/fixed/music', '/other/Dance', '/other/Jazz'], tracks: [second, third, first] });
+  const view = render(<App />);
+  await screen.findByText(first.title);
+  const trigger = screen.getByRole('button', { name: 'Music collection' });
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Dance' }));
+  expect(screen.getByRole('menu')).toBeTruthy();
+  expect(trigger.textContent).toContain('2 categories');
+  expect(Array.from(document.querySelectorAll('.collection-table tbody .title'), el => el.textContent)).toEqual([second.title, first.title]);
+  expect(screen.queryByText(third.title)).toBeNull();
+  expect(JSON.parse(localStorage.getItem('vira.collections')!)).toEqual(['/fixed/music', '/other/Dance']);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole('menu')).toBeNull();
+  view.unmount();
+  render(<App />);
+  await screen.findByText(second.title);
+  expect(screen.getByRole('button', { name: 'Music collection' }).textContent).toContain('2 categories');
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Dance' }));
+  expect(screen.queryByText(second.title)).toBeNull();
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Dance' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Jazz' }));
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(screen.getByText(third.title)).toBeTruthy();
+  expect(screen.queryByText(first.title)).toBeNull();
+  expect(screen.queryByText(second.title)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Music collection' }));
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Jazz' }));
+  expect(screen.getByText('Select a category to see its tracks.')).toBeTruthy();
+  localStorage.removeItem('vira.collections');
+  localStorage.removeItem('vira.collection');
 });

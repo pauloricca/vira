@@ -149,10 +149,7 @@ pub fn remove_music(path: &Path) -> Result<Settings> {
 /// path-accepting HTTP API is introduced. This runs on an ordinary startup thread.
 pub fn ensure_music_mount() -> Result<()> {
     let _service = SERVICE.lock().unwrap();
-    let folders = read(&support().join("paths.json"), defaults())?.collections();
-    for folder in &folders {
-        selected_directory(folder)?;
-    }
+    let folders = available_music_folders(&read(&support().join("paths.json"), defaults())?);
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(2))
@@ -231,9 +228,53 @@ pub fn ensure_music_mount() -> Result<()> {
     }
 }
 
+fn available_music_folders(locations: &Locations) -> Vec<PathBuf> {
+    // Keep disconnected drives saved, but never let one block the other collections
+    // or let Docker create an empty directory at a missing mount source.
+    locations
+        .collections()
+        .into_iter()
+        .filter(|folder| selected_directory(folder).is_ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unavailable_music_folders_are_skipped_without_changing_saved_order() {
+        let root =
+            std::env::temp_dir().join(format!("vira-available-paths-{}", std::process::id()));
+        fs::create_dir_all(root.join("Dance")).unwrap();
+        fs::create_dir_all(root.join("Jazz")).unwrap();
+        fs::write(root.join("file"), "not a directory").unwrap();
+        let mut locations = Locations {
+            music: root.join("disconnected"),
+            music_folders: Some(vec![
+                root.join("disconnected"),
+                root.join("Dance"),
+                root.join("file"),
+                root.join("Jazz"),
+            ]),
+            patches: root.join("patches"),
+        };
+        let saved = locations.clone();
+        assert_eq!(
+            available_music_folders(&locations),
+            vec![root.join("Dance"), root.join("Jazz")]
+        );
+        assert_eq!(locations, saved);
+        fs::create_dir_all(root.join("disconnected")).unwrap();
+        assert_eq!(
+            available_music_folders(&locations)[0],
+            root.join("disconnected")
+        );
+        locations.music_folders = Some(vec![root.join("missing")]);
+        assert!(available_music_folders(&locations).is_empty());
+        locations.music_folders = Some(vec![]);
+        assert!(available_music_folders(&locations).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn legacy_single_folder_migrates_and_explicit_empty_stays_empty() {
         let legacy: Locations =

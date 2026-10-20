@@ -55,6 +55,26 @@ class PreparationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Sample rate"):
                 self.prepare.prepare(self.track_id, sample_rate=invalid)
 
+    def test_ogg_vorbis_and_opus_prepare_for_audition_and_decks(self):
+        import numpy as np
+        for codec in ("libvorbis", "libopus"):
+            with self.subTest(codec=codec):
+                path = self.music / f"{codec}.ogg"
+                subprocess.run(["ffmpeg", "-v", "error", "-i", str(self.path), "-c:a", codec, str(path)], check=True)
+                self.jobs.reconcile([inspect_file(path)])
+                row = self.jobs.state()["tracks"][0]
+                self.assertEqual(row["status"], "ready")
+                audition = self.prepare.prepare(row["id"], audition=True)
+                deck = self.prepare.prepare(row["id"])
+                self.assertEqual(audition["pcm_hash"], deck["pcm_hash"])
+                self.assertAlmostEqual(deck["duration_seconds"], 2, delta=.02)
+                self.assertTrue(deck["peaks"])
+                pcm = np.fromfile(self.prepare.audio_path(deck["artifact_id"]), dtype="<f4").reshape(-1, 2)
+                self.assertTrue(np.isfinite(pcm).all())
+                for channel, expected in ((0, 440), (1, 660)):
+                    frequency = np.fft.rfftfreq(len(pcm), 1 / deck["settings"]["sample_rate"])[np.abs(np.fft.rfft(pcm[:, channel])).argmax()]
+                    self.assertAlmostEqual(frequency, expected, delta=1)
+
     def test_audition_skips_waveforms_and_deck_upgrade_reuses_pcm(self):
         with patch("preparation.prepare.pcm_info", side_effect=AssertionError("Audition must not calculate waveforms")), patch("preparation.prepare.spectral_features", side_effect=AssertionError("Audition must not run FFT")):
             preview = self.prepare.prepare(self.track_id, audition=True)

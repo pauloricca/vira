@@ -169,6 +169,10 @@ details p,details li { line-height: 1.5; }
 footer { padding: 8px; display: flex; flex-direction: column; gap: 5px; color: #8a9ea9; font-size: 9px; border-top: 1px solid var(--line); }
 footer span { font-size: 8px; color: #718791; }
 .empty { padding: 20px 12px; color: #96aab5; line-height: 1.6; }
+.library-loading-indicator { display: inline-flex; align-items: center; gap: 7px; color: #a8c6d3; }
+.library-loading-indicator::before { content: ''; width: 10px; height: 10px; border: 2px solid #334952; border-top-color: currentColor; border-radius: 50%; animation: library-loading-spin 1s linear infinite; }
+@keyframes library-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .library-loading-indicator::before { animation: none; } }
 .performance-slots { display: flex; flex-direction: column; }
 .performance-slots .toolbar > div { display: flex; gap: 5px; }
 .slots-empty { flex: 1; min-height: 240px; display: flex; flex-direction: column; justify-content: center; align-items: center; color: #435c68; background: repeating-linear-gradient(0deg,transparent 0,transparent 79px,#25363d60 80px); }
@@ -219,11 +223,11 @@ main { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; 
 .deck-load-status { position: absolute; z-index: 2; left: 8px; right: 8px; top: 50%; transform: translateY(-50%); padding: 8px; background: #182229eb; border: 1px solid #62717a; color: #e3e8ea; text-align: center; pointer-events: none; }
 .mixer { height: 100%; min-height: 0; overflow: hidden; }
 .lower-panels { flex: 1 1 0; min-height: 0; overflow: hidden; }
-.library-expanded > .rolling,.library-expanded > .decks,.library-expanded .lower-panels > .performance-slots { display: none; }
-.library-expanded > .lower-panels { grid-template-columns: minmax(0,1fr); }
 .library-toolbar-actions .library-expand { display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; }
 .library,.performance-slots { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .library > .toolbar,.library-search,.library > .error,.library > .empty,.library > footer,.performance-slots > .toolbar { flex: none; }
+.library-expanded > .midi-page-host > .rolling,.library-expanded > .midi-page-host > .decks,.library-expanded .lower-panels > .performance-slots { display: none; }
+.library-expanded > .midi-page-host > .lower-panels { grid-template-columns: minmax(0,1fr); }
 .table-wrap { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; }
 .slots-empty { min-height: 0; }
 /* Each deck owns its channel strip; the narrow centre keeps master levels and crossfader. */
@@ -553,3 +557,8 @@ html,body,#root,#root * { -webkit-user-select: none; user-select: none; -webkit-
 .settings-search-empty { display: none; margin-top: 22px; color: var(--muted); font-size: 11px; }
 .settings-grid:empty + .settings-search-empty { display: block; }
 @media (max-width: 600px) { .settings-heading { flex-wrap: wrap; } .settings-search { width: 100%; } }
+
+.collection-option-row { display: flex; align-items: center; gap: 4px; }
+.collection-option-row > input { flex-shrink: 0; margin: 0 4px 0 7px; accent-color: #a9c8d6; cursor: pointer; }
+.collection-option-row .key-option { flex: 1; min-width: 0; }
+.collection-option-row:has(input:checked) { background: #24343d; }
