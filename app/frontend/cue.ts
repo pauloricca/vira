@@ -2,7 +2,7 @@ import { useMidiControl } from './MidiMapping';
 import { useEffect, useRef, useState } from 'react';
 
 // Keep a held Cue alive across telemetry updates, but release on cancellation.
-export function useCue(deck: number, generation: number, ready: boolean, control: (deck: number, action: string) => Promise<void>) {
+export function useCue(deck: number, generation: number, ready: boolean, control: (deck: number, action: string, value?: number) => Promise<void>, slot?: number) {
   const held = useRef(false);
   const keyboard = useRef(false);
   const [pressed, setPressed] = useState(false);
@@ -12,13 +12,15 @@ export function useCue(deck: number, generation: number, ready: boolean, control
     if (!held.current) return;
     held.current = false;
     setPressed(false);
-    void send.current(deck, 'cue_release');
+    if (slot == null) void send.current(deck, 'cue_release');
+    else void send.current(deck, 'hot_cue_release', slot);
   }
   function press() {
     if (!ready || held.current) return;
     held.current = true;
     setPressed(true);
-    void send.current(deck, 'cue_press');
+    if (slot == null) void send.current(deck, 'cue_press');
+    else void send.current(deck, 'hot_cue', slot);
   }
   useEffect(() => {
     const hide = () => { if (document.hidden) release(); };
@@ -32,8 +34,8 @@ export function useCue(deck: number, generation: number, ready: boolean, control
       document.removeEventListener('visibilitychange', hide);
       release();
     };
-  }, [deck, generation, ready]);
-  const midi = useMidiControl({id:`ui:Cue deck ${deck === 0 ? 'A' : 'B'}`, label:`Cue deck ${deck === 0 ? 'A' : 'B'}`,kind:'switch',defaultMode:'gate',priority:1,disabled:!ready,read:() => held.current ? 1 : 0,apply:value => value ? press() : release()});
+  }, [deck, generation, ready, slot]);
+  const midi = useMidiControl({id:slot == null ? `ui:Cue deck ${deck === 0 ? 'A' : 'B'}` : `ui:deck:${deck}:hot_cue:${slot}`, label:slot == null ? `Cue deck ${deck === 0 ? 'A' : 'B'}` : `Cue ${'ABCD'[slot]} deck ${deck === 0 ? 'A' : 'B'}`,kind:'switch',defaultMode:'gate',priority:1,disabled:!ready,read:() => held.current ? 1 : 0,apply:value => value ? press() : release()});
   return { pressed, midi, handlers: {
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0 || !ready) return;

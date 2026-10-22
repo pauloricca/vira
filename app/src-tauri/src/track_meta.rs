@@ -9,6 +9,8 @@ static SAVE: Mutex<()> = Mutex::new(());
 struct Metadata {
     #[serde(default)]
     gain_db: f32,
+    #[serde(default)]
+    hot_cue_seconds: [Option<f64>; 4],
     #[serde(flatten)]
     other: serde_json::Map<String, serde_json::Value>,
 }
@@ -28,6 +30,12 @@ fn read(path: &Path) -> Result<Metadata> {
         Err(error) => return Err(error).context("Cannot read saved track metadata"),
     };
     validate(metadata.gain_db)?;
+    for seconds in metadata.hot_cue_seconds.into_iter().flatten() {
+        ensure!(
+            seconds.is_finite() && seconds >= 0.,
+            "Invalid saved cue position"
+        );
+    }
     Ok(metadata)
 }
 
@@ -56,23 +64,94 @@ pub fn save_gain(source_hash: &str, gain: f32) -> Result<()> {
     )
 }
 
+pub fn hot_cues(source_hash: &str) -> Result<[Option<f64>; 4]> {
+    let _guard = SAVE.lock().unwrap();
+    Ok(read(&path(
+        &crate::paths::support().join("track-metadata"),
+        source_hash,
+    )?)?
+    .hot_cue_seconds)
+}
+
+pub fn save_hot_cue(source_hash: &str, slot: usize, seconds: Option<f64>) -> Result<()> {
+    let _guard = SAVE.lock().unwrap();
+    save_hot_cue_at(
+        &path(&crate::paths::support().join("track-metadata"), source_hash)?,
+        slot,
+        seconds,
+    )
+}
+
+fn save_hot_cue_at(path: &Path, slot: usize, seconds: Option<f64>) -> Result<()> {
+    ensure!(slot < 4, "Invalid cue slot");
+    ensure!(
+        seconds.is_none_or(|s| s.is_finite() && s >= 0.),
+        "Invalid cue position"
+    );
+    let mut metadata = read(path)?;
+    metadata.hot_cue_seconds[slot] = seconds;
+    write(path, &metadata)
+}
+
 fn save_at(path: &Path, gain: f32) -> Result<()> {
     validate(gain)?;
     let mut metadata = read(path)?;
     metadata.gain_db = gain;
+    write(path, &metadata)
+}
+
+fn write(path: &Path, metadata: &Metadata) -> Result<()> {
     fs::create_dir_all(path.parent().context("Missing track metadata directory")?)?;
     let temporary = path.with_extension("json.tmp");
-    let mut file = fs::File::create(&temporary).context("Cannot save track gain")?;
+    let mut file = fs::File::create(&temporary).context("Cannot save track metadata")?;
     file.write_all(&serde_json::to_vec_pretty(&metadata)?)?;
     file.sync_all()?;
     drop(file);
-    fs::rename(temporary, path).context("Cannot save track gain")
+    fs::rename(temporary, path).context("Cannot save track metadata")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn hot_cues_survive_reopening_and_clear_without_losing_other_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "vira-cues-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let first = path(&root, &"a".repeat(64)).unwrap();
+        let second = path(&root, &"b".repeat(64)).unwrap();
+        fs::write(&first, br#"{"gain_db":-3,"notes":"keep me"}"#).unwrap();
+        assert_eq!(read(&first).unwrap().hot_cue_seconds, [None; 4]);
+        save_hot_cue_at(&first, 0, Some(0.)).unwrap();
+        save_hot_cue_at(&first, 2, Some(12.345)).unwrap();
+        save_at(&first, 2.).unwrap();
+        assert_eq!(
+            read(&first).unwrap().hot_cue_seconds,
+            [Some(0.), None, Some(12.345), None]
+        );
+        assert_eq!(read(&second).unwrap().hot_cue_seconds, [None; 4]);
+        save_hot_cue_at(&first, 0, None).unwrap();
+        let reopened = read(&first).unwrap();
+        assert_eq!(reopened.hot_cue_seconds, [None, None, Some(12.345), None]);
+        assert_eq!(reopened.gain_db, 2.);
+        assert_eq!(reopened.other["notes"], "keep me");
+        for invalid in [f64::NAN, f64::INFINITY, -1.] {
+            assert!(save_hot_cue_at(&first, 1, Some(invalid)).is_err());
+        }
+        assert!(save_hot_cue_at(&first, 4, Some(1.)).is_err());
+        assert_eq!(
+            read(&first).unwrap().hot_cue_seconds,
+            reopened.hot_cue_seconds
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn gain_survives_reopening_and_is_scoped_to_content() {
         let root = std::env::temp_dir().join(format!(

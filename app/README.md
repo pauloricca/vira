@@ -1,5 +1,12 @@
 # VIRA local app — library and two native decks
 
+While VIRA is open, including in the background with playback stopped, it prevents
+idle system sleep and display sleep and renews macOS session activity every 15
+seconds to keep the idle session active. These assertions are released when VIRA
+quits (and macOS removes them if it crashes). Manual sleep, screen locking, logout,
+lid closure, low-battery protection and enforced security policies can still take
+precedence; VIRA does not change system preferences.
+
 The **TEIA** workspace hosts a native stereo master effect and opens the reusable
 Teia graph editor in a separate Tauri window. Add the stereo gain example, load
 it on master, and open its editor. Edits apply live; Save is explicit and
@@ -971,7 +978,7 @@ Tag filters pause while Tag tracks is enabled; the folder and search still apply
 Bulk assignments are saved together, and failed saves leave existing assignments
 intact.
 
-### Melodic and percussion patterns
+### Melodic, percussion and cue point patterns
 
 The **Patterns** workspace contains reusable, persistent MIDI loops. Create a
 pattern, select a CoreMIDI destination and channel, and launch it on the next beat
@@ -987,6 +994,19 @@ An empty channel uses the routed channel; a row channel overrides it. Percussion
 notes keep their fixed pitch across root/scale changes. Row edits apply to its
 existing notes, and deleting a row removes its notes. Both pattern types support
 the same note gestures, velocity, timing, duplication, persistence and routing.
+
+Choose **+ Cue point pattern** for four fixed A–D rows. Connect its **cue gates**
+output to a deck's **cue trigger** input, including the Active deck node. Each
+note presses that saved cue at note-on and releases it at note-off, returning the
+paused playhead to the cue. Resize the note to play a shorter or longer section;
+empty cue slots are skipped and never created by a sequence. Cue gates are
+independent of the deck's pitch input and use the native timestamped event queue.
+Stopping a pattern or disconnecting its route releases its held gates. Cue
+patterns share the other patterns' loop length, timing, duplication and storage.
+
+Pattern canvas titles show the pattern name. Rename the title or the detailed
+editor's name field to update the same saved name; the canvas omits the duplicate
+name/status line inside the node.
 
 Several patterns can connect to the same device MIDI input. Drag from each
 pattern's MIDI output to that input, or from the device input to each pattern's

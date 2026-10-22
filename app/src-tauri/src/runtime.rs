@@ -52,6 +52,7 @@ struct Shared {
     playing: [AtomicBool; 2],
     rejected_load: [AtomicU64; 2],
     cue_positions: [AtomicU64; 2],
+    hot_cues: [[AtomicU64; 4]; 2],
     cue_preview: [AtomicBool; 2],
     loop_starts: [AtomicU64; 2],
     loop_ends: [AtomicU64; 2],
@@ -134,6 +135,7 @@ impl Shared {
             playing: std::array::from_fn(|_| false.into()),
             rejected_load: std::array::from_fn(|_| 0.into()),
             cue_positions: std::array::from_fn(|_| 0.into()),
+            hot_cues: std::array::from_fn(|_| std::array::from_fn(|_| u64::MAX.into())),
             cue_preview: std::array::from_fn(|_| false.into()),
             loop_starts: std::array::from_fn(|_| u64::MAX.into()),
             loop_ends: std::array::from_fn(|_| u64::MAX.into()),
@@ -210,6 +212,12 @@ impl Shared {
                 generations: generation,
                 playing,
                 cue_positions: std::array::from_fn(|d| self.cue_positions[d].load(Relaxed)),
+                hot_cues: std::array::from_fn(|d| {
+                    std::array::from_fn(|slot| match self.hot_cues[d][slot].load(Relaxed) {
+                        u64::MAX => None,
+                        position => Some(position),
+                    })
+                }),
                 headphone_cue: std::array::from_fn(|d| self.headphone_cue[d].load(Relaxed)),
                 cue_preview: std::array::from_fn(|d| self.cue_preview[d].load(Relaxed)),
                 loop_starts: std::array::from_fn(|d| match self.loop_starts[d].load(Relaxed) {
@@ -304,6 +312,18 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hot_cues_snapshot_distinguishes_empty_from_track_start() {
+        let shared = Shared::new();
+        assert_eq!(shared.audible().hot_cues, [[None; 4]; 2]);
+        shared.hot_cues[0][0].store(0, Relaxed);
+        shared.hot_cues[0][3].store(24000, Relaxed);
+        assert_eq!(
+            shared.audible().hot_cues[0],
+            [Some(0), None, None, Some(24000)]
+        );
+        assert_eq!(shared.audible().hot_cues[1], [None; 4]);
+    }
     #[test]
     fn meter_feed_retains_transients_independently_of_transport_snapshots() {
         let shared = Shared::new();
@@ -455,6 +475,7 @@ pub struct DeckState {
     pub track_unchanged: bool,
     pub playing: bool,
     pub cue_seconds: f64,
+    pub hot_cue_seconds: [Option<f64>; 4],
     pub cue_preview: bool,
     pub loop_in_seconds: Option<f64>,
     pub loop_out_seconds: Option<f64>,
@@ -1050,6 +1071,8 @@ impl EngineHandle {
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
         );
+        voice.cue_identity = Some(Arc::from(prepared.source_hash.as_str()));
+        voice.restore_hot_cues(crate::track_meta::hot_cues(&prepared.source_hash)?);
         // Records are compact peaks/metadata, never PCM. Keep the previous audible
         // record while an installation travels through the output queue.
         {
@@ -1264,6 +1287,20 @@ impl EngineHandle {
             "play_pause" => Command::PlayPause(deck, generations[deck]),
             "cue_press" => Command::CuePress(deck, generations[deck]),
             "cue_release" => Command::CueRelease(deck, generations[deck]),
+            "hot_cue" | "hot_cue_clear" | "hot_cue_release" => {
+                let slot = value.ok_or_else(|| anyhow::anyhow!("Cue requires a slot"))?;
+                ensure!([0., 1., 2., 3.].contains(&slot), "Cue slot must be A–D");
+                if action == "hot_cue_release" {
+                    Command::HotCueRelease(deck, generations[deck], slot as usize)
+                } else {
+                    Command::HotCue(
+                        deck,
+                        generations[deck],
+                        slot as usize,
+                        action == "hot_cue_clear",
+                    )
+                }
+            }
             "pause" => Command::Pause(deck, generations[deck]),
             "stop" => Command::Stop(deck, generations[deck]),
             "loop_in" | "loop_in_snapped" => {
@@ -1429,6 +1466,7 @@ impl EngineHandle {
                 );
                 Command::SyncQuantum(quantum as u8)
             }
+            "tap_grid_start" => Command::TapGridStart(deck, generations[deck]),
             "sync" => {
                 let enabled = value == Some(1.);
                 if enabled {
@@ -1460,6 +1498,7 @@ impl EngineHandle {
         grid: crate::timing::Grid,
         preserve_speed: bool,
         follow_clock: bool,
+        tapped: bool,
     ) -> Result<()> {
         ensure!(deck < 2, "Deck must be A or B");
         let snapshot = self.shared.audible();
@@ -1479,7 +1518,9 @@ impl EngineHandle {
                 "Only the playing solo deck can move the master clock"
             );
         }
-        self.send(if follow_clock {
+        self.send(if tapped {
+            Command::TappedGrid(deck, generation, grid)
+        } else if follow_clock {
             Command::ShiftBarGrid(deck, generation, grid)
         } else if preserve_speed {
             Command::ReinterpretGrid(deck, generation, grid)
@@ -1568,6 +1609,7 @@ impl EngineHandle {
                     position_seconds: positions[d] as f64 / crate::sample_rate::get() as f64,
                     playing: playing[d] && self.shared.running.load(Acquire),
                     cue_seconds: snapshot.cue_positions[d] as f64 / crate::sample_rate::get() as f64,
+                    hot_cue_seconds: snapshot.hot_cues[d].map(|p| p.map(|p| p as f64 / crate::sample_rate::get() as f64)),
                     cue_preview: snapshot.cue_preview[d],
                     loop_in_seconds: snapshot.loop_starts[d].map(|p| p as f64 / crate::sample_rate::get() as f64),
                     loop_out_seconds: snapshot.loop_ends[d].map(|p| p as f64 / crate::sample_rate::get() as f64),
@@ -1670,6 +1712,7 @@ fn native_output(
     let (mut retire_tx, mut retire_rx) = rtrb::RingBuffer::<crate::decks::Retired>::new(64);
     let finished = Arc::new(AtomicBool::new(false));
     let retired_finished = finished.clone();
+    let retired_shared = shared.clone();
     let retirement = thread::spawn(move || {
         loop {
             while let Ok(voice) = retire_rx.pop() {
@@ -1677,6 +1720,16 @@ fn native_output(
                     crate::decks::Retired::Audition(v) => drop(v),
                     crate::decks::Retired::Voice(v) | crate::decks::Retired::RejectedLoad(_, v) => {
                         drop(v)
+                    }
+                    crate::decks::Retired::CueChange(change) => {
+                        if let Err(error) = crate::track_meta::save_hot_cue(
+                            &change.identity,
+                            change.slot,
+                            change.seconds,
+                        ) {
+                            *retired_shared.error.lock().unwrap() =
+                                Some(format!("Cannot save cue point: {error:#}"));
+                        }
                     }
                     crate::decks::Retired::Routing(p) => drop(p),
                 }
@@ -1691,6 +1744,16 @@ fn native_output(
                 crate::decks::Retired::Audition(v) => drop(v),
                 crate::decks::Retired::Voice(v) | crate::decks::Retired::RejectedLoad(_, v) => {
                     drop(v)
+                }
+                crate::decks::Retired::CueChange(change) => {
+                    if let Err(error) = crate::track_meta::save_hot_cue(
+                        &change.identity,
+                        change.slot,
+                        change.seconds,
+                    ) {
+                        *retired_shared.error.lock().unwrap() =
+                            Some(format!("Cannot save cue point: {error:#}"));
+                    }
                 }
                 crate::decks::Retired::Routing(p) => drop(p),
             }
@@ -1709,10 +1772,17 @@ fn native_output(
         .map(|lane| lane.midi.host.clone())
         .collect();
     crate::patterns::attach_decks(&deck_midi);
+    let cue_midi: Vec<_> = decks
+        .cue_lanes
+        .iter()
+        .map(|lane| lane.midi.host.clone())
+        .collect();
+    crate::patterns::attach_deck_cues(&cue_midi);
     let teia_midi_clocks: Vec<_> = drivers
         .iter()
         .map(|d| d.midi.host.clone())
         .chain(deck_midi)
+        .chain(cue_midi)
         .collect();
     let mut initial_plan = initial_graph.compile()?;
     initial_plan.history = history;
@@ -1975,6 +2045,10 @@ fn native_output(
                     cb.generations[d].store(last.generations[d], Relaxed);
                     cb.playing[d].store(last.playing[d], Relaxed);
                     cb.cue_positions[d].store(last.cue_positions[d], Relaxed);
+                    for slot in 0..4 {
+                        cb.hot_cues[d][slot]
+                            .store(last.hot_cues[d][slot].unwrap_or(u64::MAX), Relaxed);
+                    }
                     cb.cue_preview[d].store(last.cue_preview[d], Relaxed);
                     cb.loop_starts[d].store(last.loop_starts[d].unwrap_or(u64::MAX), Relaxed);
                     cb.loop_ends[d].store(last.loop_ends[d].unwrap_or(u64::MAX), Relaxed);

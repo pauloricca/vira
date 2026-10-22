@@ -4,6 +4,22 @@ import type { Grid } from './Timing';
 export function trackSampleRate(track: Pick<Prepared, 'frames' | 'duration_seconds'> | null | undefined) {
   return track && track.frames > 0 && track.duration_seconds > 0 ? track.frames / track.duration_seconds : 48000;
 }
+/** Only strong local attacks within 50 ms can correct a tapped beat. */
+export function snapTappedBeat(track: Prepared, seconds: number) {
+  const features = track.fine_features;
+  const step = (track.fine_peak_frames ?? 0) / trackSampleRate(track);
+  if (!features?.length || step <= 0 || step > .05) return seconds;
+  let nearest = seconds, distance = .05;
+  for (let i = Math.max(1, Math.ceil((seconds - .05) / step)); i < Math.min(features.length - 1, Math.floor((seconds + .05) / step) + 1); i++) {
+    const strength = features[i][1];
+    const delta = Math.abs(i * step - seconds);
+    if (strength >= .45 && strength > features[i - 1][1] && strength >= features[i + 1][1] && delta < distance) {
+      nearest = i * step;
+      distance = delta;
+    }
+  }
+  return nearest;
+}
 const cache = new WeakMap<NonNullable<Prepared['fine_peaks']>, Float32Array[]>();
 /** Dark deck tint → bright tint for treble → white for strong attacks. */
 export function waveformColour(colour: string, feature?: [number, number]) {

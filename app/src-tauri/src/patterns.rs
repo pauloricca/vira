@@ -99,6 +99,9 @@ impl Pattern {
         }
     }
     fn pitch(&self, n: &Note) -> u8 {
+        if self.kind == "cue" {
+            return n.degree - 1;
+        }
         if self.kind == "percussion" {
             return self
                 .rows
@@ -119,7 +122,8 @@ impl Pattern {
             "Invalid pattern name or ID"
         );
         ensure!(
-            ["melodic", "percussion"].contains(&self.kind.as_str()) && self.mode == "relative",
+            ["melodic", "percussion", "cue"].contains(&self.kind.as_str())
+                && self.mode == "relative",
             "Unsupported pattern type"
         );
         ensure!(
@@ -170,6 +174,13 @@ impl Pattern {
                     && (1..=127).contains(&n.velocity),
                 "Invalid note"
             );
+            if self.kind == "cue" {
+                ensure!(
+                    (1..=4).contains(&n.degree) && n.octave == 0 && n.row.is_none(),
+                    "Cue pattern events must select A–D"
+                );
+                continue;
+            }
             if self.kind == "percussion" {
                 ensure!(
                     n.row.as_ref().is_some_and(|id| row_ids.contains(id)),
@@ -273,6 +284,11 @@ static HOST: OnceLock<Host> = OnceLock::new();
 static INSTRUMENTS: OnceLock<Vec<std::sync::Weak<crate::teia::Host>>> = OnceLock::new();
 static DECKS: std::sync::Mutex<Vec<std::sync::Weak<crate::teia_midi::Host>>> =
     std::sync::Mutex::new(Vec::new());
+static DECK_CUES: std::sync::Mutex<Vec<std::sync::Weak<crate::teia_midi::Host>>> =
+    std::sync::Mutex::new(Vec::new());
+pub fn attach_deck_cues(hosts: &[Arc<crate::teia_midi::Host>]) {
+    *DECK_CUES.lock().unwrap() = hosts.iter().map(Arc::downgrade).collect();
+}
 pub fn attach_decks(hosts: &[Arc<crate::teia_midi::Host>]) {
     *DECKS.lock().unwrap() = hosts.iter().map(Arc::downgrade).collect();
 }
@@ -280,6 +296,7 @@ pub(crate) fn internal_host(dest: &Destination) -> Option<Arc<crate::teia_midi::
     match dest {
         Destination::Teia { slot } => teia_host(*slot),
         Destination::Deck { deck } => DECKS.lock().unwrap().get(*deck)?.upgrade(),
+        Destination::DeckCue { deck } => DECK_CUES.lock().unwrap().get(*deck)?.upgrade(),
         _ => None,
     }
 }
@@ -323,7 +340,7 @@ fn destination(p: &Pattern) -> Destination {
 fn lead(p: &Pattern) -> f64 {
     if matches!(
         destination(p),
-        Destination::Teia { .. } | Destination::Deck { .. }
+        Destination::Teia { .. } | Destination::Deck { .. } | Destination::DeckCue { .. }
     ) {
         40.
     } else {
@@ -1386,6 +1403,30 @@ mod tests {
         new = old.clone();
         new.notes.clear();
         assert!(!keeps_held_note(&old, &new, "n"));
+    }
+    #[test]
+    fn cue_patterns_emit_fixed_slot_gates_with_note_durations() {
+        let mut p = pattern();
+        p.kind = "cue".into();
+        p.key = 7;
+        p.notes.truncate(1);
+        p.notes[0].degree = 4;
+        p.notes[0].octave = 0;
+        p.notes[0].beat = 0.;
+        p.notes[0].duration = 0.5;
+        p.validate().unwrap();
+        let events = edges(&p, 0., -0.01, 1., None);
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            (events[0].pitch, events[0].on, events[0].beat),
+            (3, true, 0.)
+        );
+        assert_eq!(
+            (events[1].pitch, events[1].on, events[1].beat),
+            (3, false, 0.5)
+        );
+        p.notes[0].degree = 5;
+        assert!(p.validate().is_err());
     }
     #[test]
     fn relative_mapping_and_octaves() {

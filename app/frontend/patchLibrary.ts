@@ -53,7 +53,7 @@ export function usePatchLibrary(active: boolean) {
       const result = await Promise.allSettled([invoke<{files:string[]}>('teia_library'), invoke<PatchEntry[]>('patches_state')]);
       if (stopped) return;
       if (result[0].status === 'fulfilled' && result[0].value) setFiles(result[0].value.files ?? []);
-      if (result[1].status === 'fulfilled' && result[1].value) setEntries(result[1].value);
+      if (result[1].status === 'fulfilled' && Array.isArray(result[1].value)) setEntries(result[1].value);
     };
     void refresh(); const timer = window.setInterval(() => void refresh(), 1500);
     window.addEventListener('patches-changed', refresh);

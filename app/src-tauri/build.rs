@@ -4,12 +4,14 @@ fn main() {
         cc::Build::new()
             .file("native/audio_worker.c")
             .file("native/teia_midi.c")
+            .file("native/keep_awake.c")
             .opt_level(3)
             .compile("vira_worker");
         println!("cargo:rustc-link-lib=framework=AudioToolbox");
         println!("cargo:rustc-link-lib=framework=CoreAudio");
         println!("cargo:rustc-link-lib=framework=CoreMIDI");
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        println!("cargo:rustc-link-lib=framework=IOKit");
         println!("cargo:rustc-link-lib=framework=Accelerate");
     }
     let root =
@@ -23,4 +25,5 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUBBERBAND_SOURCE");
     println!("cargo:rerun-if-changed=native/audio_worker.c");
     println!("cargo:rerun-if-changed=native/teia_midi.c");
+    println!("cargo:rerun-if-changed=native/keep_awake.c");
 }

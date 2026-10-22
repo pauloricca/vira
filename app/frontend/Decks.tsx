@@ -23,9 +23,12 @@ import { KeySelector } from './KeySelector';
 export const TRACK_MIME = 'application/x-vira-track-id';
 export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; start_seconds?: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
 type FineWaveform = Pick<Prepared, 'artifact_id' | 'fine_peak_frames' | 'fine_peaks' | 'fine_features'>;
-export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; loop_release_pending?: boolean; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid_edit?: Grid | null; grid_saving?: boolean; grid_previewing?: boolean; grid_pin?: number; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; pitch_semitones?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
+export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; hot_cue_seconds?: (number | null)[]; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; loop_release_pending?: boolean; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid_can_undo?: boolean; grid_can_redo?: boolean; grid_edit?: Grid | null; grid_saving?: boolean; grid_previewing?: boolean; grid_pin?: number; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; pitch_semitones?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
 export type AudioState = { master_volume?: number; cue_volume?: number; auto_fast?: boolean; auto_transition?: TransitionPlan | null; auto_mode?: [number, number]; audition?: { index?: number; generation: number; position_seconds: number; playing: boolean }; routing?: { master: string | null; cue: string | null; master_channels?: [number, number]; cue_channels?: [number, number]; cue_sample_rate?: number | null; cue_running: boolean; cue_error: string | null }; crossfader?: number; crossfader_enabled?: boolean; master_bpm?: number | null; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { sample_rate?: number; callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number; resources?: { process_cpu_seconds?: number } } };
 const empty = (deck: number): DeckState => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 });
+type GridSnapshot = { grid: Grid; beats: number[] };
+type GridHistory = { generation: number; undo: GridSnapshot[]; redo: GridSnapshot[] };
+const sameGrid = (a: Grid, b: Grid) => a.bpm === b.bpm && a.downbeat_seconds === b.downbeat_seconds && a.reviewed === b.reviewed;
 
 export const canLoadDeck = (deck: Pick<DeckState, 'playing' | 'gain'>) => !deck.playing || deck.gain === 0;
 
@@ -41,10 +44,25 @@ export function useDecks() {
   const currentAudio = useRef(audio);
   currentAudio.current = audio;
   const references = useRef([{ generation: 0, beats: [] as number[], grid: null as Grid | null, loaded: false }, { generation: 0, beats: [] as number[], grid: null as Grid | null, loaded: false }]);
-  const gridEdits = useRef<({ generation: number; grid: Grid; original: Grid; auditioned?: boolean; previewing?: boolean; drag?: { grid: Grid; origin: number }; pin?: number; saving: boolean } | null)[]>([null, null]);
+  const gridEdits = useRef<({ generation: number; grid: Grid; original: Grid; undo: Grid[]; redo: Grid[]; auditioned?: boolean; previewing?: boolean; drag?: { grid: Grid; origin: number; recorded?: boolean }; pin?: number; saving: boolean } | null)[]>([null, null]);
+  const gridHistories = useRef<GridHistory[]>([0, 1].map(() => ({ generation: 0, undo: [], redo: [] })));
+  function historyFor(deck: number, generation: number) {
+    if (gridHistories.current[deck].generation !== generation) gridHistories.current[deck] = { generation, undo: [], redo: [] };
+    return gridHistories.current[deck];
+  }
+  function historyFlags(deck: number, generation: number) {
+    const edit = gridEdits.current[deck];
+    const history = edit?.generation === generation ? edit : historyFor(deck, generation);
+    return { grid_can_undo: history.undo.length > 0, grid_can_redo: history.redo.length > 0 };
+  }
+  function rememberGrid(deck: number, generation: number, grid: Grid, beats: number[]) {
+    const history = historyFor(deck, generation);
+    history.undo.push({ grid: { ...grid }, beats: [...beats] });
+    history.redo = [];
+  }
   function showGridEdit(deck: number) {
     const edit = gridEdits.current[deck];
-    setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid_edit: edit?.generation === d.generation ? edit.grid : null, grid_saving: edit?.saving ?? false, grid_previewing: edit?.previewing ?? false, grid_pin: edit?.pin } : d) }));
+    setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck ? { ...d, ...historyFlags(deck, d.generation), grid_edit: edit?.generation === d.generation ? edit.grid : null, grid_saving: edit?.saving ?? false, grid_previewing: edit?.previewing ?? false, grid_pin: edit?.pin } : d) }));
   }
   const transportQueue = useRef([Promise.resolve(), Promise.resolve()]);
   const referenceQueue = useRef([Promise.resolve(), Promise.resolve()]);
@@ -105,7 +123,7 @@ export function useDecks() {
           if (stored.generation !== d.generation) { stored.generation = d.generation; stored.beats = []; stored.grid = null; stored.loaded = false; }
           if (gridEdits.current[d.deck]?.generation !== d.generation) gridEdits.current[d.deck] = null;
           const edit = gridEdits.current[d.deck];
-          return { ...d, grid_edit: edit?.grid, grid_saving: edit?.saving, grid_previewing: edit?.previewing, grid_pin: edit?.pin, track: stableTrack, reference_beats: stored.beats, received_at: received, sampled_at: (sent + received) / 2 };
+          return { ...d, ...historyFlags(d.deck, d.generation), grid_edit: edit?.grid, grid_saving: edit?.saving, grid_previewing: edit?.previewing, grid_pin: edit?.pin, track: stableTrack, reference_beats: stored.beats, received_at: received, sampled_at: (sent + received) / 2 };
         }) }); setPollError(null); }
         if (!cancelled) for (const d of value.decks) {
           if ((!d.track && !(d.track_unchanged && d.generation > 0)) || d.loading) continue;
@@ -164,7 +182,8 @@ export function useDecks() {
       if (action === 'master_volume' || action === 'cue_volume') {
         setAudio(previous => ({ ...previous, [action]: value }));
       }
-      if (['grid_edit', 'grid_cancel', 'grid_save', 'grid_pin', 'grid_drag_start', 'grid_drag'].includes(action) || action === 'shift_bar_start' && gridEdits.current[deck]) {
+      if (['grid_edit', 'grid_cancel', 'grid_save', 'grid_pin', 'grid_drag_start', 'grid_drag'].includes(action) || ['shift_bar_start', 'grid_undo', 'grid_redo'].includes(action) && gridEdits.current[deck]) {
+        if (action === 'grid_edit') await referenceQueue.current[deck];
         const state = currentAudio.current.decks[deck];
         const edit = gridEdits.current[deck];
         if (action === 'grid_cancel') {
@@ -176,11 +195,19 @@ export function useDecks() {
           gridEdits.current[deck] = null;
         } else if (action === 'grid_edit') {
           if (!state.track || !state.grid || state.loading) throw new Error('Load a track with a timing grid first');
-          gridEdits.current[deck] = { generation: state.generation, grid: { ...state.grid }, original: { ...state.grid }, saving: false };
+          gridEdits.current[deck] = { generation: state.generation, grid: { ...state.grid }, original: { ...state.grid }, undo: [], redo: [], saving: false };
         } else {
           if (!state.track || !edit || edit.generation !== state.generation || edit.saving || edit.previewing) return;
-          if ((state.playing || state.launch_pending) && ['grid_pin', 'grid_drag_start', 'grid_drag', 'shift_bar_start'].includes(action)) return;
-          if (action === 'shift_bar_start') {
+          if ((state.playing || state.launch_pending) && ['grid_pin', 'grid_drag_start', 'grid_drag', 'shift_bar_start', 'grid_undo', 'grid_redo'].includes(action)) return;
+          const before = edit.grid;
+          if (action === 'grid_undo' || action === 'grid_redo') {
+            const from = action === 'grid_undo' ? edit.undo : edit.redo;
+            const to = action === 'grid_undo' ? edit.redo : edit.undo;
+            if (!from.length) return;
+            to.push(edit.grid);
+            edit.grid = from.pop()!;
+            edit.drag = undefined;
+          } else if (action === 'shift_bar_start') {
             edit.grid = shiftBarStart(edit.grid, value === 1 ? 1 : -1, state.track.duration_seconds);
             edit.drag = undefined;
           } else if (action === 'grid_pin') {
@@ -203,29 +230,44 @@ export function useDecks() {
                 throw error;
               }
               if (currentAudio.current.decks[deck].generation !== state.generation) return;
+              if (!sameGrid(edit.original, edit.grid) || references.current[deck].beats.length) rememberGrid(deck, state.generation, edit.original, references.current[deck].beats);
               references.current[deck] = { generation: state.generation, beats: [], grid: edit.grid, loaded: true };
               setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck && d.generation === state.generation ? { ...d, grid: edit.grid, reference_beats: [], target_bpm: edit.grid.bpm * (d.speed ?? 1) } : d) }));
               gridEdits.current[deck] = null;
             } finally { edit.saving = false; showGridEdit(deck); }
           }
+          if (['shift_bar_start', 'grid_drag'].includes(action) && !sameGrid(before, edit.grid) && (action !== 'grid_drag' || !edit.drag?.recorded)) {
+            edit.undo.push(before);
+            edit.redo = [];
+            if (edit.drag) edit.drag.recorded = true;
+          }
         }
         showGridEdit(deck);
-      } else if (['reference_beat', 'shift_bar_start', 'detected_bpm', 'original_bpm', 'tapped_grid'].includes(action)) {
+      } else if (['reference_beat', 'shift_bar_start', 'detected_bpm', 'original_bpm', 'tapped_grid', 'grid_undo', 'grid_redo'].includes(action)) {
         if (gridEdits.current[deck]) throw new Error('Save or cancel the grid edit first');
         const task = referenceQueue.current[deck].then(async () => {
+          if (gridEdits.current[deck]) throw new Error('Save or cancel the grid edit first');
           const state = currentAudio.current.decks[deck];
           if (action === 'tapped_grid' && (!tappedGrid || state.generation !== tappedGrid.generation)) return;
           if (!state.track) throw new Error('Load a track first');
-          if ((!state.grid && !['detected_bpm', 'reference_beat', 'tapped_grid'].includes(action)) || (value === undefined && action !== 'original_bpm')) throw new Error('Load a track with a timing grid first');
-          const followClock = action === 'shift_bar_start' && state.playing;
+          const restoring = action === 'grid_undo' || action === 'grid_redo';
+          if ((!state.grid && !['detected_bpm', 'reference_beat', 'tapped_grid'].includes(action)) || (value === undefined && !restoring && action !== 'original_bpm')) throw new Error('Load a track with a timing grid first');
+          const tapping = action === 'tapped_grid';
+          const tapLocked = tapping && !currentAudio.current.decks.some(d => d.deck !== deck && d.synced);
+          const followClock = (action === 'shift_bar_start' || restoring) && state.playing;
+          if (restoring && (state.loading || state.launch_pending)) return;
           if (followClock && currentAudio.current.decks.some(d => d.deck !== deck && d.playing)) throw new Error('Only one deck can be playing to shift its bar start');
-          const preserveSpeed = action === 'detected_bpm' || action === 'original_bpm' || action === 'shift_bar_start' || action === 'tapped_grid';
+          const preserveSpeed = restoring || action === 'detected_bpm' || action === 'original_bpm' || action === 'shift_bar_start' || action === 'tapped_grid';
           if (state.playing && !preserveSpeed) throw new Error('Stop the deck before changing its timing');
           await loadReferences(state);
           if (action === 'tapped_grid' && currentAudio.current.decks[deck].generation !== state.generation) return;
           const stored = references.current[deck];
           if (stored.generation !== state.generation) throw new Error('Source replaced; retry on the current deck');
-          const beats = action === 'tapped_grid' ? [] : action === 'reference_beat' ? [...stored.beats.slice(-1), value!] : stored.beats;
+          const history = historyFor(deck, state.generation);
+          const from = action === 'grid_undo' ? history.undo : history.redo;
+          const restored = restoring ? from.at(-1) : undefined;
+          if (restoring && !restored) return;
+          const beats = restored ? restored.beats : action === 'tapped_grid' ? [] : action === 'reference_beat' ? [...stored.beats.slice(-1), value!] : stored.beats;
           if (action === 'reference_beat' && !stored.grid && !state.grid && beats.length === 1) {
             if (!Number.isFinite(value) || value! < 0 || value! >= state.track.duration_seconds) throw new Error('Reference beat must lie within the track');
             stored.beats = beats;
@@ -239,7 +281,7 @@ export function useDecks() {
             if (!record.suggestion || record.state === 'stale') throw new Error('No current detected BPM is available');
             bpm = record.suggestion.bpm;
           }
-          const grid = action === 'tapped_grid'
+          const grid = restored ? restored.grid : action === 'tapped_grid'
             ? { bpm: value!, downbeat_seconds: tappedGrid!.downbeatSeconds, reviewed: false }
             : action === 'reference_beat'
             ? gridForReferenceBeats(stored.grid ?? state.grid ?? null, beats, state.track.duration_seconds, trackSampleRate(state.track))
@@ -247,17 +289,30 @@ export function useDecks() {
               ? shiftBarStart(source, value === 1 ? 1 : -1, state.track.duration_seconds)
               : { ...source, bpm: bpm!, reviewed: false };
           if (!validGrid(grid, state.track.duration_seconds)) throw new Error('Enter a track BPM between 30 and 300');
+          const previousGrid = stored.grid ?? state.grid;
           await invoke<TimingRecord>('track_timing', { trackId: state.track.track_id, grid, referenceBeats: beats });
-          await invoke('apply_timing', { deck, generation: state.generation, grid, ...(preserveSpeed ? { preserveSpeed: true } : {}), ...(followClock ? { followClock: true } : {}) });
+          try {
+            await invoke('apply_timing', { deck, generation: state.generation, grid, ...(preserveSpeed ? { preserveSpeed: true } : {}), ...(followClock ? { followClock: true } : {}), ...(tapping ? { tapped: true } : {}) });
+          } catch (error) {
+            if (restoring && previousGrid) await invoke('track_timing', { trackId: state.track.track_id, grid: previousGrid, referenceBeats: stored.beats });
+            throw error;
+          }
+          if (currentAudio.current.decks[deck].generation !== state.generation) return;
+          if (restoring && previousGrid) {
+            from.pop();
+            (action === 'grid_undo' ? history.redo : history.undo).push({ grid: { ...previousGrid }, beats: [...stored.beats] });
+          } else if (previousGrid && (!sameGrid(previousGrid, grid) || JSON.stringify(stored.beats) !== JSON.stringify(beats))) {
+            rememberGrid(deck, state.generation, previousGrid, stored.beats);
+          }
           stored.beats = beats;
           stored.grid = grid;
           setAudio(previous => {
             const current = previous.decks[deck];
             if (current.generation !== state.generation) return previous;
             const speed = preserveSpeed ? current.speed ?? 1 : 1;
-            const synced = preserveSpeed && !!current.synced;
+            const synced = tapping ? tapLocked : preserveSpeed && !!current.synced;
             const target = grid.bpm * speed;
-            return { ...previous, master_bpm: (followClock || synced && current.playing && !current.launch_pending) ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
+            return { ...previous, master_bpm: (followClock || tapLocked || !tapping && synced && current.playing && !current.launch_pending) ? target : previous.master_bpm, decks: previous.decks.map(d => d.deck === deck ? { ...d, ...historyFlags(deck, state.generation), grid, reference_beats: beats, target_bpm: target, speed, synced } : d) };
           });
         });
         referenceQueue.current[deck] = task.catch(() => {});
@@ -266,6 +321,7 @@ export function useDecks() {
         const stored = references.current[deck]; stored.beats = []; stored.grid = null; stored.loaded = true;
         setAudio(previous => ({ ...previous, decks: previous.decks.map(d => d.deck === deck ? { ...d, reference_beats: [] } : d) }));
       } else {
+        if (action === 'tap_grid_start' && gridEdits.current[deck]) throw new Error('Save or cancel the grid edit first');
         if (gridEdits.current[deck] && ['auto_now', 'auto_end', 'auto_now_fast', 'auto_end_fast'].includes(action)) throw new Error('Save or cancel the grid edit before starting an automatic transition');
         const args = { deck, action, value: value ?? null, generation: currentAudio.current.decks[deck].generation };
         if (['cue_press', 'cue_release', 'play_pause', 'play', 'pause', 'stop'].includes(action)) {
@@ -311,7 +367,7 @@ export function time(seconds: number) {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}.${Math.floor((seconds - whole) * 10)}`;
 }
 
-export function Deck({ state, running, loading, loadingTitle, error, load, control, transition, autoAvailable = false, otherPlaying = true, autoMode = 0, autoFast = false, autoFastBars = 4, showVolume = true, syncQuantum = 4, alignLoops = true, snapLoopPoints = true, onInteract, registerPosition, active = false, analysisState, analyse, analysing = false, approveAnalysis, approving = false, gridEditing = false, approvalError, trackKey, otherKey }: { transition?: TransitionPlan | null; autoAvailable?: boolean; otherPlaying?: boolean; autoMode?: number; autoFast?: boolean; autoFastBars?: number; showVolume?: boolean; syncQuantum?: number; alignLoops?: boolean; snapLoopPoints?: boolean; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; analyse?: () => void; analysing?: boolean; approveAnalysis?: () => void; approving?: boolean; gridEditing?: boolean; approvalError?: string; trackKey?: string | null; otherKey?: string | null; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+export function Deck({ visible = true, state, running, loading, loadingTitle, error, load, control, transition, autoAvailable = false, otherPlaying = true, autoMode = 0, autoFast = false, autoFastBars = 4, showVolume = true, syncQuantum = 4, alignLoops = true, snapLoopPoints = true, onInteract, registerPosition, active = false, analysisState, analyse, analysing = false, approveAnalysis, approving = false, gridEditing = false, approvalError, trackKey, otherKey }: { visible?: boolean; transition?: TransitionPlan | null; autoAvailable?: boolean; otherPlaying?: boolean; autoMode?: number; autoFast?: boolean; autoFastBars?: number; showVolume?: boolean; syncQuantum?: number; alignLoops?: boolean; snapLoopPoints?: boolean; onInteract?: (deck: number) => void; registerPosition?: (deck: number, getPosition: () => number) => void; active?: boolean; analysisState?: string; analyse?: () => void; analysing?: boolean; approveAnalysis?: () => void; approving?: boolean; gridEditing?: boolean; approvalError?: string; trackKey?: string | null; otherKey?: string | null; state: DeckState; running: boolean; loading: boolean; loadingTitle?: string; error: string | null; load: (deck: number, id: string) => Promise<void>; control: (deck: number, action: string, value?: number) => Promise<void> }) {
   const name = state.deck === 0 ? 'A' : 'B';
   const [timingOpen, setTimingOpen] = useState(false);
   const autoClick = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -346,9 +402,9 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
   useEffect(() => setTrackBpm(state.grid ? String(state.grid.bpm) : ''), [state.grid?.bpm, state.generation]);
   useEffect(() => {
     if (!running || !state.track) return;
-    void control(state.deck, 'click_panel', 1);
+    void control(state.deck, 'click_panel', timingOpen && visible ? 1 : 0);
     return () => { void control(state.deck, 'click_panel', 0); };
-  }, [state.generation, running, state.track?.track_id]);
+  }, [state.generation, running, state.track?.track_id, timingOpen, visible]);
   const clock = useRef(new DisplayPosition());
   registerPosition?.(state.deck, () => clock.current.at(performance.now()));
   const playhead = useRef<SVGPathElement>(null);
@@ -449,6 +505,11 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       {total > 0 && loopIn != null && <path className="loop-marker loop-in" aria-label={`Loop in deck ${name}`} d={`M${loopIn / total * 1024},0V120`}><title>{`Loop in ${time(Math.max(0, loopIn - start))}`}</title></path>}
       {total > 0 && loopOut != null && <path className="loop-marker loop-out" aria-label={`Loop out deck ${name}`} d={`M${loopOut / total * 1024},0V120`}><title>{`Loop out ${time(Math.max(0, loopOut - start))}`}</title></path>}
       {state.track && <path className="cue-marker" aria-label={`Cue point deck ${name}`} d={`M${(state.cue_seconds ?? 0) / total * 1024},0v120`}><title>{`Cue ${time(Math.max(0, (state.cue_seconds ?? start) - start))}`}</title></path>}
+      {total > 0 && state.hot_cue_seconds?.map((seconds, slot) => seconds == null ? null : <g key={slot} className={`hot-cue-marker hot-cue-${slot}`} aria-label={`Cue ${'ABCD'[slot]} marker deck ${name}`}>
+        <title>{`Cue ${'ABCD'[slot]} · ${time(Math.max(0, seconds - start))}`}</title>
+        <path d={`M${seconds / total * 1024},0V120`} />
+        <text x={seconds / total * 1024 + (seconds > start + duration * .95 ? -14 : 4)} y="17">{'ABCD'[slot]}</text>
+      </g>)}
       <TransitionOverview plan={transition} deck={state.deck} total={total} start={start} looped={state.loop_out_seconds != null} />
       <path ref={playhead} d={`M${total ? state.position_seconds / total * 1024 : 0},0V120`} stroke="#f2f5f6" strokeWidth="3" />
       {ready && !preparing && phraseOffsets.map(offset => <path key={offset}
@@ -471,6 +532,7 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
     <div className="deck-loop-bank" hidden={timingOpen}><div className="auto-controls" aria-label={`Automatic transitions deck ${name}`}>
       {(['NOW', 'END'] as const).map((mode, index) => <MidiButton key={mode} aria-label={`AUTO ${mode} deck ${name}`} aria-pressed={autoMode === index + 1} className={autoMode === index + 1 ? `auto-engaged${autoFast ? ' auto-fast' : ''}` : undefined} disabled={autoMode !== index + 1 && (!ready || !autoAvailable)} title={autoMode === index + 1 ? 'Cancel automatic transition' : mode === 'NOW' ? 'Transition at the next phrase boundary; double-click for fast overlap' : 'Transition at the end of the track; double-click for fast overlap'} onClick={event => clickAuto(mode, event.detail)} onDoubleClick={() => fastAuto(mode)}>AUTO {mode}</MidiButton>)}
     </div>
+    <div className="hot-cue-controls" aria-label={`Cue points deck ${name}`}>{['A', 'B', 'C', 'D'].map((label, slot) => <HotCuePad key={label} state={state} slot={slot} ready={ready && !preparing && !state.grid_saving && !state.grid_previewing} control={control} />)}</div>
     <div className="loop-controls" aria-label={`Loop controls deck ${name}`}>{['IN', '1/32', '1/16', '1/8', '1/4', '1/2', 'SLIP', 'OUT', '1', '2', '4', '8', '16'].map(label => {
       if (label === 'SLIP') return <MidiButton key={label} disabled={!ready} className={state.slip_enabled ? 'active' : undefined} aria-pressed={!!state.slip_enabled} aria-label={`Slip deck ${name}`} title="Keep a background playhead moving through loops; return to it when the loop is released" onClick={() => void control(state.deck, 'slip', state.slip_enabled ? 0 : 1)}>SLIP</MidiButton>;
       // Button labels are musical bar lengths; the engine measures grid beats.
@@ -486,6 +548,10 @@ export function Deck({ state, running, loading, loadingTitle, error, load, contr
       <div className="grid-timing-fields">
       <MidiButton disabled={!ready || state.playing || !!state.grid_edit} onClick={() => void control(state.deck, 'reference_beat', Math.min(Math.max(0, clock.current.at(performance.now())), Math.max(0, total - 1 / trackSampleRate(state.track))))} aria-label="Set reference beat" title="Set reference beat at playhead">Ref beat</MidiButton>
       <div className="shift-bar-row"><span>Bar</span><MidiButton disabled={barShiftDisabled} aria-label={`Shift bar start back one beat on deck ${name}`} title="Shift bar start back one beat" onClick={() => void control(state.deck, 'shift_bar_start', -1)}>←</MidiButton><MidiButton disabled={barShiftDisabled} aria-label={`Shift bar start forward one beat on deck ${name}`} title="Shift bar start forward one beat" onClick={() => void control(state.deck, 'shift_bar_start', 1)}>→</MidiButton></div>
+      </div>
+      <div className="timing-grid-history">
+        <MidiButton aria-label={`Undo grid change on deck ${name}`} title="Undo grid change (⌘Z)" disabled={barShiftDisabled || !!state.launch_pending || !state.grid_can_undo} onClick={() => void control(state.deck, 'grid_undo')}>↶</MidiButton>
+        <MidiButton aria-label={`Redo grid change on deck ${name}`} title="Redo grid change (⌘⇧Z)" disabled={barShiftDisabled || !!state.launch_pending || !state.grid_can_redo} onClick={() => void control(state.deck, 'grid_redo')}>↷</MidiButton>
       </div>
       </div>
       <fieldset className="grid-timing-fields timing-tempo" disabled={!!state.grid_edit}>
@@ -618,7 +684,7 @@ export function Mixer({ audio, meters, control, showCrossfader = true, deckA, de
     setPosition(value);
     void control(0, 'crossfader', value);
   };
-  return <section className="decks" aria-label="Decks" style={{gridTemplateColumns:hasCentre ? `minmax(0,1fr) ${extra.length ? Math.max(showCrossfader ? 68 : 0, extra.length * 40 + (extra.length - 1) * 4) : 68}px minmax(0,1fr)` : 'minmax(0,1fr) minmax(0,1fr)'}}>
+  return <section className="decks" aria-label="Decks" style={{gridTemplateColumns:hasCentre ? `minmax(0,1fr) ${extra.length ? extra.length * 40 : 68}px minmax(0,1fr)` : 'minmax(0,1fr) minmax(0,1fr)'}}>
     <div className="deck-unit deck-0">{deckA}<ChannelFader state={audio.decks[0]} running={audio.running} control={control} meter={meters[0]} /></div>
     {hasCentre && <section className="mixer" aria-label="Mixer">{extra.length > 0 && <div className="extra-mixer-lines">{extra.map(line => {
       const node = (kind:string) => lines.graph.nodes.find(n => n.id === lineId(line,kind));
@@ -632,4 +698,12 @@ export function Mixer({ audio, meters, control, showCrossfader = true, deckA, de
     })}</div>}{lines.error && <span role="alert" className="routing-error">{lines.error}</span>}{showCrossfader && <div className="mixer-crossfader"><MidiInput className="crossfader" type="range" min="-1" max="1" step=".01" value={position} disabled={!audio.running} aria-label="Crossfader" aria-valuetext={position === 0 ? 'Centre · equal power' : `${Math.round(Math.abs(position) * 100)}% toward deck ${position < 0 ? 'A' : 'B'}`} title="Equal power · double-click to centre" onChange={event => moveCrossfader(Number(event.target.value))} onDoubleClick={() => moveCrossfader(0)} /></div>}</section>}
     <div className="deck-unit deck-1"><ChannelFader state={audio.decks[1]} running={audio.running} control={control} meter={meters[1]} />{deckB}</div>
   </section>;
+}
+
+function HotCuePad({ state, slot, ready, control }: { state: DeckState; slot: number; ready: boolean; control: (deck: number, action: string, value?: number) => Promise<void> }) {
+  const cue = useCue(state.deck, state.generation, ready, control, slot);
+  const seconds = state.hot_cue_seconds?.[slot];
+  const filled = seconds != null;
+  const label = 'ABCD'[slot], name = state.deck === 0 ? 'A' : 'B';
+  return <MidiButton midiId={`deck:${state.deck}:hot_cue:${slot}`} aria-label={`Cue ${label} deck ${name}`} aria-pressed={filled} className={`hot-cue-${slot}${filled ? ' filled' : ''}${cue.pressed ? ' pressed' : ''}`} disabled={!ready} title={filled ? `Cue ${label} · ${time(Math.max(0, seconds - (state.track?.start_seconds ?? 0)))} · Hold to preview when paused; press Play to continue · Right-click to clear` : `Set cue ${label} at playhead`} {...cue.handlers} {...cue.midi} onContextMenu={event => { event.preventDefault(); if (ready && filled) void control(state.deck, 'hot_cue_clear', slot); }}>{label}</MidiButton>;
 }

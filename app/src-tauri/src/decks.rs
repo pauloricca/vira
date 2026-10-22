@@ -166,7 +166,10 @@ pub struct Voice {
     pub position: usize,
     pub playing: bool,
     pub cue_position: usize,
+    pub hot_cues: [Option<usize>; 4],
+    pub cue_identity: Option<Arc<str>>,
     pub cue_preview: bool,
+    hot_cue_preview: Option<(usize, usize)>,
     pub loop_start: Option<usize>,
     pub loop_end: Option<usize>,
     pub loop_length: Option<f64>,
@@ -227,7 +230,10 @@ impl Voice {
             position: 0,
             playing: false,
             cue_position: 0,
+            hot_cues: [None; 4],
+            cue_identity: None,
             cue_preview: false,
+            hot_cue_preview: None,
             loop_start: None,
             loop_end: None,
             loop_length: None,
@@ -253,6 +259,14 @@ impl Voice {
         self.cue_position = self.start;
         self.seek(self.start);
     }
+    pub fn restore_hot_cues(&mut self, seconds: [Option<f64>; 4]) {
+        self.hot_cues = seconds.map(|seconds| {
+            seconds.filter(|s| s.is_finite() && *s >= 0.).map(|s| {
+                ((s * crate::sample_rate::get() as f64).round() as usize)
+                    .clamp(self.start, self.source.len().saturating_sub(1))
+            })
+        });
+    }
     pub fn seek(&mut self, position: usize) {
         self.seek_inner(position, true);
     }
@@ -265,6 +279,7 @@ impl Voice {
         self.scrub = None;
         self.wheel_scrub = None;
         self.cue_preview = false;
+        self.hot_cue_preview = None;
         self.dsp.reset();
         if reset_mixer {
             self.mixer.reset();
@@ -362,6 +377,7 @@ impl Voice {
         let launch = self.launch_beat;
         let epoch = self.position_epoch;
         let preview = self.cue_preview;
+        let hot_preview = self.hot_cue_preview;
         self.pitch_semitones = semitones;
         self.dsp.ratios(self.clock.speed, semitones);
         self.seek(position.round() as usize);
@@ -370,6 +386,7 @@ impl Voice {
         self.launch_beat = launch;
         self.position_epoch = epoch;
         self.cue_preview = preview;
+        self.hot_cue_preview = hot_preview;
         Ok(())
     }
     pub fn tempo(&mut self, target: f64) -> Result<()> {
@@ -572,6 +589,7 @@ impl Voice {
         self.clear_jog();
         self.playing = false;
         self.cue_preview = false;
+        self.hot_cue_preview = None;
         self.launch_beat = None;
         if vinyl && audible {
             self.tempo_ramp = None;
@@ -1122,7 +1140,14 @@ impl Audition {
 
 pub const LOAD_BLOCKED: &str = "Stop playback or lower the deck fader to 0 before loading a track.";
 
+pub struct CueChange {
+    pub identity: Arc<str>,
+    pub slot: usize,
+    pub seconds: Option<f64>,
+}
+
 pub enum Retired {
+    CueChange(CueChange),
     RejectedLoad(usize, Box<Voice>),
     Audition(Box<Audition>),
     Voice(Box<Voice>),
@@ -1148,6 +1173,8 @@ pub enum Command {
     PlayPause(usize, u64),
     CuePress(usize, u64),
     CueRelease(usize, u64),
+    HotCue(usize, u64, usize, bool),
+    HotCueRelease(usize, u64, usize),
     Stop(usize, u64),
     LoopIn(usize, u64, bool),
     LoopOut(usize, u64, bool),
@@ -1164,6 +1191,8 @@ pub enum Command {
     Remove(usize, u64),
     Grid(usize, u64, Grid),
     ReinterpretGrid(usize, u64, Grid),
+    TapGridStart(usize, u64),
+    TappedGrid(usize, u64, Grid),
     ShiftBarGrid(usize, u64, Grid),
     Tempo(usize, [u64; 2], f64),
     SmoothTempo(usize, [u64; 2], f64),
@@ -1216,6 +1245,7 @@ pub struct Frame {
     pub position_epochs: [u64; 2],
     pub playing: [bool; 2],
     pub cue_positions: [u64; 2],
+    pub hot_cues: [[Option<u64>; 4]; 2],
     pub cue_preview: [bool; 2],
     pub loop_starts: [Option<u64>; 2],
     pub loop_ends: [Option<u64>; 2],
@@ -1270,6 +1300,7 @@ struct AutoTransition {
 
 pub struct Decks {
     pub note_lanes: [crate::deck_notes::Lane; 2],
+    pub cue_lanes: [crate::deck_notes::CueLane; 2],
     auto: Option<AutoTransition>,
     auto_bars: u8,
     auto_tempo: f64,
@@ -1303,6 +1334,7 @@ impl Decks {
     pub fn new() -> Self {
         Self {
             note_lanes: std::array::from_fn(|_| crate::deck_notes::Lane::new()),
+            cue_lanes: std::array::from_fn(|_| crate::deck_notes::CueLane::new()),
             auto: None,
             auto_bars: 8,
             auto_tempo: 1.,
@@ -1545,9 +1577,7 @@ impl Decks {
             _ => 0.,
         };
         let delta =
-            ((seconds - auto.guide_start[deck] - offset * beat_seconds) / beat_seconds / 16.)
-                .round()
-                * 16.;
+            ((seconds - auto.guide_start[deck] - offset * beat_seconds) / beat_seconds).round();
         if delta == 0. {
             return;
         }
@@ -1908,6 +1938,8 @@ impl Decks {
             | Command::ScrubStart(d, g, _)
             | Command::Scrub(d, g, _, _)
             | Command::Grid(d, g, _)
+            | Command::TapGridStart(d, g)
+            | Command::TappedGrid(d, g, _)
             | Command::ReinterpretGrid(d, g, _) => {
                 self.voices[*d].as_ref().is_some_and(|v| v.generation == *g)
             }
@@ -2115,6 +2147,50 @@ impl Decks {
                     }
                 }
             }
+            Command::HotCue(d, g, slot, clear) => {
+                if slot >= 4 || !self.voices[d].as_ref().is_some_and(|v| v.generation == g) {
+                    return None;
+                }
+                if !clear && self.voices[d].as_ref().unwrap().hot_cues[slot].is_some() {
+                    self.cancel_auto();
+                }
+                let v = self.voices[d].as_mut().unwrap();
+                if clear {
+                    v.hot_cues[slot] = None;
+                } else if let Some(position) = v.hot_cues[slot] {
+                    let preview = !v.playing || v.cue_preview;
+                    v.clear_loop();
+                    v.seek(position);
+                    v.play();
+                    v.cue_preview = preview;
+                    v.hot_cue_preview = preview.then_some((slot, position));
+                    return None;
+                } else {
+                    // Capture on the audio thread, at the rendered playhead, without snapping.
+                    v.hot_cues[slot] =
+                        Some(v.position.clamp(v.start, v.source.len().saturating_sub(1)));
+                }
+                return v.cue_identity.as_ref().map(|identity| {
+                    Retired::CueChange(CueChange {
+                        identity: identity.clone(),
+                        slot,
+                        seconds: v.hot_cues[slot]
+                            .map(|p| p as f64 / crate::sample_rate::get() as f64),
+                    })
+                });
+            }
+            Command::HotCueRelease(d, g, slot) => {
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation == g && v.cue_preview {
+                        if let Some((held_slot, position)) = v.hot_cue_preview {
+                            if slot == held_slot {
+                                v.playing = false;
+                                v.seek(position);
+                            }
+                        }
+                    }
+                }
+            }
             Command::CuePress(d, g) => {
                 if let Some(v) = &mut self.voices[d] {
                     if v.generation == g && !v.cue_preview {
@@ -2157,7 +2233,7 @@ impl Decks {
             }
             Command::CueRelease(d, g) => {
                 if let Some(v) = &mut self.voices[d] {
-                    if v.generation == g && v.cue_preview {
+                    if v.generation == g && v.cue_preview && v.hot_cue_preview.is_none() {
                         v.playing = false;
                         v.seek(v.cue_position);
                     }
@@ -2177,6 +2253,7 @@ impl Decks {
                     if v.generation == g && v.cue_preview {
                         // Latch the audition without restarting or scheduling a launch.
                         v.cue_preview = false;
+                        v.hot_cue_preview = None;
                         return None;
                     }
                 }
@@ -2527,7 +2604,16 @@ impl Decks {
                     self.cancel_auto();
                 }
             }
-            Command::ReinterpretGrid(d, g, grid) => {
+            Command::TapGridStart(d, g) => {
+                if self.voices[d].as_ref().is_some_and(|v| v.generation == g)
+                    && self.voices[1 - d].as_ref().is_some_and(|v| v.synced)
+                {
+                    self.clear_sync(d);
+                }
+            }
+            Command::ReinterpretGrid(d, g, grid) | Command::TappedGrid(d, g, grid) => {
+                let tapped = matches!(command, Command::TappedGrid(..));
+                let other_locked = self.voices[1 - d].as_ref().is_some_and(|v| v.synced);
                 if let Some(v) = self.voices[d].as_mut().filter(|v| {
                     v.generation == g
                         && grid
@@ -2543,7 +2629,17 @@ impl Decks {
                     v.loop_length = v.loop_length.map(|beats| beats * ratio);
                     v.loop_phase_offset = None;
                     v.loop_release_beat = None;
-                    if v.synced && v.playing && v.launch_beat.is_none() {
+                    if tapped {
+                        v.synced = !other_locked;
+                        v.launch_beat = None;
+                        if !other_locked {
+                            self.global_beat = grid.beat(v.seconds());
+                            self.master_bpm_set = true;
+                        }
+                    }
+                    if tapped && !other_locked
+                        || !tapped && v.synced && v.playing && v.launch_beat.is_none()
+                    {
                         self.master_bpm = v.target_bpm;
                         self.tempo_target = None;
                         self.drift_target = None;
@@ -2665,10 +2761,34 @@ impl Decks {
                 .as_ref()
                 .map_or((0, 0.), |v| (v.generation, v.pitch_semitones));
             self.note_lanes[d].prepare(generation, pitch);
+            self.cue_lanes[d].prepare(generation);
         }
     }
     fn next_inner(&mut self, deferred: bool) -> Result<Frame> {
         for d in 0..2 {
+            while let Some((slot, on)) = self.cue_lanes[d].next(self.output_frame) {
+                if on {
+                    // Sequenced gates never create a missing cue and always preview,
+                    // including when the deck was already playing before the event.
+                    if let Some(position) = self.voices[d].as_ref().and_then(|v| v.hot_cues[slot]) {
+                        self.cancel_auto();
+                        let v = self.voices[d].as_mut().unwrap();
+                        v.clear_loop();
+                        v.seek(position);
+                        v.play();
+                        v.cue_preview = true;
+                        v.hot_cue_preview = Some((slot, position));
+                    }
+                } else if let Some(v) = &mut self.voices[d] {
+                    if let Some((held_slot, position)) = v.hot_cue_preview.filter(|_| v.cue_preview)
+                    {
+                        if held_slot == slot {
+                            v.playing = false;
+                            v.seek(position);
+                        }
+                    }
+                }
+            }
             if let Some(v) = &mut self.voices[d] {
                 let shift = self.note_lanes[d].pitch(self.output_frame);
                 if self.note_lanes[d]
@@ -2836,6 +2956,7 @@ impl Decks {
                 frame.position_epochs[d] = voice.position_epoch;
                 frame.playing[d] = voice.playing;
                 frame.cue_positions[d] = voice.cue_position as u64;
+                frame.hot_cues[d] = voice.hot_cues.map(|p| p.map(|p| p as u64));
                 frame.cue_preview[d] = voice.cue_preview;
                 frame.loop_starts[d] = voice.loop_start.map(|p| p as u64);
                 frame.loop_ends[d] = voice.loop_end.map(|p| p as u64);
@@ -3145,6 +3266,107 @@ mod tests {
         assert_eq!(observe(&mut decks, &mut tracker, 16000), 0);
     }
     #[test]
+    fn cue_pattern_gates_play_exact_frames_and_return_without_changing_pitch() {
+        use teia_kernel::hosted::EventKind;
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.voices[0]
+            .as_mut()
+            .unwrap()
+            .restore_hot_cues([Some(0.25), None, None, None]);
+        decks.command(Command::Pitch(0, 1, 2.), [1, 0]);
+        decks.cue_lanes[0].prepare(1);
+        let host = decks.cue_lanes[0].midi.host.clone();
+        host.enqueue(
+            10,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 0,
+                velocity: 1.,
+            },
+        );
+        host.enqueue(
+            30,
+            EventKind::NoteOff {
+                channel: 1,
+                note: 0,
+            },
+        );
+        // Unset slots are ignored, rather than being created by the sequencer.
+        host.enqueue(
+            40,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 1,
+                velocity: 1.,
+            },
+        );
+        host.enqueue(
+            50,
+            EventKind::NoteOff {
+                channel: 1,
+                note: 1,
+            },
+        );
+        let mut block = [Frame::default(); PRODUCER_FRAMES];
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(!block[9].playing[0]);
+        assert!(block[10].playing[0] && block[10].cue_preview[0]);
+        assert!(block[29].playing[0]);
+        assert!(!block[30].playing[0] && !block[30].cue_preview[0]);
+        assert_eq!(
+            block[30].positions[0],
+            (crate::sample_rate::get() / 4) as u64
+        );
+        assert!(block
+            .iter()
+            .all(|f| f.pitches[0] == 2. && f.hot_cues[0][1].is_none()));
+        assert!(!block[40].playing[0]);
+    }
+    #[test]
+    fn cue_pattern_route_cancellation_releases_and_track_replacement_drops_old_gates() {
+        use teia_kernel::hosted::EventKind;
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.voices[0]
+            .as_mut()
+            .unwrap()
+            .restore_hot_cues([Some(0.25), None, None, None]);
+        let mut block = [Frame::default(); PRODUCER_FRAMES];
+        decks.next_block(&mut block, &mut []).unwrap();
+        let host = decks.cue_lanes[0].midi.host.clone();
+        host.anchor(decks.output_frame, 1_000_000_000);
+        assert!(host.enqueue_routed_time(
+            1_000_000_000,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 0,
+                velocity: 1.
+            },
+            7
+        ));
+        decks.command(Command::Play(0, 1), [1, 0]);
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(block[0].playing[0] && block[0].cue_preview[0]);
+        host.cancel_route(7);
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(block.iter().all(|f| !f.playing[0]));
+        assert!(host.enqueue_routed_time(
+            2_000_000_000,
+            EventKind::NoteOn {
+                channel: 1,
+                note: 0,
+                velocity: 1.
+            },
+            7
+        ));
+        install(&mut decks, 0, 2, source());
+        decks.next_block(&mut block, &mut []).unwrap();
+        assert!(block
+            .iter()
+            .all(|f| !f.playing[0] && f.hot_cues[0] == [None; 4]));
+    }
+    #[test]
     fn deck_note_events_change_pitch_at_render_frame_and_restore_manual_control() {
         use teia_kernel::hosted::EventKind;
         let mut decks = Decks::new();
@@ -3234,6 +3456,65 @@ mod tests {
             decks.command(Command::Pause(first, 1), [1, 1]);
             decks.command(Command::Play(1 - first, 1), [1, 1]);
             assert_eq!(decks.master_bpm, expected);
+        }
+    }
+
+    #[test]
+    fn tapped_grid_preserves_transport_and_follows_only_without_another_lock() {
+        for other_locked in [false, true] {
+            for playing in [false, true] {
+                let mut decks = Decks::new();
+                for d in 0..2 {
+                    install(&mut decks, d, 1, source());
+                    let v = decks.voices[d].as_mut().unwrap();
+                    v.apply_grid(Grid {
+                        bpm: 120.,
+                        downbeat_seconds: 0.,
+                        reviewed: true,
+                    });
+                    v.tempo(126.).unwrap();
+                    v.synced = d == 0 || other_locked;
+                    v.playing = playing;
+                }
+                decks.master_bpm = 126.;
+                decks.master_bpm_set = true;
+                decks.global_beat = 9.;
+                let before = decks.voices[0].as_ref().unwrap();
+                let speed = before.clock.speed;
+                let position = before.clock.at(before.output);
+                let epoch = before.position_epoch;
+                decks.command(Command::TapGridStart(0, 99), [1, 1]);
+                assert!(decks.voices[0].as_ref().unwrap().synced);
+                decks.command(Command::TapGridStart(0, 1), [1, 1]);
+                assert_eq!(decks.voices[0].as_ref().unwrap().synced, !other_locked);
+                let grid = Grid {
+                    bpm: 100.,
+                    downbeat_seconds: 0.01,
+                    reviewed: false,
+                };
+                decks.command(Command::TappedGrid(0, 99, grid), [1, 1]);
+                assert_eq!(decks.voices[0].as_ref().unwrap().grid.unwrap().bpm, 120.);
+                decks.command(Command::TappedGrid(0, 1, grid), [1, 1]);
+                let v = decks.voices[0].as_ref().unwrap();
+                assert_eq!(v.clock.speed, speed);
+                assert_eq!(v.clock.at(v.output), position);
+                assert_eq!(v.position_epoch, epoch);
+                assert_eq!(v.playing, playing);
+                assert_eq!(v.synced, !other_locked);
+                assert_eq!(v.target_bpm, 100. * speed);
+                assert_eq!(
+                    decks.master_bpm,
+                    if other_locked { 126. } else { 100. * speed }
+                );
+                assert_eq!(
+                    decks.global_beat,
+                    if other_locked {
+                        9.
+                    } else {
+                        grid.beat(v.seconds())
+                    }
+                );
+            }
         }
     }
 
@@ -4811,12 +5092,12 @@ mod tests {
                     };
                     let seconds_per_beat =
                         60. / decks.voices[deck].as_ref().unwrap().grid.unwrap().bpm;
-                    let target = original.auto_points[deck][index] + 16. * seconds_per_beat + 0.1;
+                    let target = original.auto_points[deck][index] + seconds_per_beat + 0.1;
                     decks.command(Command::EditAuto(deck, [1, 1], kind, target), [1, 1]);
                     let mut edited = Frame::default();
                     decks.transition_guides(&mut edited);
                     for d in 0..2 {
-                        let step = 16. * 60. / decks.voices[d].as_ref().unwrap().grid.unwrap().bpm;
+                        let step = 60. / decks.voices[d].as_ref().unwrap().grid.unwrap().bpm;
                         for i in [0, 3, 4] {
                             let moves = if kind == 0 { d == deck } else { i == index };
                             let expected =
@@ -5352,6 +5633,114 @@ mod tests {
             },
             latest,
         ));
+    }
+    #[test]
+    fn hot_cues_hold_preview_release_and_play_latches_without_restarting() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        decks.voices[0]
+            .as_mut()
+            .unwrap()
+            .restore_hot_cues([Some(0.25), Some(0.5), None, None]);
+        decks.command(Command::HotCue(0, 1, 0, false), [1, 1]);
+        for _ in 0..1024 {
+            decks.next().unwrap();
+        }
+        assert!(decks.voices[0].as_ref().unwrap().cue_preview);
+        decks.command(Command::CueRelease(0, 1), [1, 1]);
+        decks.command(Command::HotCueRelease(0, 1, 1), [1, 1]);
+        assert!(decks.voices[0].as_ref().unwrap().playing);
+        decks.command(Command::HotCueRelease(0, 1, 0), [1, 1]);
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert!(!voice.playing && !voice.cue_preview);
+        assert_eq!(voice.position, crate::sample_rate::get() / 4);
+        for play in [Command::Play(0, 1), Command::PlayPause(0, 1)] {
+            decks.command(Command::HotCue(0, 1, 0, false), [1, 1]);
+            for _ in 0..1024 {
+                decks.next().unwrap();
+            }
+            let position = decks.voices[0].as_ref().unwrap().position;
+            decks.command(play, [1, 1]);
+            let voice = decks.voices[0].as_ref().unwrap();
+            assert_eq!(voice.position, position);
+            assert!(voice.playing && !voice.cue_preview);
+            decks.command(Command::HotCueRelease(0, 1, 0), [1, 1]);
+            assert!(decks.voices[0].as_ref().unwrap().playing);
+            decks.command(Command::Pause(0, 1), [1, 1]);
+        }
+    }
+    #[test]
+    fn hot_cues_restore_source_seconds_and_emit_only_edits_for_persistence() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        let voice = decks.voices[0].as_mut().unwrap();
+        voice.cue_identity = Some(Arc::from("a".repeat(64)));
+        voice.restore_hot_cues([Some(0.), None, Some(0.25), None]);
+        assert_eq!(
+            voice.hot_cues,
+            [Some(0), None, Some(crate::sample_rate::get() / 4), None]
+        );
+        assert!(decks
+            .command(Command::HotCue(0, 1, 2, false), [1, 1])
+            .is_none());
+        assert_eq!(
+            decks.voices[0].as_ref().unwrap().position,
+            crate::sample_rate::get() / 4
+        );
+        let Some(Retired::CueChange(saved)) =
+            decks.command(Command::HotCue(0, 1, 1, false), [1, 1])
+        else {
+            panic!("Cue capture must emit a save")
+        };
+        assert_eq!(saved.identity.as_ref(), "a".repeat(64));
+        assert_eq!(saved.slot, 1);
+        assert_eq!(saved.seconds, Some(0.25));
+        let Some(Retired::CueChange(cleared)) =
+            decks.command(Command::HotCue(0, 1, 2, true), [1, 1])
+        else {
+            panic!("Cue clear must emit a save")
+        };
+        assert_eq!(cleared.slot, 2);
+        assert_eq!(cleared.seconds, None);
+        assert!(decks
+            .command(Command::HotCue(0, 0, 0, true), [1, 1])
+            .is_none());
+        assert_eq!(decks.voices[0].as_ref().unwrap().hot_cues[0], Some(0));
+    }
+    #[test]
+    fn hot_cues_capture_recall_clear_and_reset_with_track() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        for slot in 0..4 {
+            decks.command(Command::Seek(0, 1, 12000 + slot * 1000), [1, 1]);
+            decks.command(Command::HotCue(0, 1, slot, false), [1, 1]);
+        }
+        assert_eq!(
+            decks.next().unwrap().hot_cues[0],
+            [Some(12000), Some(13000), Some(14000), Some(15000)]
+        );
+        decks.command(Command::Seek(0, 1, 20000), [1, 1]);
+        decks.command(Command::HotCue(0, 1, 0, false), [1, 1]);
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert_eq!(voice.position, 12000);
+        assert!(voice.playing && voice.cue_preview);
+        decks.command(Command::HotCueRelease(0, 1, 0), [1, 1]);
+        assert!(!decks.voices[0].as_ref().unwrap().playing);
+        decks.command(Command::Play(0, 1), [1, 1]);
+        decks.next().unwrap();
+        let before = decks.voices[0].as_ref().unwrap().position;
+        decks.command(Command::HotCue(0, 1, 2, true), [1, 1]);
+        assert_eq!(decks.voices[0].as_ref().unwrap().position, before);
+        decks.command(Command::HotCue(0, 1, 1, false), [1, 1]);
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert_eq!(voice.position, 13000);
+        assert!(voice.playing);
+        assert_eq!(voice.hot_cues[2], None);
+        assert_eq!(voice.cue_position, 0);
+        decks.command(Command::Pause(0, 1), [1, 1]);
+        install(&mut decks, 0, 2, source());
+        decks.command(Command::HotCue(0, 1, 0, false), [2, 1]);
+        assert_eq!(decks.next().unwrap().hot_cues[0], [None; 4]);
     }
     #[test]
     fn pioneer_cue_sets_returns_previews_and_latches() {

@@ -9,6 +9,7 @@ pub enum Destination {
     Midi { output: i32 },
     Teia { slot: usize },
     Deck { deck: usize },
+    DeckCue { deck: usize },
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Harmony {
@@ -18,12 +19,22 @@ pub struct Harmony {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Transformation {
-    OctaveShift { octaves: i8 },
-    Filter { direction: String, note: u8 },
+    Selector {
+        selected: String,
+        ports: Vec<String>,
+    },
+    OctaveShift {
+        octaves: i8,
+    },
+    Filter {
+        direction: String,
+        note: u8,
+    },
 }
 impl Transformation {
     pub fn apply(&self, note: u8) -> Option<u8> {
         match self {
+            Self::Selector { .. } => Some(note),
             Self::OctaveShift { octaves } => {
                 let pitch = note as i16 + *octaves as i16 * 12;
                 (0..=127).contains(&pitch).then_some(pitch as u8)
@@ -70,13 +81,22 @@ pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
         }
         let mut steps = steps;
         if let Some(step) = &node.transformation {
-            steps.push(step.clone());
+            if !matches!(step, Transformation::Selector { .. }) {
+                steps.push(step.clone());
+            }
         }
-        for input in graph
-            .wires
-            .iter()
-            .filter(|w| w.to == node.id && ["midi", "notes"].contains(&w.kind.as_str()))
-        {
+        for input in graph.wires.iter().filter(|w| {
+            w.to == node.id
+                && match &node.transformation {
+                    Some(Transformation::Selector { selected, .. }) => {
+                        w.input.as_ref() == Some(selected)
+                            && (w.kind == wire.kind
+                                || wire.kind != "scale"
+                                    && ["notes", "midi"].contains(&w.kind.as_str()))
+                    }
+                    _ => ["midi", "notes"].contains(&w.kind.as_str()),
+                }
+        }) {
             let mut upstream = wire.clone();
             upstream.id = format!("{}>{}", input.id, wire.id);
             upstream.from = input.from.clone();
@@ -100,7 +120,7 @@ pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
     loop {
         let before = productive.len();
         for wire in &graph.wires {
-            if ["midi", "notes"].contains(&wire.kind.as_str())
+            if ["midi", "notes", "scale", "cue"].contains(&wire.kind.as_str())
                 && productive.contains(wire.from.as_str())
             {
                 productive.insert(wire.to.as_str());
@@ -116,7 +136,7 @@ pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
         .iter()
         .enumerate()
         .filter(|(_, w)| {
-            ["midi", "notes"].contains(&w.kind.as_str())
+            ["midi", "notes", "scale", "cue"].contains(&w.kind.as_str())
                 && productive.contains(w.from.as_str())
                 && !graph
                     .nodes
@@ -127,6 +147,7 @@ pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
     // Reserve terminal cable owners so existing single-source routes keep their slots.
     let mut used: HashSet<_> = terminals
         .iter()
+        .filter(|(_, w)| w.kind != "scale")
         .map(|(i, w)| w.route.unwrap_or(*i as u16))
         .collect();
     for (index, end) in terminals {
@@ -140,7 +161,7 @@ pub fn signal_paths(graph: &Graph) -> Vec<(Wire, Vec<Transformation>)> {
             &mut result,
         );
         for (offset, (wire, _)) in result[start..].iter_mut().enumerate() {
-            let owner = if offset == 0 {
+            let owner = if offset == 0 && end.kind != "scale" {
                 end.route.unwrap_or(index as u16)
             } else {
                 (0..256).find(|slot| !used.contains(slot)).unwrap_or(256)
@@ -159,6 +180,8 @@ pub struct Node {
     pub id: String,
     pub kind: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_label: Option<String>,
     pub x: f64,
     pub y: f64,
     #[serde(default)]
@@ -186,6 +209,8 @@ pub struct Wire {
     pub kind: String,
     #[serde(default)]
     pub route: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
 }
 #[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Graph {
@@ -246,7 +271,7 @@ impl Graph {
                     n.destination.as_ref().is_some_and(|d| match d {
                         Destination::Midi { .. } => true,
                         Destination::Teia { slot } => *slot < crate::routing::PATCH_LIMIT,
-                        Destination::Deck { .. } => false,
+                        Destination::Deck { .. } | Destination::DeckCue { .. } => false,
                     }) && n.pattern.is_none()
                         && n.deck.is_none(),
                     "Invalid instrument destination"
@@ -258,6 +283,15 @@ impl Graph {
                     );
                     ensure!(
                         match &n.transformation {
+                            Some(Transformation::Selector { selected, ports }) =>
+                                !ports.is_empty()
+                                    && ports.contains(selected)
+                                    && ports.len() <= 257
+                                    && ports.iter().all(|p| !p.is_empty())
+                                    && ports
+                                        .iter()
+                                        .enumerate()
+                                        .all(|(i, p)| !ports[..i].contains(p)),
                             Some(Transformation::OctaveShift { octaves }) =>
                                 (-10..=10).contains(octaves),
                             Some(Transformation::Filter { direction, note }) =>
@@ -294,7 +328,7 @@ impl Graph {
         let mut roots = HashSet::new();
         let mut routes = HashSet::new();
         for (index, w) in self.wires.iter().enumerate() {
-            if ["midi", "notes"].contains(&w.kind.as_str())
+            if ["midi", "notes", "cue"].contains(&w.kind.as_str())
                 && !self
                     .nodes
                     .iter()
@@ -310,7 +344,7 @@ impl Graph {
                 !w.id.is_empty()
                     && w.id.len() <= 100
                     && wires.insert(&w.id)
-                    && pairs.insert((&w.from, &w.to, &w.kind)),
+                    && pairs.insert((&w.from, &w.to, &w.kind, &w.input)),
                 "Duplicate musical cable"
             );
             let from = self
@@ -323,14 +357,34 @@ impl Graph {
                 .iter()
                 .find(|n| n.id == w.to)
                 .ok_or_else(|| anyhow::anyhow!("Missing cable target"))?;
+            if let Some(Transformation::Selector { ports, .. }) = &to.transformation {
+                ensure!(
+                    w.input.as_ref().is_some_and(|p| ports.contains(p))
+                        && self
+                            .wires
+                            .iter()
+                            .filter(|other| other.to == w.to && other.input == w.input)
+                            .count()
+                            == 1,
+                    "Selector input accepts one cable"
+                );
+            }
+            ensure!(
+                w.kind == "cue"
+                    || !bank.patterns.iter().any(|p| p.kind == "cue"
+                        && (Some(&p.id) == from.pattern.as_ref()
+                            || Some(&p.id) == to.pattern.as_ref())),
+                "Cue point patterns connect only to deck cue inputs"
+            );
             ensure!(
                 from.id != to.id && match w.kind.as_str() {
+                    "cue" => from.kind == "pattern" && to.kind == "deck" && bank.patterns.iter().any(|p| Some(&p.id) == from.pattern.as_ref() && p.kind == "cue"),
                     "notes" if to.kind == "pattern" =>
                         ["deck", "instrument", "pattern", "transformation"].contains(&from.kind.as_str()) && from.id != to.id && roots.insert((&to.id, "root")),
                     "key" | "root" | "scale" =>
-                        (from.kind == "deck" || from.kind == "instrument" && w.kind != "scale")
-                            && to.kind == "pattern"
-                            && roots.insert((&to.id, if w.kind == "key" { "root" } else { w.kind.as_str() })),
+                        (from.kind == "deck" || matches!(from.transformation, Some(Transformation::Selector { .. })) || from.kind == "instrument" && w.kind != "scale")
+                            && (to.kind == "pattern" || matches!(to.transformation, Some(Transformation::Selector { .. })))
+                            && (to.kind != "pattern" || roots.insert((&to.id, if w.kind == "key" { "root" } else { w.kind.as_str() }))),
                     "midi" | "notes" => (["pattern", "instrument", "transformation"].contains(&from.kind.as_str()) || from.kind == "deck" && w.kind == "notes") && ["instrument", "deck", "transformation"].contains(&to.kind.as_str()),
                     _ => false,
                 },
@@ -396,20 +450,41 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
     // Each pattern has one independent note-value voice, even without a MIDI destination.
     let mut playback_wires: Vec<_> = signal_paths(graph)
         .into_iter()
-        .filter(|(w, _)| w.kind == "midi")
+        .filter(|(w, _)| ["midi", "cue"].contains(&w.kind.as_str()))
         .collect();
-    playback_wires.extend(graph.nodes.iter().filter(|n| n.kind == "pattern").map(|n| {
-        (
-            Wire {
-                id: format!("note-source-{}", n.pattern.as_deref().unwrap_or(&n.id)),
-                from: n.id.clone(),
-                to: n.id.clone(),
-                kind: "notes".into(),
-                route: None,
-            },
-            Vec::new(),
-        )
-    }));
+    playback_wires.extend(
+        graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.kind == "pattern"
+                    && !bank
+                        .patterns
+                        .iter()
+                        .any(|p| Some(&p.id) == n.pattern.as_ref() && p.kind == "cue")
+            })
+            .map(|n| {
+                (
+                    Wire {
+                        id: format!("note-source-{}", n.pattern.as_deref().unwrap_or(&n.id)),
+                        from: n.id.clone(),
+                        to: n.id.clone(),
+                        kind: "notes".into(),
+                        route: None,
+                        input: None,
+                    },
+                    Vec::new(),
+                )
+            }),
+    );
+    let mut selected_paths = signal_paths(graph);
+    selected_paths.extend(
+        graph
+            .wires
+            .iter()
+            .filter(|w| ["key", "root"].contains(&w.kind.as_str()))
+            .map(|w| (w.clone(), Vec::new())),
+    );
     for (route, (w, steps)) in playback_wires.iter().enumerate() {
         let Some(source) = graph.nodes.iter().find(|n| n.id == w.from) else {
             continue;
@@ -435,7 +510,13 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
             p.output = 0;
             Some(Destination::Midi { output: 0 })
         } else if target.kind == "deck" {
-            deck_index(target.deck, active).map(|deck| Destination::Deck { deck })
+            deck_index(target.deck, active).map(|deck| {
+                if w.kind == "cue" {
+                    Destination::DeckCue { deck }
+                } else {
+                    Destination::Deck { deck }
+                }
+            })
         } else {
             target.destination.clone()
         };
@@ -443,12 +524,12 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
             p.channel = target.channel.unwrap_or(p.channel);
         }
         for component in ["root", "scale"] {
-            if p.kind == "percussion" {
+            if p.kind != "melodic" {
                 continue;
             }
-            if let Some(h) = graph
-                .wires
+            if let Some(h) = selected_paths
                 .iter()
+                .map(|(w, _)| w)
                 .find(|w| {
                     (w.kind == component
                         || w.kind == "key"
@@ -542,6 +623,7 @@ pub fn migrate(bank: &mut Bank) {
             id: format!("deck-{deck}"),
             kind: "deck".into(),
             label: format!("Deck {}", if deck == 0 { "A" } else { "B" }),
+            custom_label: None,
             x: 60.,
             y: 70. + deck as f64 * 200.,
             pattern: None,
@@ -561,6 +643,7 @@ pub fn migrate(bank: &mut Bank) {
             id: id.clone(),
             kind: "pattern".into(),
             label: p.name.clone(),
+            custom_label: None,
             x: 430. + ((i / 4) % 4) as f64 * 230.,
             y: 70. + (i % 4) as f64 * 200.,
             pattern: Some(p.id.clone()),
@@ -583,6 +666,7 @@ pub fn migrate(bank: &mut Bank) {
                     id: target.clone(),
                     kind: "instrument".into(),
                     label: format!("MIDI {}", p.output),
+                    custom_label: None,
                     x: 1050.,
                     y: 70. + (index % 5) as f64 * 180.,
                     pattern: None,
@@ -601,6 +685,7 @@ pub fn migrate(bank: &mut Bank) {
                 to: target,
                 kind: "midi".into(),
                 route: Some(graph.wires.len() as u16),
+                input: None,
             });
         }
         p.output = 0;
@@ -614,6 +699,45 @@ mod tests {
     use serde_json::json;
     fn bank() -> Bank {
         serde_json::from_value(json!({"patterns":[{"id":"p","name":"Arp","kind":"melodic","mode":"relative","output":42,"channel":2,"bars":2,"grid":4,"key":0,"scale":0,"octave":4,"quantum":4,"compensation":null,"notes":[{"id":"n","beat":0,"duration":4,"degree":3,"octave":0,"velocity":100}]}],"outputCompensation":{}})).unwrap()
+    }
+    #[test]
+    fn cue_patterns_route_only_to_cue_inputs_and_resolve_active_deck() {
+        let mut b = bank();
+        b.patterns[0].kind = "cue".into();
+        b.patterns[0].output = 0;
+        migrate(&mut b);
+        let graph = b.graph.as_mut().unwrap();
+        let deck = graph.nodes.iter_mut().find(|n| n.deck == Some(0)).unwrap();
+        deck.deck = Some(2);
+        let target = deck.id.clone();
+        let from = graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == "pattern")
+            .unwrap()
+            .id
+            .clone();
+        graph.wires.push(Wire {
+            id: "cue-wire".into(),
+            from,
+            to: target,
+            kind: "cue".into(),
+            route: Some(9),
+            input: None,
+        });
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
+        for active in 0..2 {
+            let resolved = resolve_active(&b, [None; 2], active);
+            assert_eq!(resolved.patterns.len(), 1);
+            assert_eq!(
+                resolved.patterns[0].destination,
+                Some(Destination::DeckCue { deck: active })
+            );
+            assert_eq!(resolved.patterns[0].route, 9);
+            assert!(!resolved.patterns[0].note_source);
+        }
+        b.graph.as_mut().unwrap().wires[0].kind = "midi".into();
+        assert!(b.graph.as_ref().unwrap().validate(&b).is_err());
     }
     #[test]
     fn several_patterns_share_one_device_with_independent_routes() {
@@ -693,6 +817,83 @@ mod tests {
         g.nodes.push(node);
     }
     #[test]
+    fn selector_routes_only_selected_notes_or_scale_and_empty_input_is_silent() {
+        let mut b = bank();
+        migrate(&mut b);
+        add_transform(
+            &mut b,
+            "selector",
+            Transformation::Selector {
+                selected: "A".into(),
+                ports: vec!["A".into(), "B".into(), "C".into()],
+            },
+        );
+        let g = b.graph.as_mut().unwrap();
+        g.wires.clear();
+        for (id, from, to, kind, input, route) in [
+            ("a", "deck-0", "selector", "scale", Some("A"), 0),
+            ("b", "pattern-p", "selector", "midi", Some("B"), 1),
+            ("out", "selector", "midi-42", "midi", None, 2),
+            ("scale", "selector", "pattern-p", "scale", None, 3),
+        ] {
+            g.wires.push(Wire {
+                id: id.into(),
+                from: from.into(),
+                to: to.into(),
+                kind: kind.into(),
+                input: input.map(str::to_owned),
+                route: Some(route),
+            });
+        }
+        // Use the migrated pattern identity, which is independent of its label.
+        let pattern = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == "pattern")
+            .unwrap()
+            .id
+            .clone();
+        for w in &mut g.wires {
+            if w.from == "pattern-p" {
+                w.from = pattern.clone();
+            }
+            if w.to == "pattern-p" {
+                w.to = pattern.clone();
+            }
+        }
+        let validation_bank = Bank {
+            graph: None,
+            ..b.clone()
+        };
+        let g = b.graph.as_mut().unwrap();
+        g.validate(&validation_bank).unwrap();
+        let paths = signal_paths(g);
+        assert!(paths
+            .iter()
+            .all(|(w, _)| w.kind == "scale" && w.from == "deck-0"));
+        g.nodes
+            .iter_mut()
+            .find(|n| n.id == "selector")
+            .unwrap()
+            .transformation = Some(Transformation::Selector {
+            selected: "B".into(),
+            ports: vec!["A".into(), "B".into(), "C".into()],
+        });
+        let paths = signal_paths(g);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0.from, pattern);
+        assert_eq!(paths[0].0.kind, "midi");
+        g.nodes
+            .iter_mut()
+            .find(|n| n.id == "selector")
+            .unwrap()
+            .transformation = Some(Transformation::Selector {
+            selected: "C".into(),
+            ports: vec!["A".into(), "B".into(), "C".into()],
+        });
+        assert!(signal_paths(g).is_empty());
+    }
+    #[test]
     fn transformation_chains_keep_order_owner_timing_and_release_pitch() {
         let mut b = bank();
         migrate(&mut b);
@@ -713,6 +914,7 @@ mod tests {
             to: "filter".into(),
             kind: "midi".into(),
             route: Some(1),
+            input: None,
         });
         g.wires.push(Wire {
             id: "end".into(),
@@ -720,6 +922,7 @@ mod tests {
             to: "midi-42".into(),
             kind: "midi".into(),
             route: Some(2),
+            input: None,
         });
         b.graph.as_ref().unwrap().validate(&b).unwrap();
         let paths = signal_paths(b.graph.as_ref().unwrap());
@@ -773,6 +976,7 @@ mod tests {
                 to: to.into(),
                 kind: "midi".into(),
                 route: Some(route),
+                input: None,
             });
         }
         b.graph.as_ref().unwrap().validate(&b).unwrap();
@@ -796,6 +1000,7 @@ mod tests {
             to: "shift".into(),
             kind: "midi".into(),
             route: Some(4),
+            input: None,
         });
         assert!(b
             .graph
@@ -824,6 +1029,7 @@ mod tests {
                 to: to.into(),
                 kind: kind.into(),
                 route: Some(route),
+                input: None,
             });
         }
         b.graph.as_ref().unwrap().validate(&b).unwrap();
@@ -864,6 +1070,7 @@ mod tests {
                     to: to.clone(),
                     kind: "midi".into(),
                     route: Some(route),
+                    input: None,
                 });
             }
             previous = join;
@@ -875,6 +1082,7 @@ mod tests {
             to: "midi-42".into(),
             kind: "midi".into(),
             route: Some(100),
+            input: None,
         });
         assert_eq!(signal_paths(g).len(), 257);
         assert!(b
@@ -899,6 +1107,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "notes".into(),
             route: None,
+            input: None,
         });
         graph.wires.push(Wire {
             id: "scale".into(),
@@ -906,6 +1115,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "scale".into(),
             route: None,
+            input: None,
         });
         b.graph.as_ref().unwrap().validate(&b).unwrap();
         let keys = [
@@ -937,6 +1147,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "notes".into(),
             route: None,
+            input: None,
         });
         assert!(b.graph.as_ref().unwrap().validate(&b).is_err());
     }
@@ -970,6 +1181,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "notes".into(),
             route: None,
+            input: None,
         });
         g.wires.push(Wire {
             id: "scale".into(),
@@ -977,6 +1189,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "scale".into(),
             route: None,
+            input: None,
         });
         g.wires[0].to = "deck-1".into();
         b.graph.as_ref().unwrap().validate(&b).unwrap();
@@ -1043,6 +1256,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "root".into(),
             route: None,
+            input: None,
         });
         migrate(&mut b);
         let g = b.graph.as_ref().unwrap();
@@ -1066,6 +1280,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "key".into(),
             route: None,
+            input: None,
         });
         migrate(&mut b);
         migrate(&mut b);
@@ -1084,6 +1299,7 @@ mod tests {
             to: "pattern-p".into(),
             kind: "key".into(),
             route: None,
+            input: None,
         });
         let resolved = resolve(&b, [Some(Harmony { key: 7, scale: 1 }), None]);
         assert_eq!(resolved.patterns.len(), 2);
@@ -1109,6 +1325,7 @@ mod tests {
             to: "second".into(),
             kind: "midi".into(),
             route: Some(15),
+            input: None,
         });
         let old = resolve(&b, [None, None]);
         assert_eq!(old.patterns.len(), 3);
@@ -1131,6 +1348,7 @@ mod tests {
             to: "midi-42".into(),
             kind: "midi".into(),
             route: Some(9),
+            input: None,
         });
         assert!(b.graph.as_ref().unwrap().validate(&b).is_err());
         let g = b.graph.as_mut().unwrap();
@@ -1142,6 +1360,7 @@ mod tests {
                 to: "pattern-p".into(),
                 kind: "key".into(),
                 route: None,
+                input: None,
             });
         }
         assert!(b.graph.as_ref().unwrap().validate(&b).is_err());

@@ -2,10 +2,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { Patches, emptyPatch, formatPatchValue, preparePatchInstance } from './Patches';
+import { PinButton, PinnedSource } from './pinnedComponents';
 import { gainPatch, prepare } from './teiaModel';
 const invoke = vi.hoisted(() => vi.fn());
-vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-beforeEach(() => { localStorage.clear(); HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); }; });
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command:string, ...args:unknown[]) => command === 'get_instruments' ? Promise.resolve([]) : invoke(command, ...args) }));
+beforeEach(() => { localStorage.clear(); localStorage.setItem('vira.pinned-components', JSON.stringify(['patch:Gain.json','patch:Other.json','patch:Third.json'])); HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); }; });
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const state = { generation: '7', runtimeGeneration: '7', record: null, editorOpen: false, peak: 0, renderFailures: 0, restoreError: null, running: true };
 const loaded = { ...state, record: { name: 'Gain.json', prepared: prepare(gainPatch), overrides: {}, bypass: false } };
@@ -43,16 +44,6 @@ test('bypass is unavailable for patches without audio inputs', async () => {
   render(<Patches />);
   expect((await screen.findByRole('button', { name: 'Bypass Gain' }) as HTMLButtonElement).disabled).toBe(true);
 });
-test('clears a transient library error after polling recovers', async () => {
-  let failed = true;
-  invoke.mockImplementation((command: string) => command === 'teia_library'
-    ? failed ? Promise.reject('Too many open files (os error 24)') : Promise.resolve({ files: [] })
-    : Promise.resolve([]));
-  render(<Patches />);
-  await screen.findByRole('alert');
-  failed = false;
-  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
-});
 test('new patches connect each stereo input channel to its matching output', () => {
   const patch = emptyPatch('Empty');
   expect(patch.nodes.map(n => n.type)).toEqual(['AudioInput', 'AudioOut']);
@@ -70,44 +61,10 @@ test('the patch panel follows the name edited in the document before and after s
   render(<Patches />);
   await screen.findByRole('listitem', { name: 'My stereo effect' });
   expect(screen.getByRole('switch', { name: 'Enable My stereo effect' })).toBeTruthy();
-  expect(screen.getByText('My stereo effect').title).toBe('Gain.json');
+  expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toContain('patch:Gain.json');
   record = { ...record, name: 'My stereo effect.json' };
-  await waitFor(() => expect(screen.getByText('My stereo effect').title).toBe('My stereo effect.json'));
-});
-test('the dropdown lists every saved patch, prevents duplicates, and adds the selected patch', async () => {
-  let entries = [{ slot: 0, state: loaded }];
-  invoke.mockImplementation((command: string) => {
-    if (command === 'teia_library') return Promise.resolve({ files: ['Gain.json', 'Other.json'] });
-    if (command === 'patches_state') return Promise.resolve(entries);
-    if (command === 'teia_read') return Promise.resolve({ document: gainPatch, hash: 'hash' });
-    if (command === 'patches_add') { const added = { slot: 1, state: { ...loaded, record: { ...loaded.record, name: 'Other.json' } } }; entries = [...entries, added]; return Promise.resolve(added); }
-    return Promise.resolve();
-  });
-  render(<Patches />);
-  await screen.findByRole('switch', { name: 'Enable Gain' });
-  fireEvent.click(screen.getByRole('button', { name: '+ Add patch' }));
-  expect(screen.getAllByRole('menuitem')[0].textContent).toBe('… New patch');
-  expect((screen.getByRole('menuitem', { name: 'Gain · added' }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Other' }));
-  await screen.findByRole('switch', { name: 'Enable Other' });
-  expect(invoke).toHaveBeenCalledWith('patches_add', expect.objectContaining({ name: 'Other.json', savedHash: 'hash' }));
-});
-test('new patch creates a unique library document, adds its instance and opens its editor', async () => {
-  let entries: { slot: number; state: typeof state | typeof loaded }[] = [];
-  invoke.mockImplementation((command: string) => {
-    if (command === 'teia_library') return Promise.resolve({ files: ['New patch.json'] });
-    if (command === 'patches_state') return Promise.resolve(entries);
-    if (command === 'teia_read') return Promise.resolve({ document: emptyPatch('New patch 2'), hash: 'new-hash' });
-    if (command === 'patches_add') { const added = { slot: 3, state: { ...loaded, record: { ...loaded.record, name: 'New patch 2.json' } } }; entries = [added]; return Promise.resolve(added); }
-    return Promise.resolve();
-  });
-  render(<Patches />);
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_state'));
-  fireEvent.click(screen.getByRole('button', { name: '+ Add patch' }));
-  await screen.findByRole('menuitem', { name: 'New patch' });
-  fireEvent.click(screen.getByRole('menuitem', { name: '… New patch' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('teia_open_editor', { slot: 3 }));
-  expect(invoke).toHaveBeenCalledWith('teia_import', { name: 'New patch 2.json', document: emptyPatch('New patch 2') });
+  await waitFor(() => expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toContain('patch:My stereo effect.json'));
+  expect(screen.getByRole('listitem', {name:'My stereo effect'})).toBeTruthy();
 });
 test('edit, toggle and parameter changes target the correct instance and generation', async () => {
   invoke.mockImplementation((command: string, args?: { value: number; action: string }) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : command === 'patches_state' ? [{ slot: 2, state: loaded }] : command === 'patches_control' ? { ...loaded, record: { ...loaded.record, bypass: args?.action === 'bypass' }, parameters: { 'vira-factory-stereo-gain': args?.value } } : undefined));
@@ -121,63 +78,6 @@ test('edit, toggle and parameter changes target the correct instance and generat
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_control', { slot: 2, action: 'parameter', parameter: 'vira-factory-stereo-gain', value: 2, generation: '7' }));
 });
 
-test('removal requires confirmation, cancels safely, and leaves the saved patch available to add again', async () => {
-  let entries: { slot: number; state: typeof loaded }[] = [{ slot: 2, state: loaded }];
-  invoke.mockImplementation((command: string) => {
-    if (command === 'teia_library') return Promise.resolve({ files: ['Gain.json'] });
-    if (command === 'patches_state') return Promise.resolve(entries);
-    if (command === 'patches_remove') entries = [];
-    return Promise.resolve();
-  });
-  render(<Patches />);
-  const row = await screen.findByRole('listitem', { name: 'Gain' });
-  fireEvent.click(row);
-  fireEvent.keyDown(window, { key: 'Delete' });
-  await screen.findByRole('dialog', { name: 'Remove patch?' });
-  expect(invoke.mock.calls.some(([command]) => command === 'patches_remove')).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-  expect(screen.queryByRole('dialog')).toBeNull();
-  expect(screen.getByRole('switch')).toBeTruthy();
-  fireEvent.keyDown(window, { key: 'Delete' });
-  fireEvent.click(screen.getByRole('button', { name: 'Remove patch' }));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_remove', { slot: 2, generation: '7' }));
-  await waitFor(() => expect(screen.queryByRole('switch')).toBeNull());
-  fireEvent.click(screen.getByRole('button', { name: '+ Add patch' }));
-  expect((screen.getByRole('menuitem', { name: 'Gain' }) as HTMLButtonElement).disabled).toBe(false);
-  expect(invoke.mock.calls.some(([command]) => command.includes('delete'))).toBe(false);
-});
-test('an open patch editor prevents removing its instance', async () => {
-  invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : [{ slot: 2, state: { ...loaded, editorOpen: true } }]));
-  render(<Patches />);
-  fireEvent.click(await screen.findByRole('listitem', { name: 'Gain' }));
-  fireEvent.keyDown(window, { key: 'Delete' });
-  expect(screen.queryByRole('dialog')).toBeNull();
-  expect(screen.getByRole('alert').textContent).toMatch(/Close the patch editor/);
-  expect(invoke.mock.calls.some(([command]) => command === 'patches_remove')).toBe(false);
-});
-
-test('click selects one patch, clicking anywhere else deselects, and deletion does not intercept text editing', async () => {
-  invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json', 'Other.json'] } : [{ slot: 0, state: loaded }, { slot: 1, state: { ...loaded, record: { ...loaded.record, name: 'Other.json' } } }]));
-  render(<><Patches /><input aria-label="Outside search" /></>);
-  const first = await screen.findByRole('listitem', { name: 'Gain' });
-  const second = screen.getByRole('listitem', { name: 'Other' });
-  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Remove Gain' })).toBeNull();
-  fireEvent.click(first);
-  expect(first.getAttribute('aria-current')).toBe('true');
-  fireEvent.click(second);
-  expect(first.getAttribute('aria-current')).toBeNull();
-  expect(second.getAttribute('aria-current')).toBe('true');
-  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Backspace' });
-  expect(screen.queryByRole('dialog')).toBeNull();
-  fireEvent.click(screen.getByRole('textbox'));
-  expect(second.getAttribute('aria-current')).toBeNull();
-  fireEvent.keyDown(window, { key: 'Delete' });
-  expect(screen.queryByRole('dialog')).toBeNull();
-  fireEvent.click(first);
-  fireEvent.click(screen.getByRole('button', { name: '+ Add patch' }));
-  expect(first.getAttribute('aria-current')).toBeNull();
-});
 test('double-clicking a knob resets its value without opening the patch editor', async () => {
   invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : command === 'patches_state' ? [{ slot: 0, state: loaded }] : loaded));
   render(<Patches />);
@@ -207,8 +107,8 @@ test('dragging reorders patches, survives polling and remounting, and leaves aud
   expect(third.classList.contains('drop-after')).toBe(true);
   fireEvent.drop(third, { dataTransfer, clientY: 175 });
   expect(screen.getAllByRole('listitem').map(e => e.getAttribute('aria-label'))).toEqual(['Other', 'Third', 'Gain']);
-  expect(first.getAttribute('aria-current')).toBe('true');
-  expect(JSON.parse(localStorage.getItem('vira.patch-order')!)).toEqual(['Other.json', 'Third.json', 'Gain.json']);
+  expect(first.getAttribute('aria-current')).toBeNull();
+  expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toEqual(['patch:Other.json', 'patch:Third.json', 'patch:Gain.json']);
   await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === 'patches_state').length).toBeGreaterThan(1));
   expect(screen.getAllByRole('listitem').map(e => e.getAttribute('aria-label'))).toEqual(['Other', 'Third', 'Gain']);
   view.unmount(); render(<Patches />);
@@ -229,30 +129,6 @@ test('dragging reorders patches, survives polling and remounting, and leaves aud
   vi.unstubAllGlobals();
 });
 
-test('Add patch closes on clicks outside the dropdown, including within the patch panel and stopped pointer events', async () => {
-  invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : [{ slot: 0, state: loaded }]));
-  render(<><Patches /><button onPointerDown={e => e.stopPropagation()}>Outside control</button></>);
-  const row = await screen.findByRole('listitem', { name: 'Gain' });
-  const add = screen.getByRole('button', { name: '+ Add patch' });
-  fireEvent.click(add);
-  expect(screen.getByRole('menu')).toBeTruthy();
-  fireEvent.pointerDown(screen.getByRole('menu'));
-  expect(screen.getByRole('menu')).toBeTruthy();
-  fireEvent.pointerDown(row);
-  expect(screen.queryByRole('menu')).toBeNull();
-  fireEvent.click(add);
-  fireEvent.pointerDown(screen.getByRole('button', { name: 'Outside control' }));
-  expect(screen.queryByRole('menu')).toBeNull();
-  fireEvent.click(add);
-  fireEvent.click(screen.getByRole('heading', { name: 'Patches' }));
-  expect(screen.queryByRole('menu')).toBeNull();
-  fireEvent.click(add);
-  fireEvent.pointerDown(add);
-  expect(screen.getByRole('menu')).toBeTruthy();
-  fireEvent.click(add);
-  expect(screen.queryByRole('menu')).toBeNull();
-});
-
 test('recovery status follows native suspension and clears automatically when processing resumes', async () => {
   let recovering = true;
   invoke.mockImplementation((command: string) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : [{ slot: 0, state: { ...loaded, suspended: recovering } }]));
@@ -271,4 +147,33 @@ test('transient recovery errors do not leave a stale manual reset warning', asyn
   fireEvent.keyDown(await screen.findByRole('slider', { name: 'gain' }), { key: 'End' });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_control', expect.anything()));
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+test('only explicit pins appear, with no heading, add action, selection or deletion', async () => {
+  localStorage.clear();
+  invoke.mockImplementation(command => Promise.resolve(command === 'patches_state' ? [{slot:0,state:loaded}] : []));
+  render(<><PinButton id="patch:Gain.json" name="Gain" /><Patches /></>);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_state'));
+  expect(screen.queryByRole('region', {name:'Pinned components'})).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name:'Pin Gain'}));
+  const row = await screen.findByRole('listitem', {name:'Gain'});
+  expect(screen.queryByRole('heading')).toBeNull();
+  expect(screen.queryByRole('button', {name:'+ Add patch'})).toBeNull();
+  fireEvent.click(row); fireEvent.keyDown(window,{key:'Delete'}); fireEvent.keyDown(window,{key:'Backspace'});
+  expect(row.getAttribute('aria-current')).toBeNull();
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(invoke.mock.calls.some(([cmd]) => cmd === 'patches_remove')).toBe(false);
+  fireEvent.click(screen.getByRole('button', {name:'Pin Gain'}));
+  expect(screen.queryByRole('region', {name:'Pinned components'})).toBeNull();
+});
+test('generic component pins share live controls and disappear when their source is removed', async () => {
+  localStorage.setItem('vira.pinned-components', JSON.stringify(['routing:gain']));
+  invoke.mockImplementation(() => Promise.resolve([]));
+  const change = vi.fn();
+  const source = <PinnedSource id="routing:gain" name="Gain" show={false}><input type="number" aria-label="Processor gain" defaultValue={1} onChange={e => change(Number(e.target.value))} /></PinnedSource>;
+  const view = render(<>{source}<Patches /></>);
+  fireEvent.change(await screen.findByRole('spinbutton', {name:'Processor gain'}),{target:{value:'2'}});
+  expect(change).toHaveBeenCalledWith(2);
+  view.rerender(<Patches />);
+  await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull());
 });

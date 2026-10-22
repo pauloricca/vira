@@ -23,6 +23,7 @@ pub enum Kind {
     Compressor,
     Oscillator,
     RingModulation,
+    Selector,
     Patch,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,7 +52,7 @@ impl Node {
         self.custom_label.as_deref().unwrap_or(&self.label)
     }
     pub fn inputs(&self) -> Vec<&str> {
-        if self.kind == Kind::Patch {
+        if self.kind == Kind::Patch || self.kind == Kind::Selector {
             if let Some(ports) = &self.patch_inputs {
                 return ports.iter().map(|p| p.id.as_str()).collect();
             }
@@ -117,6 +118,7 @@ impl Graph {
                 matches!(
                     node.kind,
                     Kind::Gain
+                        | Kind::Selector
                         | Kind::Compressor
                         | Kind::Oscillator
                         | Kind::Trim
@@ -470,11 +472,13 @@ impl Graph {
                 "Only A and B can own players and automatic transition controls"
             );
             ensure!(
-                n.patch_inputs.as_ref().is_none_or(|p| p.len() <= 32
-                    && p.iter().all(|port| !port.id.is_empty())
-                    && p.iter()
-                        .enumerate()
-                        .all(|(i, port)| !p[..i].iter().any(|old| old.id == port.id))),
+                n.patch_inputs
+                    .as_ref()
+                    .is_none_or(|p| (n.kind == Kind::Selector || p.len() <= 32)
+                        && p.iter().all(|port| !port.id.is_empty())
+                        && p.iter()
+                            .enumerate()
+                            .all(|(i, port)| !p[..i].iter().any(|old| old.id == port.id))),
                 "Invalid patch input ports (maximum 32)"
             );
             ensure!(
@@ -498,6 +502,7 @@ impl Graph {
                                 | Kind::Compressor
                                 | Kind::Oscillator
                                 | Kind::RingModulation
+                                | Kind::Selector
                                 | Kind::Patch
                                 | Kind::Trim
                                 | Kind::Eq
@@ -517,6 +522,13 @@ impl Graph {
                     Kind::Filter if n.deck.is_none() => (-1. ..=1.).contains(&n.value),
                     Kind::Fader | Kind::CueSwitch if n.deck.is_none() =>
                         (0. ..=1.).contains(&n.value),
+                    Kind::Selector =>
+                        n.patch_inputs
+                            .as_ref()
+                            .is_some_and(|p| !p.is_empty() && p.len() <= 513)
+                            && n.value >= 0.
+                            && n.value.fract() == 0.
+                            && (n.value as usize) < n.inputs().len(),
                     Kind::Gain => n.value >= 0.,
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
                     Kind::Oscillator => (20. ..=2000.).contains(&n.value),
@@ -551,6 +563,14 @@ impl Graph {
                 self.nodes[source].outputs().contains(&w.output.as_str()),
                 "Invalid audio output port"
             );
+            if self.nodes[target].kind == Kind::Selector {
+                ensure!(
+                    !self.wires[..i]
+                        .iter()
+                        .any(|old| old.to == w.to && old.input == w.input),
+                    "Selector inputs accept one cable each"
+                );
+            }
             let port = self.nodes[target]
                 .inputs()
                 .iter()
@@ -563,8 +583,18 @@ impl Graph {
                     .iter()
                     .position(|p| *p == w.output)
                     .unwrap(),
-                port,
-                gain: w.gain,
+                port: if self.nodes[target].kind == Kind::Selector {
+                    0
+                } else {
+                    port
+                },
+                gain: if self.nodes[target].kind == Kind::Selector
+                    && port != self.nodes[target].value as usize
+                {
+                    0.
+                } else {
+                    w.gain
+                },
             });
             indegree[target] += 1;
         }
@@ -1232,7 +1262,7 @@ impl Step {
                 std::array::from_fn(|c| 0.45 * (input[0][c] * cross[0] + input[1][c] * cross[1]))
             }
             Kind::Cue => std::array::from_fn(|c| 0.45 * (input[0][c] + input[1][c])),
-            Kind::Output | Kind::Patch => input[0],
+            Kind::Output | Kind::Patch | Kind::Selector => input[0],
             Kind::Gain => input[0].map(|v| v * self.node.value),
             Kind::Compressor => {
                 let detector = if self.external_detector {
@@ -1960,5 +1990,66 @@ mod direct_cue_tests {
             [1., 0.],
         );
         assert!((out[1][0] - 0.4882).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+    #[test]
+    fn selector_switches_audio_and_supports_more_than_32_ports() {
+        let mut g = Graph::default();
+        g.nodes.push(Node {
+            id: "selector".into(),
+            kind: Kind::Selector,
+            deck: None,
+            label: "Selector".into(),
+            custom_label: None,
+            x: 0.,
+            y: 0.,
+            value: 0.,
+            eq: None,
+            patch_inputs: Some(
+                (0..40)
+                    .map(|i| PatchInput {
+                        id: format!("p{i}"),
+                        label: format!("p{i}"),
+                    })
+                    .collect(),
+            ),
+        });
+        g.wires.retain(|w| w.to != "master");
+        for (from, to, input) in [
+            ("a-player", "selector", "p0"),
+            ("b-player", "selector", "p38"),
+            ("selector", "master", "audio"),
+        ] {
+            g.wires.push(Wire {
+                from: from.into(),
+                to: to.into(),
+                input: input.into(),
+                output: "audio".into(),
+                gain: 1.,
+            });
+        }
+        let render = |g: &Graph| {
+            g.compile()
+                .unwrap()
+                .render(
+                    [[0.2; 2], [0.8; 2]],
+                    [Settings::default(); 2],
+                    [1.; 2],
+                    [1.; 2],
+                    [1.; 2],
+                )
+                .0[0]
+        };
+        assert_eq!(render(&g), [0.2; 2]);
+        g.nodes.last_mut().unwrap().value = 38.;
+        assert_eq!(render(&g), [0.8; 2]);
+        g.nodes.last_mut().unwrap().value = 39.;
+        assert_eq!(render(&g), [0.; 2]);
+        let loaded: Graph = serde_json::from_value(serde_json::to_value(&g).unwrap()).unwrap();
+        assert_eq!(loaded, g);
     }
 }

@@ -19,7 +19,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); invoke.mockReset(); });
-async function mount() { render(<Patterns active />); const button = await screen.findByLabelText('Expand Arp'); fireEvent.click(button); await screen.findByDisplayValue('Arp'); }
+async function mount() { render(<Patterns active />); const button = await screen.findByLabelText('Expand Arp'); fireEvent.click(button); await screen.findByLabelText('Pattern name'); }
 test('edits preserve relative degrees across key and scale changes, and keep the editor focused on patterns', async () => {
   bank.patterns[0].notes = [{ id: 'n', degree: 3, octave: 1, beat: 0, duration: 1, velocity: 100 }];
   await mount();
@@ -182,4 +182,33 @@ test('percussion starts empty and rows configure persistent fixed notes and opti
   expect(bank.patterns[1].rows).toHaveLength(1);
   expect(bank.patterns[1].notes).toHaveLength(1);
   vi.unstubAllGlobals();
+});
+
+test('cue patterns have four fixed gates with editable positions and durations', async () => {
+  class TestPointer extends MouseEvent { pointerId = 1; }
+  vi.stubGlobal('PointerEvent', TestPointer);
+  HTMLElement.prototype.setPointerCapture = vi.fn();
+  HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({left:0,top:0,width:800,height:88} as DOMRect);
+  try {
+    await mount();
+    fireEvent.click(screen.getByRole('button', {name:'+ Cue point pattern'}));
+    await waitFor(() => expect(bank.patterns).toHaveLength(2));
+    expect(bank.patterns[1]).toMatchObject({kind:'cue',notes:[]});
+    fireEvent.click(screen.getByLabelText('Expand Untitled cue pattern'));
+    expect(screen.queryByLabelText('Pattern key')).toBeNull();
+    expect(screen.queryByText('+ Add row')).toBeNull();
+    const grid = screen.getByLabelText('Cue point gate grid');
+    expect(grid.style.height).toBe('88px');
+    fireEvent.pointerDown(grid, {button:0,clientX:100,clientY:30});
+    await waitFor(() => expect(bank.patterns[1].notes[0]).toMatchObject({degree:2,octave:0,beat:1,duration:.25}));
+    const end = screen.getByLabelText('Resize note');
+    fireEvent.pointerDown(end, {button:0,clientX:125,clientY:30});
+    fireEvent.pointerMove(end, {clientX:200,clientY:30}); fireEvent.pointerUp(end, {clientX:200,clientY:30});
+    await waitFor(() => expect(bank.patterns[1].notes[0].duration).toBe(1));
+    const note = screen.getByRole('button', {name:/Cue B, gate/});
+    fireEvent.pointerDown(note, {button:0,clientX:100,clientY:30});
+    fireEvent.pointerMove(note, {clientX:200,clientY:74}); fireEvent.pointerUp(note, {clientX:200,clientY:74});
+    await waitFor(() => expect(bank.patterns[1].notes[0]).toMatchObject({degree:4,beat:2,duration:1}));
+  } finally { vi.unstubAllGlobals(); }
 });

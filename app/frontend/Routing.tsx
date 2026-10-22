@@ -1,4 +1,7 @@
-import { addMixerLine, arrangeMixerLines, mixerLine, mixerLines, lineColours, lineName, lineNodeWidth, compactMixerGraph } from './mixerLines';
+import { selectorPorts, SelectorControl } from './selector';
+import { ParameterKnob } from './ParameterKnob';
+import { PinButton, PinnedSource, instrumentPin, patchPin } from './pinnedComponents';
+import { addMixerLine, arrangeMixerLines, mixerLine, mixerLines, lineColours, lineName, lineNodeWidth, mixerLineBounds, compactMixerGraph } from './mixerLines';
 import type { AudioState } from './Decks';
 import type { CSSProperties } from 'react';
 import { Slider } from './Slider';
@@ -12,31 +15,22 @@ import { addSessionPatch, usePatchLibrary, patchAudioInputs } from './patchLibra
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
-type Kind = 'instrument' | 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'cue_switch' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
+type Kind = 'selector' | 'instrument' | 'input' | 'player' | 'trim' | 'eq' | 'filter' | 'fader' | 'cue_switch' | 'crossfader' | 'cue' | 'output' | 'gain' | 'compressor' | 'oscillator' | 'ring_modulation' | 'patch';
 export type RoutingNode = { id: string; kind: Kind; deck: number | null; label: string; custom_label?: string; x: number; y: number; value: number; eq?: [number, number, number]; instrument_input?: boolean; instrument_output?: boolean; patch_inputs?: { id: string; label: string }[] };
 export type Wire = { from: string; output: string; to: string; input: string; gain: number };
 export type Graph = { nodes: RoutingNode[]; wires: Wire[] };
-export const inputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_input ? ['audio'] : [] : node.kind === 'patch' && node.patch_inputs ? node.patch_inputs.map(p => p.id) : node.kind === 'input' || node.kind === 'player' || node.kind === 'oscillator' ? [] : node.kind === 'crossfader' || node.kind === 'cue' ? ['A', 'B'] : node.kind === 'compressor' ? ['audio', 'sidechain'] : node.kind === 'ring_modulation' ? ['audio', 'carrier'] : ['audio'];
+export const inputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_input ? ['audio'] : [] : (node.kind === 'patch' || node.kind === 'selector') && node.patch_inputs ? node.patch_inputs.map(p => p.id) : node.kind === 'input' || node.kind === 'player' || node.kind === 'oscillator' ? [] : node.kind === 'crossfader' || node.kind === 'cue' ? ['A', 'B'] : node.kind === 'compressor' ? ['audio', 'sidechain'] : node.kind === 'ring_modulation' ? ['audio', 'carrier'] : ['audio'];
 const outputs = (node: RoutingNode) => node.kind === 'instrument' ? node.instrument_output ? ['audio'] : [] : node.kind === 'output' ? [] : node.kind === 'compressor' || node.kind === 'ring_modulation' ? ['audio', 'dry'] : node.kind === 'oscillator' ? ['audio', 'cosine'] : ['audio'];
 const removable = (node: RoutingNode) => (mixerLine(node) ?? -1) > 1 || node.kind === 'input' || node.kind === 'patch' || node.kind === 'instrument' || isProcessor(node);
 const liveParameter = (node: RoutingNode) => isProcessor(node) || (mixerLine(node) !== null && node.deck === null);
-const isProcessor = (node: RoutingNode) => ['gain', 'compressor', 'oscillator', 'ring_modulation'].includes(node.kind);
+const isProcessor = (node: RoutingNode) => ['selector', 'gain', 'compressor', 'oscillator', 'ring_modulation'].includes(node.kind);
 const point = (node: RoutingNode, port: string, output: boolean) => {
-  if (node.kind === 'player' && node.deck === 1 && output) return {x:node.x,y:node.y + patchPortTop(0) + 12};
   if (mixerLine(node) === null) return patchPortPoint(node, (output ? outputs(node) : inputs(node)).indexOf(port), output);
   const width = lineNodeWidth(node);
-  if (output) return {x:node.x + width / 2,y:node.y + 40};
-  return node.kind === 'trim' ? {x:node.x + (mixerLine(node) === 1 ? width : 0),y:node.y + 20} : {x:node.x + width / 2,y:node.y};
+  return {x:node.x + (output ? width : 0),y:node.y + 20};
 };
 const wirePath = (from: RoutingNode, to: RoutingNode, wire: Wire) => {
-  const a = point(from, wire.output, true), b = point(to, wire.input, false);
-  if (mixerLine(from) !== null && mixerLine(from) === mixerLine(to)) {
-    const middle = a.y + (b.y - a.y) / 2;
-    return `M ${a.x} ${a.y} L ${a.x} ${middle} L ${b.x} ${middle} L ${b.x} ${b.y}`;
-  }
-  if (from.kind === 'player' && from.deck === 1 && mixerLine(to) === 1) return `M ${a.x} ${a.y} C ${a.x - 70} ${a.y}, ${b.x + 70} ${b.y}, ${b.x} ${b.y}`;
-  if (mixerLine(from) !== null && b.y > a.y) return `M ${a.x} ${a.y} C ${a.x} ${a.y + 60}, ${b.x - 60} ${b.y}, ${b.x} ${b.y}`;
-  return path(a,b);
+  return path(point(from, wire.output, true), point(to, wire.input, false));
 };
 const nodeSize = (node:RoutingNode) => ({width:mixerLine(node) !== null ? lineNodeWidth(node) : 160,height:mixerLine(node) !== null ? 40 : patchSize(Math.max(120,70+Math.max(inputs(node).length,outputs(node).length)*26)+(isProcessor(node) && node.kind !== 'ring_modulation' ? 52 : 0))});
 const selectionIds = (selection:Selection) => selection && 'node' in selection ? selection.nodes ?? [selection.node] : [];
@@ -47,7 +41,7 @@ const equal = (a: Graph | null, b: Graph | null) => JSON.stringify(a) === JSON.s
 type Selection = { node: string; nodes?: string[] } | { wire: number } | null;
 type Patch = { from: string; output: string; x: number; y: number; pointer: number; reconnect?: { index: number; wire: Wire; end: 'source' | 'target' } };
 type Moving = { ids: string[]; startX: number; startY: number; before: Graph; pointer: number };
-const processors: Record<string, string> = { compressor: 'Compressor', gain: 'Gain', ring_modulation: 'Ring modulator', oscillator: 'Sine instrument' };
+const processors: Record<string, string> = { selector: 'Selector', compressor: 'Compressor', gain: 'Gain', ring_modulation: 'Ring modulator', oscillator: 'Sine instrument' };
 
 export function Routing({ active = true, audio, control }: { active?: boolean; audio?: AudioState; control?: (deck:number, action:string, value?:number) => Promise<void> }) {
   const instruments = useInstruments(active);
@@ -62,7 +56,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   const [liveApplying, setLiveApplying] = useState(false);
   const lastLiveAttempt = useRef('');
   const writeInFlight = useRef(false);
-  const {files} = usePatchLibrary(active);
+  const {files, entries: patchEntries} = usePatchLibrary(active);
   const [zoom, setZoom] = useState(.8);
   const [selected, setSelected] = useState<Selection>(null);
   const [patch, setPatch] = useState<Patch | null>(null);
@@ -87,7 +81,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
     const rect = patchSelectionRect(drag.start,p);
     const ids = g.nodes.filter(n => {
       const line = mixerLine(n), nodes = line === null ? [n] : g.nodes.filter(other => mixerLine(other) === line);
-      const bounds = line === null ? {...n,...nodeSize(n)} : {x:Math.min(...nodes.map(n => n.x))-20,y:Math.min(...nodes.map(n => n.y))-60,width:220,height:Math.max(...nodes.map(n => n.y))-Math.min(...nodes.map(n => n.y))+120};
+      const bounds = line === null ? {...n,...nodeSize(n)} : mixerLineBounds(nodes);
       return patchIntersects(rect,bounds);
     }).map(n => n.id);
     selectNodes(expandLines(g,ids));
@@ -98,13 +92,14 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   const canvas = useRef<HTMLDivElement>(null);
   const dirty = !equal(graph, accepted);
   const canvasWidth = Math.max(1600, ...(graph?.nodes.map(n => n.x + 220) ?? []));
-  const canvasHeight = Math.max(900, ...(graph?.nodes.map(n => n.y + 180) ?? []));
+  const canvasHeight = Math.max(900, ...(graph?.nodes.map(n => n.y + Math.max(180,nodeSize(n).height) + 40) ?? []));
   const showGraph = (value: Graph) => { current.current = value; setGraph(value); };
   const record = (before: Graph, after: Graph) => {
     if (equal(before, after)) return;
     past.current = [...past.current.slice(-99), before]; future.current = []; setHistoryRevision(v => v + 1);
   };
   const edit = (value: Graph) => {
+    value = {...value,nodes:value.nodes.map(n => n.kind !== 'selector' ? n : {...n,patch_inputs:selectorPorts(value.wires.filter(w => w.to === n.id).map(w => w.input), inputs(n)[n.value] ?? 'A').map(id => ({id,label:id}))})};
     if (!current.current) return;
     if (!gesture.current) record(current.current, value);
     showGraph(value); setError(null);
@@ -120,7 +115,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   };
   const receiveGraph = (raw: Graph) => {
     const normalized = instrumentGraph(raw, instruments);
-    const value = normalized.nodes.find(n => n.id === 'a-trim')?.y === normalized.nodes.find(n => n.id === 'a-eq')?.y && normalized.nodes.some(n => n.id === 'a-trim') ? arrangeMixerLines(normalized) : compactMixerGraph(normalized);
+    const value = compactMixerGraph(normalized);
     const previous = acceptedRef.current;
     const added = value.nodes.filter(n => n.kind === 'patch' && !previous?.nodes.some(old => old.id === n.id));
     const removed = previous?.nodes.filter(n => (n.kind === 'patch' || n.id.startsWith('instrument-')) && !value.nodes.some(next => next.id === n.id)).map(n => n.id) ?? [];
@@ -216,7 +211,8 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
           : { from: wire.from, output: wire.output, to: node.id, input: pin, gain: 1 };
         // A live patch update may have removed or reordered the cable mid-drag.
         if (!reconnect || value.wires[reconnect.index] === reconnect.wire) {
-          if (value.wires.some((w, i) => i !== reconnect?.index && w.from === next.from && w.output === next.output && w.to === next.to && w.input === next.input)) setError('This connection already exists');
+          if (node.kind === 'selector' && value.wires.some((w,i) => i !== reconnect?.index && w.to === next.to && w.input === next.input)) setError('Selector inputs accept one cable each');
+          else if (value.wires.some((w, i) => i !== reconnect?.index && w.from === next.from && w.output === next.output && w.to === next.to && w.input === next.input)) setError('This connection already exists');
           else {
             const index = reconnect?.index ?? value.wires.length;
             edit({ ...value, wires: reconnect ? value.wires.map((w, i) => i === index ? next : w) : [...value.wires, next] });
@@ -227,8 +223,32 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
       cancelPatch();
     }
   };
+  const pinId = (node:RoutingNode) => node.kind === 'instrument' ? instrumentPin(node.id) : node.kind === 'patch' ? patchPin(patchEntries.find(e => e.slot === Number(node.id.replace('patch-', '')))?.state.record?.name ?? node.label) : `routing:${node.id}`;
+  function pinnedControls(node:RoutingNode) {
+    const kinds = ['trim','eq','filter','fader','cue_switch','gain','compressor','oscillator','crossfader','player','selector'];
+    if (!kinds.includes(node.kind)) return <small>No adjustable parameters</small>;
+    const deck = node.deck === null ? undefined : audio?.decks[node.deck];
+    const change = (value:number, band?:number) => {
+      if (node.kind === 'crossfader' && control) { void control(0,'crossfader',value).catch(e => setError(String(e))); return; }
+      if (node.deck !== null && control) {
+        const action = band !== undefined ? ['eq_low','eq_mid','eq_high'][band] : node.kind === 'fader' ? 'gain' : node.kind === 'cue_switch' ? 'headphone_cue' : node.kind;
+        void control(node.deck,action,value).catch(e => setError(String(e))); return;
+      }
+      const g = current.current; if (!g) return;
+      edit({...g,nodes:g.nodes.map(n => n.id !== node.id ? n : band === undefined ? {...n,value} : {...n,eq:(n.eq ?? [.5,.5,.5]).map((v,i) => i === band ? value : v) as [number,number,number]})});
+    };
+    const field = (label:string,value:number,min:number,max:number | undefined,step:number,band?:number) => <ParameterKnob key={label} midiId={`routing:${node.id}:${band === undefined ? 'value' : `eq:${band}`}`} label={label} ariaLabel={`${node.custom_label ?? node.label} ${label}`} disabled={busy} value={value} min={min} max={max} step={step}
+      defaultValue={node.kind === 'eq' ? .5 : ['trim','filter','crossfader'].includes(node.kind) ? 0 : node.kind === 'oscillator' ? 220 : node.kind === 'compressor' ? .25 : node.kind === 'fader' ? .8 : 1}
+      onInteractionStart={() => { gesture.current = current.current; }} onInteractionEnd={endGesture} onChange={value => change(value,band)} />;
+    if (node.kind === 'selector') return <SelectorControl id={`routing:${node.id}`} ports={inputs(node).filter(port => graph?.wires.some(w => w.to === node.id && w.input === port))} selected={inputs(node)[node.value] ?? 'A'} buttons disabled={busy} onChange={port => change(inputs(node).indexOf(port))} />;
+    if (node.kind === 'player') return <MidiButton midiId={`deck:${node.deck}:play`} aria-pressed={!!deck?.playing} disabled={!audio?.running || !deck?.track} onClick={() => { if (control && node.deck !== null) void control(node.deck,'play_pause').catch(e => setError(String(e))); }}>{deck?.playing ? 'Pause' : 'Play'}</MidiButton>;
+    if (node.kind === 'eq') return <>{(deck?.eq ?? node.eq ?? [.5,.5,.5]).map((value,i) => field(['Low','Mid','High'][i],value,0,1,.01,i))}</>;
+    if (node.kind === 'cue_switch') { const value = deck ? deck.headphone_cue : !!node.value; return <MidiButton midiId={`routing:${node.id}:cue`} aria-pressed={value} disabled={busy || !!audio && !audio.running} onClick={() => change(value ? 0 : 1)}>Headphone cue</MidiButton>; }
+    const value = node.kind === 'trim' ? deck?.trim_db ?? node.value : node.kind === 'filter' ? deck?.filter ?? node.value : node.kind === 'fader' ? deck?.gain ?? node.value : node.kind === 'crossfader' ? audio?.crossfader ?? node.value : node.value;
+    return field(node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : node.kind === 'trim' ? 'Trim (dB)' : node.kind === 'fader' ? 'Volume' : node.kind === 'filter' ? 'Filter' : node.kind === 'crossfader' ? 'Crossfader' : 'Gain',value,node.kind === 'trim' ? -12 : ['filter','crossfader'].includes(node.kind) ? -1 : node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0,node.kind === 'trim' ? 12 : node.kind === 'oscillator' ? 2000 : node.kind === 'gain' ? undefined : 1,node.kind === 'oscillator' ? 1 : .01);
+  }
   const midi = useMidiMarkers();
-  useMidiTargets([...(graph?.nodes ?? []).filter(n => isProcessor(n) && n.kind !== 'ring_modulation').map(node => ({
+  useMidiTargets([...(graph?.nodes ?? []).filter(n => isProcessor(n) && n.kind !== 'selector' && n.kind !== 'ring_modulation').map(node => ({
     id:`routing:${node.id}:value`,label:`${node.custom_label || node.label} · ${node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}`,kind:'number' as const,
     min:node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0,max:node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : undefined,defaultMax:node.kind === 'gain' ? 2 : undefined,step:node.kind === 'oscillator' ? 1 : .01,disabled:busy,read:() => node.value,
     apply:(value:number) => { const g = current.current; if (g) edit({...g,nodes:g.nodes.map(n => n.id === node.id ? {...n,value} : n)}); },
@@ -245,7 +265,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   useEffect(() => {
     if (busy || liveApplying || !graph || !accepted) return;
     const parameters = {
-      nodes:graph.nodes.filter(n => liveParameter(n) && n.kind !== 'ring_modulation' && accepted.nodes.some(old => old.id === n.id && old.kind === n.kind && (old.value !== n.value || JSON.stringify(old.eq) !== JSON.stringify(n.eq)))).map(n => ({id:n.id,value:n.value,...(n.eq ? {eq:n.eq} : {})})),
+      nodes:graph.nodes.filter(n => liveParameter(n) && n.kind !== 'ring_modulation' && accepted.nodes.some(old => old.id === n.id && old.kind === n.kind && (n.kind !== 'selector' || n.value < inputs(old).length) && (old.value !== n.value || JSON.stringify(old.eq) !== JSON.stringify(n.eq)))).map(n => ({id:n.id,value:n.value,...(n.eq ? {eq:n.eq} : {})})),
       wires:graph.wires.filter(w => accepted.wires.some(old => sameWire(old,w) && old.gain !== w.gain)),
     };
     const signature = JSON.stringify(parameters);
@@ -291,7 +311,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
         if (!Object.hasOwn(processors, id)) throw new Error('Unknown routing node');
         const g = current.current!;
         if (g.nodes.length >= 128) throw new Error('Routing node limit reached (128)');
-        const node: RoutingNode = {id:`fx-${crypto.randomUUID()}`, kind:id as Kind, deck:null, label:processors[id], ...point, value:id === 'compressor' ? .25 : id === 'oscillator' ? 220 : 1};
+        const node: RoutingNode = {id:`fx-${crypto.randomUUID()}`, kind:id as Kind, deck:null, label:processors[id], ...point, ...(id === 'selector' ? {patch_inputs:[{id:'A',label:'A'}]} : {}), value:id === 'selector' ? 0 : id === 'compressor' ? .25 : id === 'oscillator' ? 220 : 1};
         edit({...g, nodes:[...g.nodes, node]}); setSelected({node:node.id});
       }
     } catch (e) {setError(String(e));} finally {setBusy(false);}
@@ -319,9 +339,8 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
         if (drag && drag.pointer === e.pointerId && !busy) showGraph(movePatchGroup(drag.before,drag.ids,{x:p.x-drag.startX,y:p.y-drag.startY},{x:20,y:60,width:canvasWidth-40,height:canvasHeight-80},nodeSize));
       }} onPointerUp={finishPointer} onPointerCancel={cancelInteraction} onLostPointerCapture={() => { if (patchRef.current || moving.current || marquee.current) cancelInteraction(); }}>
       {graph && mixerLines(graph).map(line => {
-        const nodes = graph.nodes.filter(n => mixerLine(n) === line), x = Math.min(...nodes.map(n => n.x)), y = Math.min(...nodes.map(n => n.y));
-        return <div key={line} className={`routing-mixer-line${nodes.some(n => selectedIds.includes(n.id)) ? ' selected' : ''}`} style={{left:x-20,top:y-60,height:Math.max(...nodes.map(n => n.y))-y+120,'--line-colour':lineColours[line]} as CSSProperties} aria-label={`Mixer line ${lineName(line)}`}>
-          <div className="routing-line-heading" onPointerDown={e => { beginMove(e,nodes.map(n => n.id)); }}><strong>{lineName(line)}</strong><span>MIXER LINE</span>{line > 1 && <button disabled={busy} aria-label={`Remove mixer line ${lineName(line)}`} onPointerDown={e => e.stopPropagation()} onClick={() => { const ids = nodes.map(n => n.id); edit({nodes:graph.nodes.filter(n => !ids.includes(n.id)),wires:graph.wires.filter(w => !ids.includes(w.from) && !ids.includes(w.to))}); }}>×</button>}</div>
+        const nodes = graph.nodes.filter(n => mixerLine(n) === line), bounds = mixerLineBounds(nodes);
+        return <div key={line} className={`routing-mixer-line${nodes.some(n => selectedIds.includes(n.id)) ? ' selected' : ''}`} style={{left:bounds.x,top:bounds.y,width:bounds.width,height:bounds.height,'--line-colour':lineColours[line]} as CSSProperties} aria-label={`Mixer line ${lineName(line)}`} onPointerDown={e => { beginMove(e,nodes.map(n => n.id)); }}>
         </div>;
       })}
       <svg className="routing-wires" width={canvasWidth} height={canvasHeight} aria-label="Audio connections">{graph?.wires.map((wire, i) => {
@@ -334,11 +353,13 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
         const source = patch.reconnect?.end === 'source';
         return from && (!source || to) && <path className="routing-wire preview" data-testid="wire-preview" d={source ? path(patch, point(to!, patch.reconnect!.wire.input, false)) : path(point(from, patch.output, true), patch)} />;
       })()}</svg>
-      {graph?.nodes.map(node => <div key={node.id} data-node-id={node.id} className={`routing-node ${node.kind === 'player' && node.deck === 1 ? 'routing-player-right' : ''} ${mixerLine(node) !== null ? `routing-line-node stage-${node.kind}` : ''} ${node.deck === null ? '' : `deck-${node.deck}`} ${selectedIds.includes(node.id) ? 'selected' : ''}`} style={{ left: node.x, top: node.y, '--line-colour':lineColours[mixerLine(node) ?? node.deck ?? 0], width:mixerLine(node) !== null ? lineNodeWidth(node) : undefined, height: mixerLine(node) !== null ? 40 : patchSize(Math.max(120, 70 + Math.max(inputs(node).length, outputs(node).length) * 26) + (isProcessor(node) && node.kind !== 'ring_modulation' ? 52 : 0)) } as CSSProperties} onDoubleClick={e => { if (node.kind !== 'patch') return; e.stopPropagation(); void invoke('teia_open_editor', { slot: Number(node.id.replace('patch-', '')) }).catch(e => setError(String(e))); }} onPointerDown={e => { e.stopPropagation(); selectNode(node.id); }}>
-        <PatchingNodeHeader title={node.custom_label ?? (node.kind === 'cue_switch' ? 'Cue' : node.label)} nameLabel={`${node.id} name`} disabled={busy} onRename={name => { const value = current.current; if (value) edit({ ...value, nodes: value.nodes.map(n => n.id === node.id ? { ...n, custom_label: name } : n) }); }} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { beginMove(e,[node.id]); }} />
+      {graph?.nodes.map(node => <div key={node.id} data-node-id={node.id} className={`routing-node ${node.kind === 'player' && node.deck === 1 ? 'routing-player-right' : ''} ${mixerLine(node) !== null ? `routing-line-node stage-${node.kind}` : ''} ${node.deck === null ? '' : `deck-${node.deck}`} ${selectedIds.includes(node.id) ? 'selected' : ''}`} style={{ left: node.x, top: node.y, '--line-colour':lineColours[mixerLine(node) ?? node.deck ?? 0], width:mixerLine(node) !== null ? lineNodeWidth(node) : undefined, height: mixerLine(node) !== null ? 40 : patchSize(Math.max(120, 70 + Math.max(inputs(node).length, outputs(node).length) * 26) + (isProcessor(node) && node.kind !== 'ring_modulation' ? 52 : 0)) } as CSSProperties} onDoubleClick={e => { if (node.kind !== 'patch' || (e.target as Element).closest('button')) return; e.stopPropagation(); void invoke('teia_open_editor', { slot: Number(node.id.replace('patch-', '')) }).catch(e => setError(String(e))); }} onPointerDown={e => { e.stopPropagation(); selectNode(node.id); }}>
+        <PinButton id={pinId(node)} name={node.custom_label ?? node.label} disabled={busy || node.kind === 'patch' && !patchEntries.some(e => e.slot === Number(node.id.replace('patch-', '')) && e.state.record)} />
+        {node.kind !== 'patch' && node.kind !== 'instrument' && <PinnedSource id={pinId(node)} name={node.custom_label ?? node.label} show={false}>{pinnedControls(node)}</PinnedSource>}
+        <PatchingNodeHeader title={node.custom_label ?? (node.kind === 'cue_switch' ? 'CUE' : node.label)} nameLabel={`${node.id} name`} disabled={busy} onRename={name => { const value = current.current; if (value) edit({ ...value, nodes: value.nodes.map(n => n.id === node.id ? { ...n, custom_label: name } : n) }); }} subtitle={node.deck === null ? node.id.startsWith('instrument-') ? 'Instrument audio' : node.kind === 'input' ? 'Audio input · channels 1–2' : node.kind : `Deck ${node.deck === 0 ? 'A' : 'B'}`} onPointerDown={e => { beginMove(e,[node.id]); }} />
         <div className="routing-ports" style={{ height: Math.max(72, Math.max(inputs(node).length, outputs(node).length) * 26 + 16) }}>{inputs(node).map((port, i) => <MidiButton key={port} className="routing-port input" style={mixerLine(node) !== null ? {left:point(node,port,false).x-node.x-12,top:point(node,port,false).y-node.y-12} : { top: patchPortTop(i) }} data-routing-input={port} data-node={node.id} aria-label={`${node.id} input ${port}`}><i /><span title={node.patch_inputs?.find(p => p.id === port)?.label ?? port}>{node.patch_inputs?.find(p => p.id === port)?.label ?? port}</span></MidiButton>)}{outputs(node).map((port, i) => <MidiButton key={port} className="routing-port output" style={mixerLine(node) !== null ? {left:point(node,port,true).x-node.x-12,top:point(node,port,true).y-node.y-12} : { top: patchPortTop(i) }} data-routing-output={port} data-node={node.id} aria-label={`${node.id} output ${port}`} disabled={busy} onPointerDown={e => { if (busy || e.button !== 0) return; e.preventDefault(); e.stopPropagation(); canvas.current?.setPointerCapture(e.pointerId); const wire = { from: node.id, output: port, ...position(e), pointer: e.pointerId }; patchRef.current = wire; setPatch(wire); }}>{mixerLine(node) === null && <span>{port}</span>}<i /></MidiButton>)}</div>
-        {node.kind === 'cue_switch' && <MidiButton className="routing-cue-toggle" disabled={busy} aria-label={`Cue mixer line ${lineName(mixerLine(node) ?? 0)}`} aria-pressed={node.deck === null ? node.value > 0 : !!audio?.decks[node.deck]?.headphone_cue} onClick={() => { if (node.deck !== null) void control?.(node.deck,'headphone_cue',audio?.decks[node.deck]?.headphone_cue ? 0 : 1); else edit({...graph,nodes:graph.nodes.map(n => n.id === node.id ? {...n,value:n.value ? 0 : 1} : n)}); }}>{(node.deck === null ? node.value > 0 : audio?.decks[node.deck]?.headphone_cue) ? 'ON' : 'OFF'}</MidiButton>}
-        {isProcessor(node) && <div className="routing-parameter">{node.kind !== 'ring_modulation' && <label>{node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}<input {...midi(`routing:${node.id}:value`)} aria-label={`${node.id} value`} disabled={busy} type="number" min={node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0} max={node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : undefined} step={node.kind === 'oscillator' ? 1 : .01} value={node.value} onFocus={() => { gesture.current = current.current; }} onBlur={endGesture} onChange={e => edit({ ...graph, nodes: graph.nodes.map(n => n.id === node.id ? { ...n, value: Number(e.target.value) } : n) })} /></label>}</div>}
+        {node.kind === 'selector' && <div className="routing-parameter"><SelectorControl id={`routing:${node.id}`} ports={inputs(node).filter(port => graph?.wires.some(w => w.to === node.id && w.input === port))} selected={inputs(node)[node.value] ?? 'A'} disabled={busy} onChange={port => edit({...graph,nodes:graph.nodes.map(n => n.id === node.id ? {...n,value:inputs(node).indexOf(port)} : n)})} /></div>}
+        {isProcessor(node) && node.kind !== 'selector' && <div className="routing-parameter">{node.kind !== 'ring_modulation' && <label>{node.kind === 'oscillator' ? 'Hz' : node.kind === 'compressor' ? 'Threshold' : 'Gain'}<input {...midi(`routing:${node.id}:value`)} aria-label={`${node.id} value`} disabled={busy} type="number" min={node.kind === 'oscillator' ? 20 : node.kind === 'compressor' ? .01 : 0} max={node.kind === 'oscillator' ? 2000 : node.kind === 'compressor' ? 1 : undefined} step={node.kind === 'oscillator' ? 1 : .01} value={node.value} onFocus={() => { gesture.current = current.current; }} onBlur={endGesture} onChange={e => edit({ ...graph, nodes: graph.nodes.map(n => n.id === node.id ? { ...n, value: Number(e.target.value) } : n) })} /></label>}</div>}
       </div>)}
       {selectedWire && selected && 'wire' in selected && (['source', 'target'] as const).map(end => {
         const source = end === 'source';

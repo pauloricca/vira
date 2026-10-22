@@ -167,3 +167,61 @@ mod tests {
         assert_eq!(lane.pitch(1), -2.);
     }
 }
+
+/// Independent timestamped gate input for saved deck cues; never controls pitch.
+pub struct CueLane {
+    pub midi: teia_midi::Render,
+    generation: u64,
+    held: [[bool; 4]; 16],
+    releases: [bool; 4],
+}
+impl CueLane {
+    pub fn new() -> Self {
+        Self {
+            midi: teia_midi::channel(),
+            generation: 0,
+            held: [[false; 4]; 16],
+            releases: [false; 4],
+        }
+    }
+    pub fn prepare(&mut self, generation: u64) {
+        if generation != self.generation || self.midi.host.muted.load(SeqCst) {
+            self.releases = std::array::from_fn(|slot| self.held.iter().any(|held| held[slot]));
+            self.generation = generation;
+            self.held = [[false; 4]; 16];
+            self.midi.host.invalidate();
+            self.midi.host.generation.store(generation, SeqCst);
+            self.midi.host.muted.store(false, SeqCst);
+        }
+        self.midi.prepare_input(self.midi.host.epoch.load(SeqCst));
+    }
+    pub fn next(&mut self, frame: u64) -> Option<(usize, bool)> {
+        if let Some(slot) = self.releases.iter().position(|release| *release) {
+            self.releases[slot] = false;
+            return Some((slot, false));
+        }
+        while let Some(input) = self.midi.input_before(frame + 1) {
+            if input.generation != self.generation {
+                continue;
+            }
+            let (channel, note, on) = match input.kind {
+                EventKind::NoteOn {
+                    channel,
+                    note,
+                    velocity,
+                } => (channel, note, velocity > 0.),
+                EventKind::NoteOff { channel, note } => (channel, note, false),
+                _ => continue,
+            };
+            if note >= 4 || !(1..=16).contains(&channel) {
+                continue;
+            }
+            let slot = note as usize;
+            self.held[channel as usize - 1][slot] = on;
+            if on || !self.held.iter().any(|held| held[slot]) {
+                return Some((slot, on));
+            }
+        }
+        None
+    }
+}

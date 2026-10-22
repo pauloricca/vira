@@ -70,7 +70,7 @@ export function RollingRow({ state, running, window, control, transition, master
     () => clock.current.at(performance.now()), () => paint.current(performance.now()), true,
     (element, x, anchor) => { const bounds=element.getBoundingClientRect(); return anchor + ((x-bounds.left)/Math.max(1,bounds.width)-.5)*window*(state.speed ?? 1); });
   const waveformHandlers = useTransitionDrag(state, running, transition, control,
-    (element, x) => { const bounds = element.getBoundingClientRect(); return clock.current.at(performance.now()) + ((x - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1); }, window * (state.speed ?? 1), handlers);
+    (element, x) => { const bounds = element.getBoundingClientRect(); return clock.current.at(performance.now()) + ((x - bounds.left) / Math.max(1, bounds.width) - .5) * window * (state.speed ?? 1); }, window * (state.speed ?? 1), handlers, 1);
   paint.current = now => {
     const element=canvas.current; if (!element || !visible) return;
     const {state,window,timingOpen,transition,masterBpm}=latest.current, {width,height,dpr}=size.current;
@@ -111,6 +111,16 @@ export function RollingRow({ state, running, window, control, transition, master
       ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
       ctx.fillStyle = '#f6d477'; ctx.beginPath(); ctx.moveTo(x-5,0); ctx.lineTo(x+5,0); ctx.lineTo(x,9); ctx.fill();
     }
+    state.hot_cue_seconds?.forEach((seconds, slot) => {
+      if (seconds == null) return;
+      const x = loopX(seconds);
+      if (x < 0 || x > width) return;
+      ctx.strokeStyle = ['#b9a0fa', '#69d9be', '#f3c96a', '#ef96bc'][slot];
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+      ctx.fillStyle = ctx.strokeStyle; ctx.font = 'bold 11px sans-serif';
+      ctx.fillText('ABCD'[slot], Math.min(x + 4, width - 12), height - 7);
+    });
     const markers = transitionMarkers(transition, state.deck);
     drawTransitionGuides(ctx, markers, marker => {
       if (state.playing && state.loop_out_seconds != null) {

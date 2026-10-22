@@ -70,26 +70,21 @@
 .patching-palette section button {touch-action:none; user-select:none; -webkit-user-select:none;}
 .patching-drag-preview {position:fixed; z-index:50; padding:8px 12px; border:1px solid #67b9cf; background:#222c34; color:#dce6eb; font-size:12px; pointer-events:none;}
 
-/* Channel strips contain a compact vertical signal chain. */
-.routing-mixer-line { position:absolute; width:220px;box-sizing:border-box; border:1px solid var(--line-colour); background:color-mix(in srgb,var(--line-colour) 7%,#121a20); border-radius:6px; }
-.routing-line-heading { height:40px; display:flex; align-items:center; gap:10px; padding:0 12px; cursor:grab; color:var(--line-colour); }
-.routing-line-heading strong { font-size:19px; }
-.routing-line-heading span { font-size:9px; letter-spacing:1px; }
-.routing-page .routing-line-heading button { margin-left:auto; padding:0 4px; color:var(--line-colour); background:transparent; border:0; }
+/* Mixer rows contain a left-to-right signal chain with a pre-fader cue branch. */
+.routing-mixer-line { position:absolute;box-sizing:border-box; border:1px solid var(--line-colour); background:color-mix(in srgb,var(--line-colour) 7%,#121a20); border-radius:6px; cursor:grab; }
 .routing-node.routing-line-node { height:40px; min-height:40px; border-color:var(--line-colour); background:#1d2830; border-radius:3px; }
 .routing-line-node .routing-node-title { height:40px; padding:11px 10px; border:0; }
 .routing-line-node .routing-node-title small,.routing-line-node .routing-port span { display:none; }
 .routing-line-node .routing-ports { height:0 !important; }
 .routing-page .routing-line-node .routing-port { width:24px; height:24px; justify-content:center; right:auto; }
 .routing-line-node .routing-port i { border-color:var(--line-colour); width:7px; height:7px; }
-.routing-page .routing-cue-toggle { position:absolute; top:21px; right:25px; padding:1px 4px; font-size:9px; color:#92a0a9; }
-.routing-page .routing-cue-toggle[aria-pressed=true] { color:#0c1820; background:var(--line-colour); border-color:var(--line-colour); }
-
-.routing-page .routing-player-right .routing-port.output {left:-12px;right:auto;width:24px;justify-content:center;}
-.routing-player-right .routing-port.output span {position:absolute;left:24px;}
-
-.routing-line-node.stage-cue_switch .routing-node-title {padding:3px 8px;}
-.routing-line-node.stage-cue_switch .routing-node-name {font-size:9px;}
-
 .patching-marquee {position:absolute;z-index:4;pointer-events:none;border:1px solid #93cbd5;background:#93cbd51c;}
 .routing-mixer-line.selected {border-color:#eddb8a;box-shadow:0 0 0 2px #eddb8a66;}
+
+.routing-node > .node-pin { position: absolute; top: 3px; right: 3px; z-index: 3; display: grid; place-items: center; width: 20px; height: 20px; min-height: 0; padding: 2px; border: 0; background: transparent; color: #8c9ba5; cursor: pointer; }
+.routing-node > .node-pin[aria-pressed=true] { color: #a1e4ff; background: #30434f; }
+.routing-node-title { padding-right: 26px; }
+.routing-line-node .routing-node-title { padding-right: 23px; }
+
+.selector-buttons { display:flex; flex-wrap:wrap; gap:5px; }
+.selector-buttons button[aria-pressed=true] { color:#09211c; background:#76d2b7; border-color:#76d2b7; }

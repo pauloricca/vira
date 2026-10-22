@@ -1,5 +1,6 @@
+import { usePins } from './pinnedComponents';
 import { MetadataEditor } from './MetadataEditor';
-import { trackSampleRate } from './waveform';
+import { snapTappedBeat, trackSampleRate } from './waveform';
 import { SettingsCard, SettingsSearch, SettingsSearchContext } from './SettingsSearch';
 import { JogSettings, useJogTargets } from './Jog';
 import { useMidiWorkspace, useMidiMarkers, useMidiTargets, MidiProvider, MidiToggle, MidiSettings, MidiEditor, MidiButton, MidiInput, MidiSelect } from './MidiMapping';
@@ -48,7 +49,6 @@ type SortDirection = 'ascending' | 'descending';
 type Sort = { column: SortColumn; direction: SortDirection };
 const textCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const workspaceAreas = [
-  ['patches', 'patches panel'],
   ['routing', 'routing tab'],
   ['patterns', 'patterns tab'],
   ['instruments', 'instruments tab'],
@@ -250,12 +250,14 @@ function Workspace() {
   const mappedMusic = useMidiWorkspace('ui:music:');
   const mappedPatterns = mappedPatternValues || mappedMusic;
   const mappedRouting = useMidiWorkspace('routing:');
-  const [routingVisited, setRoutingVisited] = useState(false);
-  const [patternsVisited, setPatternsVisited] = useState(false);
+  const pins = usePins();
+  const [routingVisited, setRoutingVisited] = useState(() => pins.some(id => id.startsWith('routing:')));
+  const [patternsVisited, setPatternsVisited] = useState(() => pins.some(id => id.startsWith('patterns:')));
   const [settingsQuery, setSettingsQuery] = useState('');
   const [view, setView] = useState<'decks' | 'settings' | 'shortcuts' | 'routing' | 'patterns' | 'instruments'>('decks');
+  useEffect(() => { const show = () => { setPatternsVisited(true); setView('patterns'); }; window.addEventListener('vira-show-patterns', show); return () => window.removeEventListener('vira-show-patterns', show); }, []);
   const spaceHeld = useRef(false);
-  const tempoTaps = useRef<{ deck: number; generation: number; times: number[]; anchor?: number; speed: number } | null>(null);
+  const tempoTaps = useRef<{ deck: number; generation: number; times: number[]; anchor: number; speed: number; first: number; last: number; position: number } | null>(null);
   const [tapFeedback, setTapFeedback] = useState<{ message: string } | null>(null);
   useEffect(() => {
     if (!tapFeedback) return;
@@ -514,6 +516,16 @@ function Workspace() {
     if (view !== 'decks') return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || document.querySelector('.metadata-editor[open]') || isKeySelector(event.target) && !isTempoTap(event)) return;
+      if (event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'z') {
+        if (isTextInput(event.target)) return;
+        event.preventDefault();
+        if (event.repeat) return;
+        const target = decks.audio.decks[activeDeck];
+        if (!decks.audio.running || !target?.track || target.loading || decks.loading[activeDeck] || target.grid_saving || target.grid_previewing || target.launch_pending) return;
+        if (target.playing && (target.grid_edit || decks.audio.decks.some(d => d.deck !== activeDeck && d.playing))) return;
+        if (event.shiftKey ? target.grid_can_redo : target.grid_can_undo) void decks.control(activeDeck, event.shiftKey ? 'grid_redo' : 'grid_undo');
+        return;
+      }
       if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'n') {
         if (isTextInput(event.target)) return;
         event.preventDefault();
@@ -573,21 +585,27 @@ function Workspace() {
         const now = performance.now();
         const previous = tempoTaps.current;
         const continuing = previous?.deck === activeDeck && previous.generation === target.generation &&
-          now - previous.times.at(-1)! <= 4000;
-        const times = continuing ? [...previous.times.slice(-8), now] : [now];
-        const anchor = continuing ? previous.anchor : !target.grid
-          ? Math.min(Math.max(target.track.start_seconds ?? 0, deckPositions.current[activeDeck]?.() ?? target.position_seconds), target.track.duration_seconds - 1 / trackSampleRate(target.track))
-          : undefined;
+          now - previous.last <= 4000;
+        const position = continuing ? previous.position
+          : Math.min(Math.max(target.track.start_seconds ?? 0, deckPositions.current[activeDeck]?.() ?? target.position_seconds), target.track.duration_seconds - 1 / trackSampleRate(target.track));
         const speed = continuing ? previous.speed : target.speed ?? 1;
-        tempoTaps.current = { deck: activeDeck, generation: target.generation, times, anchor, speed };
+        const first = continuing ? previous.first : now;
+        const anchor = continuing ? previous.anchor : snapTappedBeat(target.track, position);
+        const tappedPosition = position + (now - first) * speed / 1000;
+        const beat = target.playing ? snapTappedBeat(target.track, tappedPosition) : tappedPosition;
+        const times = continuing ? [...previous.times, beat] : [anchor];
+        tempoTaps.current = { deck: activeDeck, generation: target.generation, times, anchor, speed, first, last: now, position };
+        if (!continuing) void decks.control(activeDeck, 'tap_grid_start');
         setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: 1 · keep tapping` });
         if (times.length > 1) {
-          const bpm = 60000 * (times.length - 1) / (now - times[0]);
-          const valid = Number.isFinite(bpm) && bpm >= 15 && bpm <= 600 && (anchor === undefined || bpm / speed >= 30 && bpm / speed <= 300);
-          setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: ${valid ? `${bpm.toFixed(1)} BPM${target.synced ? ' · master' : ''}` : anchor === undefined ? 'tap between 15–600 BPM' : 'track BPM must be 30–300'}` });
+          // Fit every tapped beat to a straight grid, keeping beat 1 fixed.
+          const slope = times.reduce((sum, seconds, i) => sum + i * (seconds - anchor), 0)
+            / times.reduce((sum, _, i) => sum + i * i, 0);
+          const bpm = 60 / slope;
+          const valid = Number.isFinite(bpm) && bpm >= 30 && bpm <= 300;
+          setTapFeedback({ message: `Tap ${activeDeck === 0 ? 'A' : 'B'}: ${valid ? `${bpm.toFixed(1)} BPM · grid` : 'track BPM must be 30–300'}` });
           if (valid) {
-            if (anchor !== undefined) void decks.control(activeDeck, 'tapped_grid', bpm / speed, { generation: target.generation, downbeatSeconds: anchor });
-            else void decks.control(activeDeck, target.synced ? 'master_tempo' : 'tempo', bpm);
+            void decks.control(activeDeck, 'tapped_grid', bpm, { generation: target.generation, downbeatSeconds: anchor });
           }
         }
         return;
@@ -607,6 +625,7 @@ function Workspace() {
       const tracks = visibleTracks ?? [];
       if (event.metaKey && !event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
         event.preventDefault();
+        searchInput.current?.blur();
         const track = tracks.find(candidate => candidate.id === selectedTrackId);
         const deck = event.key === 'ArrowLeft' ? 0 : 1;
         const target = decks.audio.decks[deck];
@@ -627,7 +646,7 @@ function Workspace() {
       if (event.key.length === 1 && !/\s/u.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey && !isTextInput(event.target)) {
         event.preventDefault();
         searchInput.current?.focus();
-        setSearch(previous => previous + event.key);
+        setSearch(event.key);
       }
     }
     function onKeyUp(event: KeyboardEvent) {
@@ -681,15 +700,15 @@ function Workspace() {
         </label>)}
       </div>
     </header>
-    {(patternsVisited || mappedPatterns) && <Patterns active={view === 'patterns'} />}
-    {(routingVisited || mappedRouting) && <Routing active={view === 'routing'} audio={decks.audio} control={decks.control} />}
+    {(patternsVisited || mappedPatterns || pins.some(id => id.startsWith('patterns:'))) && <Patterns active={view === 'patterns'} />}
+    {(routingVisited || mappedRouting || pins.some(id => id.startsWith('routing:'))) && <Routing active={view === 'routing'} audio={decks.audio} control={decks.control} />}
     <div className="midi-page-host" hidden={view !== 'decks'}>
     <RollingWaveforms audio={decks.audio} beats={beats} onZoomChange={setBeats} control={decks.control} onInteract={setActiveDeck} activeDeck={activeDeck} />
     <Mixer audio={decks.audio} meters={meters} control={decks.control} showCrossfader={showCrossfader}
-      deckA={<Deck otherPlaying={decks.audio.decks[1].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(0)} autoMode={decks.audio.auto_mode?.[0]} otherKey={soundingKeys[1]} state={decks.audio.decks[0]} running={decks.audio.running} loading={decks.loading[0]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[0])?.title} error={decks.errors[0]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 0} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[0].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[0].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[0].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[0].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[0].track?.track_id ?? '']} />}
-      deckB={<Deck otherPlaying={decks.audio.decks[0].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(1)} autoMode={decks.audio.auto_mode?.[1]} otherKey={soundingKeys[0]} state={decks.audio.decks[1]} running={decks.audio.running} loading={decks.loading[1]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[1])?.title} error={decks.errors[1]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 1} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[1].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[1].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[1].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[1].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[1].track?.track_id ?? '']} />} />
+      deckA={<Deck visible={view === 'decks' && !libraryExpanded} otherPlaying={decks.audio.decks[1].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(0)} autoMode={decks.audio.auto_mode?.[0]} otherKey={soundingKeys[1]} state={decks.audio.decks[0]} running={decks.audio.running} loading={decks.loading[0]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[0])?.title} error={decks.errors[0]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 0} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[0].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[0].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[0].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[0].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[0].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[0].track?.track_id ?? '']} />}
+      deckB={<Deck visible={view === 'decks' && !libraryExpanded} otherPlaying={decks.audio.decks[0].playing} autoFastBars={autoFastBars} autoFast={decks.audio.auto_fast} transition={decks.audio.auto_transition} autoAvailable={autoAvailable(1)} autoMode={decks.audio.auto_mode?.[1]} otherKey={soundingKeys[0]} state={decks.audio.decks[1]} running={decks.audio.running} loading={decks.loading[1]} loadingTitle={library?.tracks.find(track => track.id === decks.loadingTrackIds[1])?.title} error={decks.errors[1]} load={loadTrack} control={autopilot.control} syncQuantum={syncQuantum} alignLoops={alignLoops} snapLoopPoints={snapLoopPoints} showVolume={false} onInteract={setActiveDeck} registerPosition={registerDeckPosition} active={activeDeck === 1} trackKey={metadataKey(library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id))} analysisState={library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id)?.analysis.state} analyse={() => { const track = library?.tracks.find(track => track.id === decks.audio.decks[1].track?.track_id); if (track) void analyse(track); }} analysing={pending.has(decks.audio.decks[1].track?.track_id ?? '')} approveAnalysis={() => { const id = decks.audio.decks[1].track?.track_id; if (id) void approve(id); }} gridEditing={hasUnsavedGrid(decks.audio.decks[1].track?.track_id ?? '')} approving={approving.has(decks.audio.decks[1].track?.track_id ?? '')} approvalError={rowErrors[decks.audio.decks[1].track?.track_id ?? '']} />} />
     {(decks.audio.error || decks.pollError) && <p className="error" role="alert">{decks.audio.error || decks.pollError}</p>}
-    <div className={`lower-panels${workspaceVisibility.patches ? '' : ' patches-hidden'}`}><section className="library" aria-label="Music library" aria-busy={libraryLoading}>
+    <div className="lower-panels"><section className="library" aria-label="Music library" aria-busy={libraryLoading}>
       <div className="toolbar"><div className="library-heading"><h2>Music library</h2><AuditionControls audition={audition} />{libraryLoading && <span className="library-loading-indicator" role="status">{busy ? 'Loading library…' : 'Verifying files…'}</span>}
       </div><div className="library-toolbar-actions"><MidiButton midiId="library:play-next" className="library-next" aria-pressed={selectedIsNext} disabled={selectedTrack?.status !== 'ready'} title={selectedIsNext ? 'Remove selected track from planned order (⌘N)' : 'Add selected track to planned order (⌘N)'} onClick={togglePlayNext}>{selectedIsNext ? 'Cancel Play Next' : 'Play Next'}</MidiButton><MidiButton midiId="library:autopilot" className={`library-autopilot${autopilot.enabled ? ' auto-engaged' : ''}`} aria-pressed={autopilot.enabled} onClick={autopilot.toggle} title="Choose unplayed tracks and prepare automatic transitions">Autopilot</MidiButton>{sessionActive ? <MidiButton midiId="session:toggle" onClick={endSession}>End Session</MidiButton> : <MidiButton midiId="session:toggle" onClick={() => setSessionPlayed(new Set(playingTrackIds.filter((id): id is string => id !== null)))} title="Track songs played on either deck">Start Session</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={tagging} onClick={() => setTagMode(value => !value)}>Tag tracks</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={sortMode} onClick={() => { setSortMode(value => !value); setSort({ column: 'number', direction: 'ascending' }); }}>Sort</MidiButton>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <><MidiButton className="library-sort" aria-pressed={audition.playAll} onClick={audition.togglePlayAll}>Play All</MidiButton></>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <CollectionSelector collections={['cue', 'master']} value={audition.output} select={value => audition.changeOutput(value as 'cue' | 'master')} label="Audition output" menuLabel="Audition outputs" optionLabel={value => value === 'master' ? 'Play on Master' : 'Play on Cue'} />}<MidiButton onClick={() => void analyseAll()} disabled={busy || !!error || !!pollError || queueingAll || unanalysedTracks.length === 0}>{queueingAll ? 'Queueing…' : 'Analyse all'}</MidiButton><MidiButton midiId="library:refresh" onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</MidiButton><MidiButton midiId="library:expanded" className="library-expand" aria-label={libraryExpanded ? 'Restore library size' : 'Expand music library'} title={libraryExpanded ? 'Restore library size' : 'Expand music library'} aria-pressed={libraryExpanded} onClick={() => setLibraryExpanded(expanded => !expanded)}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={libraryExpanded ? 'M3 9h6V3m6 0v6h6M3 15h6v6m6 0v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></svg>
@@ -700,7 +719,7 @@ function Workspace() {
         {library && <p>The table shows the last successful scan; it may be out of date.</p>}</div>}
       <div className="library-content"><TagsSidebar state={tags} tracks={collectionTracks} tagging={tagging} selectedIds={visibleTracks.filter(track => selectedTrackIds.has(track.id)).map(track => track.id)} /><div className="library-track-list"><div className="table-wrap"><table data-keyboard-navigation={libraryKeyboardNavigation || undefined} className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" />{nextTracks.length > 0 && <col className="next-col" />}{sessionActive && <col className="played-col" />}<col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
         {([['number', '#'], ['cover', 'Cover'], ['title', 'Title'], ['artist', 'Artist'], ['bpm', 'BPM*'], ['key', 'Key*'], ['aComp', 'A comp'], ['bComp', 'B comp'], ['length', 'Length'], ['next', 'Next'], ['played', 'Played'], ['analysis', 'Analysis'], ['actions', 'Actions']] as const).map(([column, label]) => ((!sessionActive && column === 'played') || (nextTracks.length === 0 && column === 'next') ? null :
-          <Fragment key={column}><th scope="col" aria-sort={sort?.column === column ? sort.direction : 'none'}><MidiButton className="sort-header" disabled={sortMode && libraryExpanded} onClick={() => changeSort(column)} aria-label={`Sort by ${label.replace('*', '')}`} title={`Sort by ${label.replace('*', '')}`}>{column === 'cover' ? '▣' : column === 'actions' ? '•••' : label}<span className="sort-indicator" aria-hidden="true">{sort?.column === column ? sort.direction === 'ascending' ? '▲' : '▼' : '↕'}</span></MidiButton></th>{column === 'number' && <th scope="col" aria-label="Audition through cue headphones"><span aria-hidden="true">▶</span></th>}</Fragment>))}
+          <Fragment key={column}><th scope="col" aria-sort={sort?.column === column ? sort.direction : 'none'}><button className="sort-header" disabled={sortMode && libraryExpanded} onClick={() => changeSort(column)} aria-label={`Sort by ${label.replace('*', '')}`} title={`Sort by ${label.replace('*', '')}`}>{column === 'cover' ? '▣' : column === 'actions' ? '•••' : label}<span className="sort-indicator" aria-hidden="true">{sort?.column === column ? sort.direction === 'ascending' ? '▲' : '▼' : '↕'}</span></button></th>{column === 'number' && <th scope="col" aria-label="Audition through cue headphones"><span aria-hidden="true">▶</span></th>}</Fragment>))}
       </tr></thead><tbody>{visibleTracks?.map(track => {
         const auditionActive = audition.selection?.track.id === track.id && (audition.selection.generation === null || !audition.state || audition.state.playing);
         const originalNumber = originalTrackNumbers.get(track.id) ?? 1;
@@ -718,7 +737,7 @@ function Workspace() {
           const after = event.clientY > rect.top + rect.height / 2;
           if (from < to && after || from > to && !after) moveTrack(reorderId.current, track.id, after, true);
         }} onDrop={event => { if (sortMode && libraryExpanded) { event.preventDefault(); if (reorderPreview) { const next = { ...trackOrder, [collectionOrderKey]: reorderPreview }; setTrackOrder(next); localStorage.setItem('vira.track-order', JSON.stringify(next)); } else if (reorderId.current) moveTrack(reorderId.current, track.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2); reorderId.current = null; setReorderPreview(null); } }} onDragEnd={() => { reorderId.current = null; setReorderPreview(null); }} onClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) selectTrack(track.id, event); }} onDoubleClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) loadOnAvailableDeck(track); }} onDragStart={event => { const ids = selectedTrackIds.has(track.id) ? visibleTracks.filter(candidate => selectedTrackIds.has(candidate.id)).map(candidate => candidate.id) : [track.id]; if (!selectedTrackIds.has(track.id)) selectTrack(track.id, { metaKey: false, ctrlKey: false, shiftKey: false }); event.dataTransfer.setData(TRACKS_MIME, JSON.stringify(ids)); event.dataTransfer.setData(TRACK_MIME, track.id); if (sortMode && libraryExpanded) { reorderId.current = track.id; setReorderPreview(collectionTracks.map(candidate => candidate.id)); event.dataTransfer.setData('text/plain', track.id); event.dataTransfer.effectAllowed = 'copyMove'; return; } event.dataTransfer.effectAllowed = 'copy'; }}>
-        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><MidiButton midiId={`track:${track.id}:audition`} className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones in Settings'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? audition.control('stop') : void audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</MidiButton></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
+        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><button className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones in Settings'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? audition.control('stop') : void audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</button></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
         <td><span className="collection-cell-text title" title={track.filename}>{track.title}</span>{tags.tags.some(tag => tag.tracks.includes(track.id)) && <span className="track-tag-summary" title={tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(', ')}>{tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(' · ')}</span>}</td>
         <td><span className="collection-cell-text" title={track.artist}>{track.artist}</span></td>
         <td className="numeric">{trackBpm == null ? '—' : Math.round(trackBpm)}</td><td><span className="collection-cell-text" title={metadataKey(track) ?? ''}>{trackKey ? `${trackKey.number}${trackKey.letter} / ${trackKey.label}` : metadataKey(track) || '—'}</span></td>
@@ -728,11 +747,10 @@ function Workspace() {
         <td><span className={`status ${track.status} ${track.analysis.state}`}>{track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable'}</span>
           {(track.error || (track.analysis.state !== 'stale' && track.analysis.error)) && <small className="row-error">{track.error || track.analysis.error}</small>}
           {rowErrors[track.id] && <small className="row-error" role="alert">{rowErrors[track.id]}</small>}</td>
-        <td><TrackActions title={track.title}><div className="row-action-buttons"><button onClick={() => setEditingMetadata(track)}>Edit metadata</button><MidiButton onClick={() => void analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)}
-          midiId={`track:${track.id}:analyse`} aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
+        <td><TrackActions title={track.title}><div className="row-action-buttons"><button onClick={() => setEditingMetadata(track)}>Edit metadata</button><button onClick={() => void analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
           {track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : ['queued', 'analysing'].includes(track.analysis.state) ? labels[track.analysis.state] : 'Reanalyse'}
-        </MidiButton><MidiButton onClick={() => void analyse(track, true)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} midiId={`track:${track.id}:analyse-key`} aria-label={`Analyse key ${track.title}`}>Analyse key</MidiButton>{trackBpm != null && track.analysis.state !== 'approved' && <MidiButton onClick={() => void approve(track.id)} disabled={hasUnsavedGrid(track.id) || busy || track.status !== 'ready' || pending.has(track.id) || approving.has(track.id) || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state)} midiId={`track:${track.id}:approve`} aria-label={`Approve ${track.title}`}>{approving.has(track.id) ? 'Approving…' : 'Approve'}</MidiButton>}<div className="row-loads"><MidiButton disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[0])} midiId={`track:${track.id}:load-a`} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</MidiButton>
-          <MidiButton disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[1])} midiId={`track:${track.id}:load-b`} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</MidiButton></div><TrackTags state={tags} track={track} /></div></TrackActions></td>
+        </button><button onClick={() => void analyse(track, true)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`Analyse key ${track.title}`}>Analyse key</button>{trackBpm != null && track.analysis.state !== 'approved' && <button onClick={() => void approve(track.id)} disabled={hasUnsavedGrid(track.id) || busy || track.status !== 'ready' || pending.has(track.id) || approving.has(track.id) || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state)} aria-label={`Approve ${track.title}`}>{approving.has(track.id) ? 'Approving…' : 'Approve'}</button>}<div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[0])} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</button>
+          <button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[1])} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></TrackActions></td>
       </tr>})}</tbody></table></div>
       {!libraryLoading && !error && !pollError && library && collectionTracks.length === 0 && <p className="empty">{!activeCollections.length && collections.length ? 'Select a category to see its tracks.' : collections.length ? 'No files in this collection. Add MP3, PCM WAV or Ogg files, then Refresh.' : 'Add a music folder in Settings to load a collection.'}</p>}
       {!libraryLoading && library && collectionTracks.length > 0 && visibleTracks?.length === 0 && <p className="empty">No tracks match your search or selected tags.</p>}

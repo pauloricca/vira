@@ -106,3 +106,12 @@
 .pattern-pitches > .percussion-row-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 22px; padding: 0 8px; border: 0; border-bottom: 1px solid #283a43; background: transparent; text-align: left; }
 .percussion-row-header span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .percussion-row-header small { flex-shrink: 0; color: var(--muted); }
+
+.music-cue .routing-wire,.routing-wire.music-wire-cue { stroke: #b9a0fa; }
+.pattern-patching .music-cue i { border-color: #b9a0fa; }
+.pattern-pitches .cue-row { color: var(--cue-color); background: color-mix(in srgb, var(--cue-color) 10%, #152229); }
+.pattern-note.cue-note { color: var(--cue-color); background: color-mix(in srgb, var(--cue-color) 25%, #101b20); border-color: var(--cue-color); }
+.pattern-note.cue-note.selected { background: color-mix(in srgb, var(--cue-color) 45%, #101b20); }
+.cue-pattern-help { padding: 12px; color: var(--muted); font-size: 11px; }
+
+.legend-cue { color: #b9a0fa; }

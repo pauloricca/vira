@@ -88,10 +88,12 @@ pub struct MixerDsp {
     remaining: usize,
     filter_tick: usize,
     filter_position: Option<f64>,
+    filter_high: bool,
     eq_running: bool,
     filter_running: bool,
     eq_startup: usize,
     filter_startup: usize,
+    filter_blend: f64,
 }
 impl Default for MixerDsp {
     fn default() -> Self {
@@ -106,10 +108,12 @@ impl Default for MixerDsp {
             remaining: 0,
             filter_tick: 0,
             filter_position: None,
+            filter_high: false,
             eq_running: false,
             filter_running: false,
             eq_startup: 0,
             filter_startup: 0,
+            filter_blend: 0.,
         }
     }
 }
@@ -133,6 +137,7 @@ impl MixerDsp {
         self.filter[0].tune(hz, position > 0.);
         self.filter[1].coefficients = self.filter[0].coefficients;
         self.filter_position = Some(position);
+        self.filter_high = position > 0.;
     }
     pub fn set(&mut self, settings: Settings) {
         self.settings = settings;
@@ -153,6 +158,7 @@ impl MixerDsp {
         }
         self.eq_running = false;
         self.filter_running = false;
+        self.filter_blend = 0.;
     }
     fn reset_eq(&mut self) {
         for crossover in [&mut self.low, &mut self.upper, &mut self.low_phase] {
@@ -193,7 +199,18 @@ impl MixerDsp {
     fn prepare_filter(&mut self, position: f64) -> f64 {
         if position == 0. {
             self.filter_running = false;
+            self.filter_blend = 0.;
             return 0.;
+        }
+        // A sign change replaces the entire transfer function. Keep the old
+        // coefficients/history together until they have faded fully to dry,
+        // even when the control ramp skips exactly zero between samples.
+        if self.filter_running && self.filter_high != (position > 0.) {
+            self.filter_blend = (self.filter_blend - 1. / ramp() as f64).max(0.);
+            if self.filter_blend > 0. {
+                return self.filter_blend;
+            }
+            self.filter_running = false;
         }
         if !self.filter_running {
             for f in &mut self.filter {
@@ -208,7 +225,10 @@ impl MixerDsp {
         }
         self.filter_tick = (self.filter_tick + 1) % 16;
         // Fade fresh filter history into the dry signal over 10 ms.
-        (position.abs() / 0.04).min(1.) * Self::startup_blend(&mut self.filter_startup)
+        let desired =
+            (position.abs() / 0.04).min(1.) * Self::startup_blend(&mut self.filter_startup);
+        self.filter_blend = desired.min(self.filter_blend + 1. / ramp() as f64);
+        self.filter_blend
     }
     fn eq_sample(&mut self, x: f64, channel: usize, wet: f64) -> f64 {
         if !self.eq_running {
@@ -352,6 +372,62 @@ mod tests {
                     }
                     previous = actual;
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_midpoint_crossings_switch_history_only_while_dry() {
+        for stage in [None, Some(2)] {
+            for start in [-0.71_f32, 0.67, -0.071, 0.067] {
+                let extent = if start.abs() > 0.1 { 1. } else { 0.1 };
+                let mut dsp = MixerDsp::default();
+                dsp.set(Settings {
+                    filter: start,
+                    ..Settings::default()
+                });
+                let mut previous = [0.; 2];
+                let mut switches = 0;
+                for i in 0..ramp() * 24 {
+                    // Unequal endpoints skip exact zero; repeated reversals
+                    // also exercise a new gesture during a pending fade.
+                    if [6, 9, 10, 14, 18].contains(&(i / ramp())) && i % ramp() == 0 {
+                        let destination = if dsp.settings.filter < 0. {
+                            0.67 * extent
+                        } else {
+                            -0.71 * extent
+                        };
+                        dsp.set(Settings {
+                            filter: destination,
+                            ..Settings::default()
+                        });
+                    }
+                    let old_position = dsp.filter_position;
+                    let phase =
+                        std::f64::consts::TAU * 80. * i as f64 / crate::sample_rate::get() as f64;
+                    let input = [(phase.sin() * 0.5) as f32, (phase.cos() * 0.3) as f32];
+                    let output = render(&mut dsp, input, stage);
+                    if let (Some(old), Some(new)) = (old_position, dsp.filter_position) {
+                        if old.is_sign_positive() != new.is_sign_positive() {
+                            switches += 1;
+                            assert_eq!(output, input, "mode changes must be inaudible at dry");
+                            assert_eq!(dsp.filter_blend, 0.);
+                        }
+                    }
+                    if i > 0 {
+                        for channel in 0..2 {
+                            assert!(output[channel].is_finite());
+                            if extent < 1. {
+                                assert!(
+                                    (output[channel] - previous[channel]).abs() < 0.03,
+                                    "midpoint transient at sample {i}: {previous:?} -> {output:?}"
+                                );
+                            }
+                        }
+                    }
+                    previous = output;
+                }
+                assert!(switches >= 3, "exercise both directions repeatedly");
             }
         }
     }

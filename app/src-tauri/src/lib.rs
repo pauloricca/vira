@@ -12,6 +12,8 @@ pub mod decks;
 mod dsp;
 mod instrument_output;
 mod instruments;
+#[cfg(target_os = "macos")]
+mod keep_awake;
 mod metrics;
 mod midi_live;
 mod midi_mapping;
@@ -328,6 +330,13 @@ pub fn track_artwork(track_id: &str) -> Result<Option<String>, String> {
 
 #[cfg(target_os = "macos")]
 pub fn run() {
+    let mut keep_awake = match keep_awake::KeepAwake::start() {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("VIRA could not start sleep prevention: {error}");
+            None
+        }
+    };
     // The first CoreMIDI client must belong to the running main event loop.
     if let Err(error) = midi_live::initialize() {
         eprintln!("{error}");
@@ -722,6 +731,7 @@ pub fn run() {
         grid: timing::Grid,
         preserve_speed: Option<bool>,
         follow_clock: Option<bool>,
+        tapped: Option<bool>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         state
@@ -731,6 +741,7 @@ pub fn run() {
                 grid,
                 preserve_speed.unwrap_or(false),
                 follow_clock.unwrap_or(false),
+                tapped.unwrap_or(false),
             )
             .map_err(|e| format!("{e:#}"))
     }
@@ -913,8 +924,9 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("Unable to start VIRA")
-        .run(|_, event| {
+        .run(move |_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                drop(keep_awake.take());
                 patterns::shutdown();
             }
         });

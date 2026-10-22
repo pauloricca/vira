@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
+import { Patches } from './Patches';
 import { Instruments } from './Instruments';
 import type { Instrument } from './instrumentModel';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -100,4 +101,31 @@ test('MIDI sync options default off, save independently and survive device chang
   fireEvent.change(screen.getByLabelText('MIDI output device'), {target:{value:'0'}});
   expect(clock.disabled).toBe(true);
   expect(transport.disabled).toBe(true);
+});
+
+test('instrument pin toggle persists independently of instrument edits', async () => {
+  setup([{id:'synth',name:'Synth',audio_input:null,audio_output:null,midi_input:null,midi_output:null}]);
+  const pin = await screen.findByRole('button', {name:'Pin instrument'});
+  expect(pin.previousElementSibling?.textContent).toBe('Delete instrument');
+  fireEvent.click(pin);
+  expect(pin.getAttribute('aria-pressed')).toBe('true');
+  expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toEqual(['instrument:synth']);
+  expect(invoke).not.toHaveBeenCalledWith('save_instruments', expect.anything());
+  cleanup();
+  setup([{id:'synth',name:'Synth',audio_input:null,audio_output:null,midi_input:null,midi_output:null}]);
+  expect((await screen.findByRole('button', {name:'Pin instrument'})).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(screen.getByRole('button', {name:'Pin instrument'}));
+  expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toEqual([]);
+});
+
+test('pinned timing changes preserve the latest instrument connections', async () => {
+  const item: Instrument = {id:'synth',name:'Synth',audio_input:null,audio_output:null,midi_input:null,midi_output:null};
+  localStorage.setItem('vira.pinned-components',JSON.stringify(['instrument:synth']));
+  let items = [item];
+  invoke.mockImplementation((cmd,args) => { if (cmd === 'get_instruments') return Promise.resolve(items); if (cmd === 'save_instruments') items = args.items; return Promise.resolve([]); });
+  render(<Patches />);
+  const timing = await screen.findByRole('slider',{name:'Synth timing advance'});
+  items = [{...item,midi_output:{device:42,channel:2}}];
+  for (let i = 0; i < 35; i++) fireEvent.keyDown(timing,{key:'ArrowUp'});
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_instruments',{items:[{...items[0],advance_ms:35}]}));
 });

@@ -317,14 +317,26 @@ test('timing BPM controls correct the source instead of changing playback tempo'
   const buttons = screen.getAllByRole('button').map(button => button.textContent);
   expect(buttons.indexOf('×2')).toBeLessThan(buttons.indexOf('Original'));
 });
-test('click is enabled while the deck is mounted without changing its volume', async () => {
+test('click follows timing panel and page visibility without changing its volume', () => {
   const control = vi.fn().mockResolvedValue(undefined);
-  const { unmount } = render(<Deck state={{ ...state, click_gain: .6, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }} running loading={false} error={null} load={vi.fn()} control={control} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Timing controls deck A' }));
-  await waitFor(() => expect(control).toHaveBeenCalledWith(0, 'click_panel', 1));
+  const props = { state: { ...state, click_gain: .6, grid: { bpm: 120, downbeat_seconds: 0, reviewed: true } }, running: true, loading: false, error: null, load: vi.fn(), control };
+  const { rerender, unmount } = render(<Deck {...props} />);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 0);
+  const toggle = screen.getByRole('button', { name: 'Timing controls deck A' });
+  fireEvent.click(toggle);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 1);
   expect((screen.getByRole('slider', { name: /Click volume/ }) as HTMLInputElement).value).toBe('0.6');
+  fireEvent.click(toggle);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 0);
+  fireEvent.click(toggle);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 1);
+  rerender(<Deck {...props} visible={false} />);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 0);
+  rerender(<Deck {...props} visible />);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 1);
+  expect(control.mock.calls.some(([, action]) => action === 'click')).toBe(false);
   unmount();
-  expect(control.mock.calls.at(-1)).toEqual([0, 'click_panel', 0]);
+  expect(control).toHaveBeenLastCalledWith(0, 'click_panel', 0);
 });
 test('reference button uses the playhead and removes the clear deck button', () => {
   const control = vi.fn().mockResolvedValue(undefined);
@@ -805,7 +817,7 @@ test('transition guides appear on both overview and rolling waveforms and clear 
   expect(screen.queryByRole('group', { name: /Automatic transition guides/ })).toBeNull();
 });
 
-test('planned transition points and areas intercept seeking on both overview and rolling waveforms', async () => {
+test('planned transition drags use beat steps on rolling waveforms and phrase steps on overviews', async () => {
   vi.stubGlobal('PointerEvent', MouseEvent);
   try {
     for (const rolling of [false, true]) for (const deck of [0, 1]) {
@@ -821,14 +833,14 @@ test('planned transition points and areas intercept seeking on both overview and
         Object.assign(waveform, { setPointerCapture: vi.fn() });
         await act(async () => {
           fireEvent.pointerDown(waveform, { button: 0, clientX: x });
-          fireEvent.pointerMove(waveform, { clientX: x + 3 }); // Less than half a phrase.
+          fireEvent.pointerMove(waveform, { clientX: x + 3 }); // Below the drag threshold.
         });
         expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toHaveLength(0);
         await act(async () => {
           fireEvent.pointerMove(waveform, { clientX: x + 6 });
           fireEvent.pointerUp(waveform, { clientX: x + 6 });
         });
-        expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[deck, action, target]]);
+        expect(control.mock.calls.filter(([, action]) => action !== 'click_panel')).toEqual([[deck, action, rolling ? target - 2 : target]]);
         view.unmount();
       }
     }
@@ -1258,4 +1270,143 @@ test('two reference beats create timing without a detected or manual BPM', async
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('apply_timing', { deck: 0, generation: 1, grid }));
   expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid, referenceBeats: [10, 12] });
   await waitFor(() => expect(screen.getByTestId('refs').textContent).toBe('[10,12]'));
+});
+
+test('clicks inside planned transitions seek on both waveforms', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    for (const rolling of [false, true]) for (const deck of [0, 1]) {
+      for (const [x, action, target] of [[20, 'auto_start', 28], [40, 'auto_swap', 48], [60, 'auto_finish', 68], [30, 'auto_move', 28]] as const) {
+        const control = vi.fn().mockResolvedValue(undefined);
+        const deckState = { ...state, deck, position_seconds: 50, grid: { bpm: 120, downbeat_seconds: .25, reviewed: true } };
+        const transition = { from: 0, style: 'bass-swap' as const, started: false, points: [[20,40,40,40,60], [20,40,40,40,60]] as [import('./TransitionGuides').TransitionPoints, import('./TransitionGuides').TransitionPoints], remaining_beats: [40,72,72,72,104] as import('./TransitionGuides').TransitionPoints };
+        const view = render(rolling
+          ? <RollingRow state={deckState} running window={100} transition={transition} control={control} />
+          : <Deck state={deckState} running loading={false} error={null} load={vi.fn()} transition={transition} control={control} />);
+        const waveform = screen.getByRole(rolling ? 'img' : 'slider', { name: `${rolling ? 'Rolling waveform' : 'Waveform seek'} deck ${deck === 0 ? 'A' : 'B'}` });
+        vi.spyOn(waveform, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+        Object.assign(waveform, { setPointerCapture: vi.fn() });
+        await act(async () => {
+          fireEvent.pointerDown(waveform, { button: 0, clientX: x });
+          fireEvent.pointerUp(waveform, { button: 0, clientX: x });
+          fireEvent.click(waveform, { clientX: x });
+        });
+        expect(control.mock.calls.filter(([, action]) => action.startsWith('auto_'))).toHaveLength(0);
+        expect(control.mock.calls.some(([, action]) => action === 'seek' || action === 'scrub_start')).toBe(true);
+        view.unmount();
+      }
+    }
+  } finally { vi.unstubAllGlobals(); }
+});
+
+test('grid history groups a complete drag, restores draft edits, and drops redo on a new edit', async () => {
+  mockGridAudio();
+  const hook = renderHook(() => useDecks());
+  await waitFor(() => expect(hook.result.current.audio.running).toBe(true));
+  const original = hook.result.current.audio.decks[0].grid;
+  await act(async () => {
+    await hook.result.current.control(0, 'grid_edit');
+    await hook.result.current.control(0, 'grid_drag_start', 12);
+    await hook.result.current.control(0, 'grid_drag', 1);
+    await hook.result.current.control(0, 'grid_drag', 2);
+    await hook.result.current.control(0, 'grid_drag', 3);
+  });
+  expect(hook.result.current.audio.decks[0].grid_edit?.downbeat_seconds).toBe(3);
+  await act(async () => { await hook.result.current.control(0, 'grid_undo'); });
+  expect(hook.result.current.audio.decks[0].grid_edit).toEqual(original);
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid_can_undo: false, grid_can_redo: true });
+  await act(async () => { await hook.result.current.control(0, 'grid_redo'); });
+  expect(hook.result.current.audio.decks[0].grid_edit?.downbeat_seconds).toBe(3);
+  await act(async () => {
+    await hook.result.current.control(0, 'grid_undo');
+    await hook.result.current.control(0, 'shift_bar_start', 1);
+  });
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid_can_undo: true, grid_can_redo: false, grid_edit: { downbeat_seconds: .5 } });
+  expect(invoke.mock.calls.filter(([c, args]) => c === 'apply_timing' || c === 'track_timing' && args.grid)).toHaveLength(0);
+  await act(async () => { await hook.result.current.control(0, 'grid_cancel'); });
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid_can_undo: false, grid_can_redo: false });
+});
+
+test('saved grid history restores timing and reference beats, survives polling, and resets on track replacement', async () => {
+  const native = mockGridAudio();
+  const original = native.decks[0].grid!;
+  invoke.mockImplementation((command: string, args?: { deck?: number; grid?: typeof original; referenceBeats?: number[] }) => {
+    if (command === 'apply_timing') native.decks[args!.deck!].grid = args!.grid;
+    return Promise.resolve(command === 'get_audio_state' ? native : command === 'track_timing' ? { grid: args?.grid ?? original, reference_beats: args?.referenceBeats ?? [2, 3] } : {});
+  });
+  const hook = renderHook(() => useDecks());
+  await waitFor(() => expect(hook.result.current.audio.running).toBe(true));
+  await act(async () => { await hook.result.current.control(0, 'grid_edit'); await hook.result.current.control(0, 'shift_bar_start', 1); });
+  await act(async () => { await hook.result.current.control(0, 'grid_save'); });
+  expect(hook.result.current.audio.decks[0].grid_can_undo).toBe(true);
+  await act(async () => { await hook.result.current.control(0, 'grid_undo'); });
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid: original, reference_beats: [2, 3], grid_can_undo: false, grid_can_redo: true });
+  expect(invoke).toHaveBeenCalledWith('track_timing', { trackId: state.track!.track_id, grid: original, referenceBeats: [2, 3] });
+  await act(async () => { await hook.result.current.control(0, 'grid_redo'); });
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid: { downbeat_seconds: .5 }, reference_beats: [], grid_can_undo: true, grid_can_redo: false });
+  await act(async () => { await hook.result.current.control(0, 'detected_bpm', 130); });
+  await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'get_audio_state').length).toBeGreaterThan(1));
+  await act(async () => { await hook.result.current.control(0, 'grid_undo'); });
+  expect(hook.result.current.audio.decks[0].grid?.bpm).toBe(120);
+  expect(hook.result.current.audio.decks[1].grid_can_undo).toBe(false);
+  native.decks[0] = { ...native.decks[0], generation: 2 };
+  await waitFor(() => expect(hook.result.current.audio.decks[0]).toMatchObject({ generation: 2, grid_can_undo: false, grid_can_redo: false }));
+});
+
+test.each(['track_timing', 'apply_timing'])('failed grid undo retains history for retry (%s)', async failingCommand => {
+  mockGridAudio();
+  const hook = renderHook(() => useDecks());
+  await waitFor(() => expect(hook.result.current.audio.running).toBe(true));
+  await act(async () => { await hook.result.current.control(0, 'detected_bpm', 130); });
+  invoke.mockImplementation((command: string) => command === failingCommand ? Promise.reject('Storage unavailable') : Promise.resolve({}));
+  await act(async () => { await hook.result.current.control(0, 'grid_undo'); });
+  expect(hook.result.current.errors[0]).toBe('Storage unavailable');
+  expect(hook.result.current.audio.decks[0]).toMatchObject({ grid: { bpm: 130 }, grid_can_undo: true, grid_can_redo: false });
+  if (failingCommand === 'apply_timing') expect(invoke.mock.calls.filter(([c]) => c === 'track_timing').at(-1)?.[1].grid.bpm).toBe(130);
+});
+
+test('cue pads set, recall, show markers and clear with right-click', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+  const { rerender } = render(<Deck {...props} state={state} />);
+  for (const label of ['A', 'B', 'C', 'D']) expect(screen.getByRole('button', { name: `Cue ${label} deck A` }).getAttribute('aria-pressed')).toBe('false');
+  fireEvent.click(screen.getByRole('button', { name: 'Cue A deck A' }));
+  expect(control).toHaveBeenCalledWith(0, 'hot_cue', 0);
+  expect(control).toHaveBeenLastCalledWith(0, 'hot_cue_release', 0);
+  rerender(<Deck {...props} state={{ ...state, hot_cue_seconds: [0, null, 25, null] }} />);
+  expect(screen.getByRole('button', { name: 'Cue A deck A' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByLabelText('Cue A marker deck A')).toBeTruthy();
+  expect(screen.getByLabelText('Cue C marker deck A').querySelector('path')?.getAttribute('d')).toBe('M256,0V120');
+  expect(screen.queryByLabelText('Cue B marker deck A')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Cue C deck A' }));
+  expect(control).toHaveBeenCalledWith(0, 'hot_cue', 2);
+  expect(control).toHaveBeenLastCalledWith(0, 'hot_cue_release', 2);
+  fireEvent.contextMenu(screen.getByRole('button', { name: 'Cue A deck A' }));
+  expect(control).toHaveBeenLastCalledWith(0, 'hot_cue_clear', 0);
+  rerender(<Deck {...props} state={{ ...state, track: null, generation: 2 }} />);
+  expect((screen.getByRole('button', { name: 'Cue A deck A' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByLabelText('Cue A marker deck A')).toBeNull();
+});
+
+test('held cue pads keep their gate across polls and allow Play before release', () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  try {
+    const control = vi.fn().mockResolvedValue(undefined);
+    const props = { running: true, loading: false, error: null, load: vi.fn(), control };
+    const deck = { ...state, hot_cue_seconds: [5, null, null, null] };
+    const { rerender } = render(<Deck {...props} state={deck} />);
+    const pad = screen.getByRole('button', { name: 'Cue A deck A' });
+    fireEvent.pointerDown(pad, { button: 0 });
+    expect(control).toHaveBeenLastCalledWith(0, 'hot_cue', 0);
+    rerender(<Deck {...props} state={{ ...deck, playing: true, cue_preview: true, position_seconds: 6 }} />);
+    expect(control.mock.calls.filter(([, action]) => action === 'hot_cue_release')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Play deck A' }));
+    expect(control).toHaveBeenLastCalledWith(0, 'play_pause');
+    fireEvent.pointerUp(pad);
+    expect(control).toHaveBeenLastCalledWith(0, 'hot_cue_release', 0);
+    fireEvent.keyDown(pad, { key: 'Enter' });
+    expect(control).toHaveBeenLastCalledWith(0, 'hot_cue', 0);
+    fireEvent.keyUp(pad, { key: 'Enter' });
+    expect(control).toHaveBeenLastCalledWith(0, 'hot_cue_release', 0);
+  } finally { vi.unstubAllGlobals(); }
 });

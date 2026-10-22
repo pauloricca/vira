@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { Patches } from './Patches';
 import { Routing, type Graph } from './Routing';
 const { invoke, routingEvents } = vi.hoisted(() => ({ invoke: vi.fn(), routingEvents: { callback: null as ((event: { payload: Graph }) => void) | null } }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn((_name, callback) => { routingEvents.callback = callback; return Promise.resolve(() => { routingEvents.callback = null; }); }) }));
@@ -573,4 +574,63 @@ test('a partial box hit selects and removes a whole added mixer line; Escape can
   expect(document.querySelectorAll('[data-node-id^="line-2-"]')).toHaveLength(5);
   fireEvent.pointerDown(canvas(),p(1100,450));fireEvent.pointerMove(canvas(),p(700,80));fireEvent.keyDown(window,{key:'Escape'});
   expect(screen.queryByTestId('patching-marquee')).toBeNull();expect(document.querySelectorAll('.routing-node.selected')).toHaveLength(0);
+});
+
+test('pinning a processor exposes live controls on Decks while Routing is hidden', async () => {
+  localStorage.clear();
+  const view = await mount(withGain);
+  const pin = screen.getByRole('button', {name:'Pin Existing gain'});
+  fireEvent.pointerDown(pin, {button:0}); fireEvent.click(pin);
+  expect(pin.getAttribute('aria-pressed')).toBe('true');
+  expect(document.querySelector('[data-node-id="fx-existing"]')?.classList.contains('selected')).toBe(false);
+  view.rerender(<><Routing active={false} /><Patches /></>);
+  const field = await screen.findByRole('slider', {name:'Existing gain Gain'});
+  fireEvent.pointerDown(field, {button:0,pointerId:20,clientY:700});
+  fireEvent.pointerMove(field, {pointerId:20,clientY:70});
+  fireEvent.pointerUp(field, {pointerId:20});
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters', {parameters:{nodes:[{id:'fx-existing',value:10}],wires:[]}}));
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
+  localStorage.clear();
+});
+
+test('pinned headphone cue uses toolbar styling and shows its live toggled state', async () => {
+  localStorage.clear();
+  const cue = {id:'line-2-cue-switch',kind:'cue_switch' as const,deck:null,label:'Cue switch',x:800,y:200,value:0};
+  const view = await mount({...graph,nodes:[...graph.nodes,cue]});
+  fireEvent.click(screen.getByRole('button',{name:'Pin Cue switch'}));
+  view.rerender(<><Routing active={false} /><Patches /><div className="toolbar"><button>Refresh reference</button></div></>);
+  const toggle = await screen.findByRole('button',{name:'Headphone cue'});
+  expect(toggle.getAttribute('aria-pressed')).toBe('false');
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:cue.id,value:1}],wires:[]}}));
+  const {readFileSync} = await vi.importActual<{readFileSync(path:string,encoding:'utf8'):string}>('node:fs');
+  const style = document.createElement('style'); style.textContent = readFileSync('frontend/style.css','utf8'); document.head.append(style);
+  try {
+    const reference = getComputedStyle(screen.getByRole('button',{name:'Refresh reference'}));
+    const active = getComputedStyle(toggle);
+    for (const property of ['fontSize','padding','borderRadius'] as const) expect(active[property]).toBe(reference[property]);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('false'));
+    expect(getComputedStyle(toggle).background).not.toBe(active.background);
+  } finally { style.remove(); localStorage.clear(); }
+});
+
+test('Selector grows lettered inputs and pinned buttons switch the live selection', async () => {
+  localStorage.clear();
+  const selector = {id:'select',kind:'selector' as const,deck:null,label:'Selector',x:500,y:300,value:0,patch_inputs:[{id:'A',label:'A'},{id:'B',label:'B'}]};
+  const initial:Graph = {...graph,nodes:[...graph.nodes,selector],wires:[...graph.wires,{from:'a-eq',output:'audio',to:'select',input:'A',gain:1}]};
+  const view = await mount(initial);
+  fireEvent.pointerDown(screen.getByLabelText('b-fader output audio'),{button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('select input B'));
+  fireEvent.pointerUp(canvas(),{pointerId:1});
+  expect(screen.getByLabelText('select input C')).toBeTruthy();
+  expect(Array.from((screen.getByLabelText('routing:select selected input') as HTMLSelectElement).options).map(o => o.value)).toEqual(['A','B']);
+  await applied();
+  fireEvent.click(screen.getByRole('button',{name:'Pin Selector'}));
+  view.rerender(<><Routing active={false} /><Patches /></>);
+  expect(screen.queryByRole('button',{name:'C'})).toBeNull();
+  fireEvent.click(await screen.findByRole('button',{name:'B'}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'select',value:1}],wires:[]}}));
+  localStorage.clear();
 });

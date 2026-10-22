@@ -16,8 +16,8 @@ export function transitionHit(plan: TransitionPlan | null | undefined, deck: num
 /** Intercept transition edits before the normal waveform seek/scrub gesture. */
 export function useTransitionDrag(state: DeckState, running: boolean, plan: TransitionPlan | null | undefined,
   control: ((deck: number, action: string, value?: number) => Promise<void>) | undefined,
-  secondsAt: (element: Element, clientX: number) => number, span: number, fallback: Handlers): Handlers & { onPointerDownCapture: (event: PointerEvent<Element>) => void; onClickCapture: (event: MouseEvent<Element>) => void } {
-  const drag = useRef<{ pointer: number; x: number; scale: number; origin: number; step: number; kind: Kind; last: number } | null>(null);
+  secondsAt: (element: Element, clientX: number) => number, span: number, fallback: Handlers, beatsPerStep = 16): Handlers & { onPointerDownCapture: (event: PointerEvent<Element>) => void; onClickCapture: (event: MouseEvent<Element>) => void } {
+  const drag = useRef<{ pointer: number; x: number; scale: number; origin: number; step: number; kind: Kind; last: number; moved: boolean } | null>(null);
   const consumed = useRef(false);
   const pending = useRef<{ kind: Kind; seconds: number } | null>(null);
   const busy = useRef(false);
@@ -41,6 +41,8 @@ export function useTransitionDrag(state: DeckState, running: boolean, plan: Tran
   function move(event: PointerEvent<Element>) {
     const active = drag.current;
     if (!active || active.pointer !== event.pointerId) return;
+    if (!active.moved && Math.abs(event.clientX - active.x) < 4) return;
+    active.moved = true;
     const steps = Math.round((event.clientX - active.x) * active.scale / active.step);
     if (steps === active.last) return;
     active.last = steps;
@@ -52,6 +54,10 @@ export function useTransitionDrag(state: DeckState, running: boolean, plan: Tran
     if (!active || active.pointer !== event.pointerId) return false;
     if (!cancelled) move(event);
     drag.current = null;
+    if (!cancelled && !active.moved) {
+      fallback.onPointerDown(event);
+      fallback.onPointerUp(event);
+    }
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     return true;
   }
@@ -64,7 +70,7 @@ export function useTransitionDrag(state: DeckState, running: boolean, plan: Tran
       consumed.current = true;
       event.preventDefault(); event.stopPropagation();
       const index = kind === 'auto_swap' ? 3 : kind === 'auto_finish' ? 4 : 0;
-      drag.current = { pointer: event.pointerId, x: event.clientX, scale: span / Math.max(1, event.currentTarget.getBoundingClientRect().width), origin: plan.points[state.deck][index], step: 16 * 60 / state.grid.bpm, kind, last: 0 };
+      drag.current = { pointer: event.pointerId, x: event.clientX, scale: span / Math.max(1, event.currentTarget.getBoundingClientRect().width), origin: plan.points[state.deck][index], step: beatsPerStep * 60 / state.grid.bpm, kind, last: 0, moved: false };
       event.currentTarget.setPointerCapture?.(event.pointerId);
     },
     onPointerDown(event) { fallback.onPointerDown(event); },

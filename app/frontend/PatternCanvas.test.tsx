@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { Patches } from './Patches';
 import { Patterns } from './Patterns';
 import { patchPortPoint } from './Patching';
 import { connectMusical, newPattern, normaliseBank, type Bank } from './patternModel';
@@ -247,7 +248,7 @@ test('patterns expose separate note and MIDI outputs and can play without MIDI c
   fireEvent.pointerUp(canvas(), {pointerId:1});
   await saved();
   expect(bank.graph!.wires).toMatchObject([{kind:'notes',from:'pattern-p',to:'deck-1'}]);
-  expect(screen.getByLabelText('Link colours').textContent).toBe('NoteMIDIScale');
+  expect(screen.getByLabelText('Link colours').textContent).toBe('NoteMIDIScaleCue gate');
 });
 test('device channel selection persists all or a numbered channel', async () => {
   await mount();
@@ -339,4 +340,88 @@ test('reverse box selection moves and deletes musical nodes together without del
   fireEvent.click(screen.getByRole('button',{name:'Undo'}));
   await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')).toMatchObject({x:120,y:120}));
   expect(bank.graph!.nodes.find(n => n.id === 'midi-42')).toMatchObject({x:440,y:160});
+});
+
+test('a pinned transformation edits the same pattern graph from Decks', async () => {
+  localStorage.clear();
+  bank.graph!.nodes.push({id:'shift',kind:'transformation',label:'Octave shift',x:800,y:200,transformation:{kind:'octaveShift',octaves:1}});
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((cmd,args) => cmd === 'patches_state' || cmd === 'get_instruments' ? Promise.resolve([]) : original(cmd,args));
+  const view = render(<><Patterns active /><Patches /></>);
+  const pin = await screen.findByRole('button',{name:'Pin Octave shift'});
+  fireEvent.pointerDown(pin,{button:0}); fireEvent.click(pin);
+  expect(pin.getAttribute('aria-pressed')).toBe('true');
+  expect(document.querySelector('[data-musical-node="shift"]')?.classList.contains('selected')).toBe(false);
+  view.rerender(<><Patterns active={false} /><Patches /></>);
+  const field = await screen.findByRole('slider',{name:'shift octaves'});
+  fireEvent.keyDown(field,{key:'ArrowUp'}); fireEvent.keyDown(field,{key:'ArrowUp'});
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === 'shift')?.transformation).toEqual({kind:'octaveShift',octaves:3}));
+  expect(JSON.parse(localStorage.getItem('vira.pinned-components')!)).toEqual(['patterns:shift']);
+  localStorage.clear();
+});
+
+test('Selector accepts mixed inputs, grows a spare pin and switches from pinned buttons', async () => {
+  localStorage.clear();
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((cmd,args) => cmd === 'patches_state' || cmd === 'get_instruments' ? Promise.resolve([]) : original(cmd,args));
+  const view = render(<><Patterns active /><Patches /></>);
+  const palette = await screen.findByRole('button',{name:'Selector'}); fireEvent.doubleClick(palette);
+  await waitFor(() => expect(bank.graph!.nodes.some(n => n.transformation?.kind === 'selector')).toBe(true));
+  const id = bank.graph!.nodes.find(n => n.transformation?.kind === 'selector')!.id;
+  for (const [port,source,kind] of [['A','deck-0','scale'],['B','pattern-p','midi']]) {
+    fireEvent.pointerDown(screen.getByLabelText(`${source} output ${kind}`),{button:0,pointerId:1});
+    vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText(`${id} input ${port}`));
+    fireEvent.pointerUp(canvas(),{pointerId:1});
+    await waitFor(() => expect(bank.graph!.wires.some(w => w.to === id && w.input === port && w.kind === kind)).toBe(true));
+  }
+  expect(screen.getByLabelText(`${id} input C`)).toBeTruthy();
+  expect(Array.from((screen.getByLabelText(`music:${id} selected input`) as HTMLSelectElement).options).map(o => o.value)).toEqual(['A','B']);
+  fireEvent.pointerDown(screen.getByLabelText(`${id} output key`),{button:0,pointerId:2});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('midi-42 input midi'));
+  fireEvent.pointerUp(canvas(),{pointerId:2});
+  await waitFor(() => expect(bank.graph!.wires.some(w => w.from === id && w.to === 'midi-42' && w.kind === 'midi')).toBe(true));
+  fireEvent.change(screen.getByLabelText(`music:${id} selected input`),{target:{value:'B'}});
+  fireEvent.click(screen.getByRole('button',{name:'Pin Selector'}));
+  view.rerender(<><Patterns active={false} /><Patches /></>);
+  expect(screen.queryByRole('button',{name:'C'})).toBeNull();
+  fireEvent.click(await screen.findByRole('button',{name:'A'}));
+  await waitFor(() => expect(bank.graph!.nodes.find(n => n.id === id)?.transformation).toEqual({kind:'selector',selected:'A',ports:['A','B','C']}));
+  localStorage.clear();
+});
+
+test('pattern node titles use and edit the pattern name with undo', async () => {
+  await mount();
+  const name = screen.getByLabelText('pattern-p name') as HTMLInputElement;
+  expect(name.value).toBe('Melody');
+  expect(name.parentElement?.querySelector('small')?.textContent).toBe('Melodic pattern');
+  fireEvent.focus(name);
+  fireEvent.change(name, {target:{value:'  Bass phrase  '}});
+  fireEvent.blur(name);
+  await waitFor(() => expect(bank.patterns[0].name).toBe('Bass phrase'));
+  expect(bank.graph!.nodes.find(n => n.id === 'pattern-p')?.label).toBe('Bass phrase');
+  expect(name.parentElement?.querySelector('small')?.textContent).toBe('Melodic pattern');
+  fireEvent.click(screen.getByRole('button', {name:'Undo'}));
+  await waitFor(() => expect(bank.patterns[0].name).toBe('Melody'));
+  fireEvent.click(screen.getByRole('button', {name:'Redo'}));
+  await waitFor(() => expect(bank.patterns[0].name).toBe('Bass phrase'));
+  cleanup();
+  render(<Patterns active />);
+  await screen.findByLabelText('Expand Bass phrase');
+  expect((screen.getByLabelText('pattern-p name') as HTMLInputElement).value).toBe('Bass phrase');
+});
+
+test('cue pattern ports connect to deck cue triggers and keep pitch inputs separate', async () => {
+  const cue = {...newPattern('cue'), id:'cues',name:'Chop sequence'};
+  bank.patterns.push(cue);
+  bank.graph!.nodes.push({id:'cue-node',kind:'pattern',pattern:cue.id,label:cue.name,x:430,y:600});
+  await mount();
+  const node = document.querySelector('[data-musical-node="cue-node"]')!;
+  expect((screen.getByLabelText('cue-node name') as HTMLInputElement).value).toBe('Chop sequence');
+  expect(node.querySelector('.musical-node-pattern > small:not([class])')).toBeNull();
+  expect(screen.queryByLabelText('cue-node output midi')).toBeNull();
+  fireEvent.pointerDown(screen.getByLabelText('cue-node output cue'), {button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText('deck-0 input cue'));
+  fireEvent.pointerUp(canvas(), {pointerId:1});
+  await waitFor(() => expect(bank.graph!.wires.some(w => w.from === 'cue-node' && w.to === 'deck-0' && w.kind === 'cue')).toBe(true));
+  expect(screen.getByLabelText('deck-0 input midi')).toBeTruthy();
 });

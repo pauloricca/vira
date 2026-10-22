@@ -111,10 +111,10 @@ test('saved note buttons fire at every positive Note On, including low velocity'
  const click=vi.fn(); render(<Shell><MidiButton midiId="note-button" onClick={click}>Button</MidiButton></Shell>);
  await tick([note(1),note(20),note(0),cc(127)]); expect(click).toHaveBeenCalledTimes(2);
 });
-test('note gates press at any velocity and release without retriggering', async () => {
+test.each(['gate', 'trigger'])('cue note gates press and release, including older %s bindings', async mode => {
  localStorage.removeItem('vira.midi-behavior.v1');
  localStorage.setItem('vira.midi-enabled.v1','[42]');
- localStorage.setItem('vira.midi-bindings.v1',JSON.stringify([{...binding,target:'cue',type:'note',note:7,mode:'gate'}]));
+ localStorage.setItem('vira.midi-bindings.v1',JSON.stringify([{...binding,target:'cue',type:'note',note:7,mode}]));
  const apply=vi.fn();
  function Cue() {useMidiTargets([{id:'cue',label:'Cue',kind:'switch',defaultMode:'gate',apply}]);return null;}
  render(<Shell><Cue /></Shell>); await tick([note(1),note(60),note(0),note(0)]);
