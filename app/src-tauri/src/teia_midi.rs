@@ -22,7 +22,42 @@ pub struct Output {
     pub frame: u64,
     pub event: MidiOutput,
 }
+/// One seqlock clock shared by dynamically created plugin hosts. Written only
+/// by the device callback, so newly added plugins need no callback registry lock.
+pub struct PlaybackClock {
+    sequence: AtomicU64,
+    frame: AtomicU64,
+    ns: AtomicU64,
+}
+impl PlaybackClock {
+    pub const fn new() -> Self {
+        Self {
+            sequence: AtomicU64::new(0),
+            frame: AtomicU64::new(0),
+            ns: AtomicU64::new(0),
+        }
+    }
+    pub fn anchor(&self, frame: u64, ns: u64) {
+        self.sequence.fetch_add(1, SeqCst);
+        self.frame.store(frame, SeqCst);
+        self.ns.store(ns, SeqCst);
+        self.sequence.fetch_add(1, SeqCst);
+    }
+    fn read(&self) -> (u64, u64) {
+        loop {
+            let seq = self.sequence.load(SeqCst);
+            if seq % 2 != 0 {
+                continue;
+            }
+            let v = (self.frame.load(SeqCst), self.ns.load(SeqCst));
+            if self.sequence.load(SeqCst) == seq {
+                return v;
+            }
+        }
+    }
+}
 pub struct Host {
+    playback_clock: Option<&'static PlaybackClock>,
     input: Mutex<Producer<Input>>,
     output: Mutex<Consumer<Output>>,
     tap: Mutex<Consumer<Output>>,
@@ -81,10 +116,14 @@ pub struct Render {
     release_scan: usize,
 }
 pub fn channel() -> Render {
+    channel_with_clock(None)
+}
+pub fn channel_with_clock(playback_clock: Option<&'static PlaybackClock>) -> Render {
     let (tx, rx) = rtrb::RingBuffer::new(1024);
     let (out_tx, out_rx) = rtrb::RingBuffer::new(4096);
     let (tap_tx, tap_rx) = rtrb::RingBuffer::new(4096);
     let host = Arc::new(Host {
+        playback_clock,
         input: Mutex::new(tx),
         output: Mutex::new(out_rx),
         tap: Mutex::new(tap_rx),
@@ -373,6 +412,9 @@ impl Host {
         self.anchor_sequence.fetch_add(1, SeqCst);
     }
     fn clock(&self) -> (u64, u64) {
+        if let Some(clock) = self.playback_clock {
+            return clock.read();
+        }
         loop {
             let seq = self.anchor_sequence.load(SeqCst);
             if seq % 2 != 0 {
@@ -654,6 +696,19 @@ pub fn start(_: Arc<Host>, _: std::path::PathBuf) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dynamically_created_hosts_share_device_playback_clock() {
+        let clock = Box::leak(Box::new(PlaybackClock::new()));
+        clock.anchor(48000, 1_000_000_000);
+        let early = channel_with_clock(Some(clock));
+        let late = channel_with_clock(Some(clock));
+        // Updating a producer-local anchor must not override the device timestamp.
+        late.host.anchor(999999, 9_000_000_000);
+        assert_eq!(early.host.frame_at(1_001_000_000), 48048);
+        assert_eq!(late.host.frame_at(1_001_000_000), 48048);
+        clock.anchor(96000, 2_000_000_000);
+        assert_eq!(late.host.time_at(96048), 2_001_000_000);
+    }
     #[test]
     fn sample_rate_contract_midi_timestamps_follow_engine_frames() {
         let render = channel();

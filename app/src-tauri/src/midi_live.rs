@@ -8,6 +8,7 @@ pub enum Source {
     Deck(usize),
     Pattern(String),
     Teia(usize, u64),
+    Vst(String, u64),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Route {

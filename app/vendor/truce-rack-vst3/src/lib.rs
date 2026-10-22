@@ -46,9 +46,10 @@ use vst3::Steinberg::Vst::{
     SymbolicSampleSizes_, ViewType,
 };
 use vst3::Steinberg::{
-    IBStream, IBStreamTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, IPluginFactory,
-    IPluginFactoryTrait, PClassInfo, PClassInfo_, TUID, ViewRect, kPlatformTypeHWND,
-    kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID, kResultOk, kResultTrue,
+    IBStream, IBStreamTrait, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait,
+    IPluginBaseTrait, IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait,
+    PClassInfo, PClassInfo_, PClassInfo2, TUID, ViewRect, kPlatformTypeHWND, kPlatformTypeNSView,
+    kPlatformTypeX11EmbedWindowID, kResultOk, kResultTrue,
 };
 use vst3::{Class, ComPtr, ComWrapper};
 
@@ -181,11 +182,27 @@ fn scan_bundle_into(bundle: &Path, out: &mut Vec<PluginInfo>) -> Result<()> {
             continue;
         }
         let name = char8_array_to_string(&info.name);
+        let mut vendor = String::new();
+        let mut declared = PluginCategory::Tool;
+        if let Some(f) = factory.as_com_ref().cast::<IPluginFactory2>() {
+            let mut extended: PClassInfo2 = unsafe { std::mem::zeroed() };
+            if unsafe { f.getClassInfo2(idx, &raw mut extended) } == kResultOk {
+                vendor = char8_array_to_string(&extended.vendor);
+                let categories = char8_array_to_string(&extended.subCategories);
+                declared = if categories.split('|').any(|c| c == "Instrument") {
+                    PluginCategory::Instrument
+                } else if categories.split('|').any(|c| c == "Fx") {
+                    PluginCategory::Effect
+                } else {
+                    PluginCategory::Tool
+                };
+            }
+        }
         out.push(PluginInfo {
             name,
-            vendor: String::new(),
+            vendor,
             version: 0,
-            category: PluginCategory::Effect,
+            category: declared,
             path: bundle.to_path_buf(),
             unique_id: tuid_to_hex(&info.cid),
             format: FORMAT,
@@ -544,6 +561,7 @@ pub struct Vst3Plugin {
     /// `open()`, released on `close()` / Drop.
     view: Option<ComPtr<IPlugView>>,
     editor_open: bool,
+    frame: ComWrapper<ViraFrame>,
     translated: EventBuffer,
     input_events: ComWrapper<EventList3>,
     output_events: ComWrapper<EventList3>,
@@ -574,7 +592,7 @@ impl Vst3Plugin {
         let component = component_ptr;
 
         let callbacks = ComWrapper::new(HostCallbacks {
-            pending: std::sync::Mutex::new(Vec::with_capacity(1024)),
+            pending: std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(1024))),
         });
         let host = callbacks
             .to_com_ptr::<vst3::Steinberg::Vst::IHostApplication>()
@@ -722,6 +740,9 @@ impl Vst3Plugin {
             processing: false,
             view: None,
             editor_open: false,
+            frame: ComWrapper::new(ViraFrame {
+                size: AtomicU64::new(0),
+            }),
             translated: EventBuffer {
                 events: Vec::with_capacity(4096),
             },
@@ -860,11 +881,17 @@ impl PluginCore for Vst3Plugin {
         if unsafe { self.controller.getParameterInfo(i32_index, &raw mut info) } != kResultOk {
             return Err(Error::InvalidParameter(index));
         }
+        if !value.is_finite() {
+            return Err(Error::InvalidParameter(index));
+        }
         let clamped = value.clamp(0.0, 1.0);
         if unsafe { self.controller.setParamNormalized(info.id, clamped) } != kResultOk {
             return Err(Error::Other(
                 "IEditController::setParamNormalized failed".into(),
             ));
+        }
+        unsafe {
+            self.callbacks.performEdit(info.id, clamped);
         }
         Ok(())
     }
@@ -892,10 +919,37 @@ impl PluginCore for Vst3Plugin {
                 "IComponent::getState returned {status}"
             )));
         }
-        Ok(stream.data.borrow().clone())
+        let component = stream.data.borrow().clone();
+        let controller_stream = ComWrapper::new(MemoryStream::default());
+        let controller_ptr = controller_stream.to_com_ptr::<IBStream>().unwrap();
+        let controller =
+            if unsafe { self.controller.getState(controller_ptr.as_ptr()) } == kResultOk {
+                controller_stream.data.borrow().clone()
+            } else {
+                Vec::new()
+            };
+        let mut out = b"VIRA-VST3-STATE\x01".to_vec();
+        out.extend_from_slice(&(component.len() as u64).to_le_bytes());
+        out.extend_from_slice(&component);
+        out.extend_from_slice(&controller);
+        Ok(out)
     }
 
     fn load_state(&mut self, bytes: &[u8]) -> Result<()> {
+        let magic = b"VIRA-VST3-STATE\x01";
+        let (bytes, controller) = if bytes.starts_with(magic) {
+            let header = magic.len() + 8;
+            if bytes.len() < header {
+                return Err(Error::Other("Truncated VST state".into()));
+            }
+            let n = u64::from_le_bytes(bytes[magic.len()..header].try_into().unwrap()) as usize;
+            if n > bytes.len() - header {
+                return Err(Error::Other("Truncated VST state".into()));
+            }
+            (&bytes[header..header + n], &bytes[header + n..])
+        } else {
+            (bytes, &[][..])
+        };
         let stream = ComWrapper::new(MemoryStream {
             data: std::cell::RefCell::new(bytes.to_vec()),
             position: std::cell::Cell::new(0),
@@ -912,6 +966,16 @@ impl PluginCore for Vst3Plugin {
         stream.position.set(0);
         unsafe {
             self.controller.setComponentState(stream_ptr.as_ptr());
+        }
+        if !controller.is_empty() {
+            let state = ComWrapper::new(MemoryStream {
+                data: std::cell::RefCell::new(controller.to_vec()),
+                position: std::cell::Cell::new(0),
+            });
+            let p = state.to_com_ptr::<IBStream>().unwrap();
+            if unsafe { self.controller.setState(p.as_ptr()) } != kResultOk {
+                return Err(Error::Other("IEditController::setState failed".into()));
+            }
         }
         Ok(())
     }
@@ -984,7 +1048,7 @@ impl truce_rack_core::editor::PluginEditor for Vst3Plugin {
     fn open(
         &mut self,
         parent: truce_rack_core::editor::WindowHandle,
-        _scale: f64,
+        scale: f64,
     ) -> truce_rack_core::error::Result<()> {
         if self.editor_open {
             return Ok(());
@@ -997,6 +1061,21 @@ impl truce_rack_core::editor::PluginEditor for Vst3Plugin {
                 "IPlugView::isPlatformTypeSupported returned false".into(),
             ));
         }
+        let frame = self.frame.to_com_ptr::<IPlugFrame>().unwrap();
+        unsafe {
+            view.setFrame(frame.as_ptr());
+        }
+        // NSView embedding uses logical points; offer a physical scale only when
+        // the plugin exposes Steinberg's optional content-scale interface.
+        if let Some(support) = view
+            .as_com_ref()
+            .cast::<vst3::Steinberg::IPlugViewContentScaleSupport>()
+        {
+            use vst3::Steinberg::IPlugViewContentScaleSupportTrait;
+            unsafe {
+                support.setContentScaleFactor(scale as f32);
+            }
+        }
         if unsafe { view.attached(parent_ptr, type_str) } != kResultOk {
             return Err(Error::Other("IPlugView::attached returned non-OK".into()));
         }
@@ -1007,7 +1086,10 @@ impl truce_rack_core::editor::PluginEditor for Vst3Plugin {
 
     fn close(&mut self) {
         if let Some(view) = self.view.take() {
-            unsafe { view.removed() };
+            unsafe {
+                view.setFrame(ptr::null_mut());
+                view.removed()
+            };
         }
         self.editor_open = false;
     }
@@ -1276,6 +1358,255 @@ impl Plugin<f32> for Vst3Plugin {
             ((*(*processor_ptr).vtbl).process)(processor_ptr, &raw mut data)
         });
         if status == kResultOk {
+            for event in self.output_events.events.lock().unwrap().iter().take(4096) {
+                if let Some(body) = rack_output(event) {
+                    if context.output_events.len() < 4096 {
+                        context.output_events.push(truce_rack_core::Event {
+                            sample_offset: event.sampleOffset.max(0) as u32,
+                            body: truce_rack_core::EventBody::Midi(body),
+                        });
+                    }
+                }
+            }
+            Ok(ProcessStatus::Continue)
+        } else {
+            Ok(ProcessStatus::Error)
+        }
+    }
+}
+
+fn rack_output(e: &Event) -> Option<truce_rack_core::MidiData> {
+    use truce_rack_core::MidiData;
+    let velocity = |v: f32| (v.clamp(0., 1.) * 127.).round() as u8;
+    unsafe {
+        match e.r#type as u32 {
+            EventTypes_::kNoteOnEvent => {
+                let n = e.__field0.noteOn;
+                Some(MidiData::NoteOn {
+                    channel: u8::try_from(n.channel).ok()?,
+                    note: u8::try_from(n.pitch).ok()?,
+                    velocity: velocity(n.velocity),
+                })
+            }
+            EventTypes_::kNoteOffEvent => {
+                let n = e.__field0.noteOff;
+                Some(MidiData::NoteOff {
+                    channel: u8::try_from(n.channel).ok()?,
+                    note: u8::try_from(n.pitch).ok()?,
+                    velocity: velocity(n.velocity),
+                })
+            }
+            EventTypes_::kLegacyMIDICCOutEvent => {
+                let n = e.__field0.midiCCOut;
+                Some(MidiData::ControlChange {
+                    channel: n.channel as u8,
+                    controller: n.controlNumber,
+                    value: n.value as u8,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+struct ViraFrame {
+    size: AtomicU64,
+}
+impl Class for ViraFrame {
+    type Interfaces = (IPlugFrame,);
+}
+impl IPlugFrameTrait for ViraFrame {
+    unsafe fn resizeView(&self, view: *mut IPlugView, rect: *mut ViewRect) -> i32 {
+        if view.is_null() || rect.is_null() {
+            return -1;
+        }
+        let r = unsafe { &mut *rect };
+        let w = r.right - r.left;
+        let h = r.bottom - r.top;
+        if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
+            return -1;
+        }
+        let result = unsafe { ((*(*view).vtbl).onSize)(view, rect) };
+        if result == kResultOk {
+            self.size.store(
+                ((w as u64) << 32) | h as u64,
+                std::sync::atomic::Ordering::Release,
+            );
+        }
+        result
+    }
+}
+/// Audio-thread handle. Must be retired before its owning Vst3Plugin is dropped.
+pub struct Vst3Processor {
+    processing: bool,
+    processor: ComPtr<IAudioProcessor>,
+    active: bool,
+    translated: EventBuffer,
+    input_events: ComWrapper<EventList3>,
+    output_events: ComWrapper<EventList3>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<(u32, f64)>>>,
+    changes: ComWrapper<ParameterChanges>,
+}
+impl Vst3Plugin {
+    pub fn split_processor(&mut self) -> Vst3Processor {
+        Vst3Processor {
+            processing: self.processing,
+            processor: self.processor.clone(),
+            active: self.is_active(),
+            translated: EventBuffer {
+                events: Vec::with_capacity(4096),
+            },
+            input_events: ComWrapper::new(EventList3 {
+                events: std::sync::Mutex::new(Vec::with_capacity(4096)),
+            }),
+            output_events: ComWrapper::new(EventList3 {
+                events: std::sync::Mutex::new(Vec::with_capacity(4096)),
+            }),
+            pending: self.callbacks.pending.clone(),
+            changes: ComWrapper::new(ParameterChanges::new()),
+        }
+    }
+    pub fn service(&mut self) -> Option<(u32, u32)> {
+        let size = self.frame.size.swap(0, std::sync::atomic::Ordering::AcqRel);
+        (size != 0).then_some(((size >> 32) as u32, size as u32))
+    }
+    pub fn latency_samples(&self) -> u32 {
+        unsafe { self.processor.getLatencySamples() }
+    }
+    pub fn midi_output(&self) -> bool {
+        unsafe { self.component.getBusCount(1, 1) > 0 }
+    }
+}
+impl Vst3Processor {
+    pub fn stop(&mut self) {
+        if self.processing {
+            unsafe {
+                self.processor.setProcessing(0);
+            }
+            self.processing = false;
+        }
+    }
+
+    pub fn process(
+        &mut self,
+        buffer: &mut AudioBuffer<'_, f32>,
+        events: &EventList,
+        context: &mut ProcessContext<'_>,
+    ) -> Result<ProcessStatus> {
+        if !self.active {
+            return Err(Error::NotActivated);
+        }
+        if !self.processing {
+            if unsafe { self.processor.setProcessing(1) } != kResultOk {
+                return Ok(ProcessStatus::Error);
+            }
+            self.processing = true;
+        }
+        let frames = buffer.num_frames();
+
+        // Build an IEventList for the plugin's inputEvents slot.
+        // We translate truce-rack MIDI events to VST3 Event structs.
+        self.translated.events.clear();
+        for event in events.iter().take(4096) {
+            self.translated.push_rack(event);
+        }
+        {
+            let mut input = self.input_events.events.lock().unwrap();
+            std::mem::swap(&mut *input, &mut self.translated.events);
+        }
+        self.output_events.events.lock().unwrap().clear();
+        let input_events_ptr = self.input_events.to_com_ptr::<IEventList>().unwrap();
+        let output_events_ptr = self.output_events.to_com_ptr::<IEventList>().unwrap();
+
+        self.changes
+            .count
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut pending) = self.pending.try_lock() {
+            for (index, (id, value)) in pending.drain(..).enumerate() {
+                let queue = &self.changes.queues[index];
+                queue.id.store(id, std::sync::atomic::Ordering::Relaxed);
+                queue
+                    .value
+                    .store(value.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                self.changes
+                    .count
+                    .store(index + 1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let changes = self.changes.to_com_ptr::<IParameterChanges>().unwrap();
+        // Fixed storage keeps bus adaptation allocation-free, including sidechains/multi-out.
+        let input_count = buffer.num_input_buses();
+        let output_count = buffer.num_output_buses();
+        let mut input_ptrs = [[ptr::null_mut::<f32>(); 32]; 32];
+        let mut output_ptrs = [[ptr::null_mut::<f32>(); 32]; 32];
+        let mut input_buses: [AudioBusBuffers; 32] = unsafe { std::mem::zeroed() };
+        let mut output_buses: [AudioBusBuffers; 32] = unsafe { std::mem::zeroed() };
+        for bus in 0..input_count {
+            let channels = buffer.bus_inputs(bus);
+            for (c, channel) in channels.iter().enumerate() {
+                input_ptrs[bus][c] = channel.as_ptr().cast_mut();
+            }
+            input_buses[bus] = AudioBusBuffers {
+                numChannels: channels.len() as i32,
+                silenceFlags: 0,
+                __field0: AudioBusBuffers__type0 {
+                    channelBuffers32: input_ptrs[bus].as_mut_ptr(),
+                },
+            };
+        }
+        for bus in 0..output_count {
+            let channels = buffer.bus_outputs(bus);
+            for (c, channel) in channels.iter_mut().enumerate() {
+                output_ptrs[bus][c] = channel.as_mut_ptr();
+            }
+            output_buses[bus] = AudioBusBuffers {
+                numChannels: channels.len() as i32,
+                silenceFlags: 0,
+                __field0: AudioBusBuffers__type0 {
+                    channelBuffers32: output_ptrs[bus].as_mut_ptr(),
+                },
+            };
+        }
+
+        // Build the transport context up front so its backing
+        // struct outlives the process call.
+        let mut process_context = context
+            .transport
+            .map(|t| build_vst3_context(&t, context.sample_rate));
+
+        let mut data = ProcessData {
+            #[allow(clippy::cast_possible_wrap)]
+            processMode: ProcessModes_::kRealtime as i32,
+            #[allow(clippy::cast_possible_wrap)]
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as i32,
+            numSamples: i32::try_from(frames).unwrap_or(i32::MAX),
+            numInputs: input_count as i32,
+            numOutputs: output_count as i32,
+            inputs: input_buses.as_mut_ptr(),
+            outputs: output_buses.as_mut_ptr(),
+            inputParameterChanges: changes.as_ptr(),
+            outputParameterChanges: ptr::null_mut::<IParameterChanges>(),
+            inputEvents: input_events_ptr.as_ptr(),
+            outputEvents: output_events_ptr.as_ptr(),
+            processContext: process_context
+                .as_mut()
+                .map_or(ptr::null_mut(), std::ptr::from_mut),
+        };
+
+        let processor_ptr = self.processor.as_ptr();
+        let status = run_audio_block_with::<Vst3Plugin, i32>(FORMAT, -1, || unsafe {
+            ((*(*processor_ptr).vtbl).process)(processor_ptr, &raw mut data)
+        });
+        if status == kResultOk {
+            for event in self.output_events.events.lock().unwrap().iter().take(4096) {
+                if let Some(body) = rack_output(event) {
+                    if context.output_events.len() < 4096 {
+                        context.output_events.push(truce_rack_core::Event {
+                            sample_offset: event.sampleOffset.max(0) as u32,
+                            body: truce_rack_core::EventBody::Midi(body),
+                        });
+                    }
+                }
+            }
             Ok(ProcessStatus::Continue)
         } else {
             Ok(ProcessStatus::Error)
@@ -1580,7 +1911,7 @@ use vst3::Steinberg::Vst::{
     IParamValueQueue, IParamValueQueueTrait, IParameterChangesTrait,
 };
 struct HostCallbacks {
-    pending: std::sync::Mutex<Vec<(u32, f64)>>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<(u32, f64)>>>,
 }
 impl Class for HostCallbacks {
     type Interfaces = (IHostApplication, IComponentHandler);
@@ -1713,7 +2044,7 @@ mod vira_tests {
     #[test]
     fn gui_parameter_edits_coalesce_and_parameter_queue_exposes_latest_value() {
         let host = HostCallbacks {
-            pending: std::sync::Mutex::new(Vec::with_capacity(1024)),
+            pending: std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(1024))),
         };
         unsafe {
             host.performEdit(42, 0.2);

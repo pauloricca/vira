@@ -753,43 +753,80 @@ impl EngineHandle {
         }
         Ok(())
     }
+    pub fn rebind_plugins(&self) -> Result<()> {
+        let graph = self.graph.lock().unwrap();
+        let mut plan = graph.compile()?;
+        plan.bind_vsts()?;
+        #[cfg(target_os = "macos")]
+        plan.bind_inputs(&graph, &self.shared.inputs);
+        self.send(Command::Routing(plan))
+    }
     pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
         let mut plan = graph.compile()?;
-        for node in graph
-            .nodes
-            .iter()
-            .filter(|n| n.kind == crate::routing::Kind::Vst)
-        {
-            let instance = crate::vst::instance(&node.id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{} is unavailable; remove it and add the VST again",
+        // Missing plugins remain as offline nodes. Their saved descriptors and
+        // connections are valid even while their binaries are unavailable.
+        for node in &graph.nodes {
+            if let (Some(descriptor), Some(instance)) = (&node.vst, crate::vst::instance(&node.id))
+            {
+                let native = instance.lock().unwrap();
+                anyhow::ensure!(
+                    native.descriptor.format == descriptor.format
+                        && native.descriptor.uid == descriptor.uid
+                        && native.descriptor.inputs == descriptor.inputs
+                        && native.descriptor.outputs == descriptor.outputs,
+                    "Plugin identity or buses changed for {}",
                     node.label
-                )
-            })?;
-            anyhow::ensure!(
-                node.vst.as_ref() == Some(&instance.lock().unwrap().descriptor),
-                "VST instance identity or buses changed"
-            );
+                );
+            }
         }
-        plan.bind_vsts();
+        plan.bind_vsts()?;
         #[cfg(target_os = "macos")]
         plan.bind_inputs(&graph, &self.shared.inputs);
         let mut current = self.graph.lock().unwrap();
-        if !graph.same_audio(&current)
+        let root = crate::teia::Host::default_root();
+        std::fs::create_dir_all(&root)?;
+        let _session_write = crate::vst::SESSION_SAVE.lock().unwrap();
+        let session_path = root.join(".vira-routing.json");
+        let previous = match std::fs::read(&session_path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let temporary = root.join(".vira-routing.tmp");
+        std::fs::write(
+            &temporary,
+            serde_json::to_vec(&crate::vst::with_states(graph.saved_value()?)?)?,
+        )?;
+        std::fs::rename(&temporary, root.join(".vira-routing.json"))?;
+        if graph
+            .nodes
+            .iter()
+            .any(|n| n.kind == crate::routing::Kind::Vst)
+            || !graph.same_audio(&current)
             || graph.nodes.iter().any(|n| {
                 (n.kind == crate::routing::Kind::Input || n.id.starts_with("instrument-out-"))
                     && graph.wires.iter().any(|w| w.from == n.id || w.to == n.id)
             })
         {
             let history = plan.history.clone();
-            self.send(Command::Routing(plan))?;
+            if let Err(error) = self.send(Command::Routing(plan)) {
+                let rollback = (|| -> Result<()> {
+                    if let Some(bytes) = previous {
+                        std::fs::write(&temporary, bytes)?;
+                        std::fs::rename(&temporary, &session_path)?;
+                    } else {
+                        std::fs::remove_file(&session_path)?;
+                    }
+                    Ok(())
+                })();
+                if let Err(rollback) = rollback {
+                    anyhow::bail!("Routing was not applied: {error:#}; restoring the session file failed: {rollback:#}");
+                }
+                return Err(error);
+            }
+
             *self.rolling.lock().unwrap() = history;
         }
-        let root = crate::teia::Host::default_root();
-        std::fs::create_dir_all(&root)?;
-        let temporary = root.join(".vira-routing.tmp");
-        std::fs::write(&temporary, serde_json::to_vec(&graph.saved_value()?)?)?;
-        std::fs::rename(temporary, root.join(".vira-routing.json"))?;
         crate::vst::sync_routing(&graph);
         *current = graph;
         Ok(())
@@ -1809,7 +1846,7 @@ fn native_output(
         .chain(cue_midi)
         .collect();
     let mut initial_plan = initial_graph.compile()?;
-    initial_plan.bind_vsts();
+    initial_plan.bind_vsts()?;
     initial_plan.history = history;
     // A disconnected saved input should not prevent deck playback on launch.
     initial_plan.bind_inputs(&initial_graph, &shared.inputs);
@@ -1995,6 +2032,12 @@ fn native_output(
                                     frame.global_beat,
                                     frame.master_bpm,
                                     frame.master_running,
+                                    playback_ns
+                                        + index as u64 * 1_000_000_000
+                                            / crate::sample_rate::get() as u64,
+                                );
+                                crate::vst::PLAYBACK_CLOCK.anchor(
+                                    frame.output_frame,
                                     playback_ns
                                         + index as u64 * 1_000_000_000
                                             / crate::sample_rate::get() as u64,

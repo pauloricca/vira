@@ -1,3 +1,4 @@
+import { PluginControls, PluginMidiTargets } from './PluginControls';
 import { useVsts, type VstDescriptor } from './vstModel';
 import { selectorPorts, SelectorControl } from './selector';
 import { ParameterKnob } from './ParameterKnob';
@@ -53,6 +54,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   const [accepted, setAccepted] = useState<Graph | null>(null);
   const acceptedRef = useRef<Graph | null>(null);
   acceptedRef.current = accepted;
+  useEffect(()=>{const retain=()=>{const ids=[...new Set([...(current.current?.nodes ?? []),...(acceptedRef.current?.nodes ?? [])].filter(n=>n.kind==='vst').map(n=>n.id))];void invoke('vst_retain',{ids}).catch(()=>{});};const timer=window.setInterval(retain,5000);return()=>window.clearInterval(timer);},[]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [liveApplying, setLiveApplying] = useState(false);
@@ -227,6 +229,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
   };
   const pinId = (node:RoutingNode) => node.kind === 'instrument' ? instrumentPin(node.id) : node.kind === 'patch' ? patchPin(patchEntries.find(e => e.slot === Number(node.id.replace('patch-', '')))?.state.record?.name ?? node.label) : `routing:${node.id}`;
   function pinnedControls(node:RoutingNode) {
+    if (node.kind==='vst') return <PluginControls id={node.id} name={node.custom_label ?? node.label} compact />;
     const kinds = ['trim','eq','filter','fader','cue_switch','gain','compressor','oscillator','crossfader','player','selector'];
     if (!kinds.includes(node.kind)) return <small>No adjustable parameters</small>;
     const deck = node.deck === null ? undefined : audio?.decks[node.deck];
@@ -287,7 +290,7 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
     setBusy(true);
     try {
       if (id.startsWith('vst:')) {
-        const descriptor = vsts.plugins.find(p => `vst:${p.path}:${p.uid}` === id);
+        const descriptor = vsts.plugins.find(p => `vst:${p.format ?? 'vst3'}:${p.path}:${p.uid}` === id);
         if (!descriptor) throw new Error('VST plugin is unavailable; scan its folder in Settings.');
         if (current.current.nodes.length >= 128) throw new Error('Routing node limit reached (128)');
         const instance = `vst-${crypto.randomUUID()}`;
@@ -338,9 +341,9 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
       <MidiButton midiId="routing:apply" className="routing-apply" disabled={busy || liveApplying || !graph || (!dirty && !graph.nodes.some(n => n.kind === 'input' && graph.wires.some(w => w.from === n.id)))} onClick={() => void apply()}>{busy || liveApplying ? 'Applying…' : 'Apply routing'}</MidiButton>
     </PatchingHeading>
 
-    {vsts.scanning && <p role="status">Scanning VST3 plugins…</p>}
+    {vsts.scanning && <p role="status">Scanning plugins…</p>}
     {error && <p className="routing-error" role="alert">{error}</p>}
-    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Mixer lines',items:mixerLines(graph ?? {nodes:[],wires:[]}).length < 7 ? [{id:'mixer-line',label:'+ Mixer line'}] : []}, {label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:[...Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label})), ...vsts.plugins.filter(p => p.effect).map(p => ({id:`vst:${p.path}:${p.uid}`,label:`${p.name} · VST3`}))]}, {label:'Instruments',items:[...instruments.filter(i => i.audio_input || i.audio_output).map(i => ({id:`instrument-${i.id}`,label:i.name})).filter(i => !graph?.nodes.some(n => n.id === i.id)), ...vsts.plugins.filter(p => p.instrument).map(p => ({id:`vst:${p.path}:${p.uid}`,label:`${p.name} · VST3`}))]}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<MidiButton disabled={busy} onClick={() => void add('new-patch')}>+ New patch</MidiButton>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, canvasWidth, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: canvasWidth * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:canvasWidth, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
+    <div className="routing-body"><NodePalette disabled={busy} categories={[{label:'Mixer lines',items:mixerLines(graph ?? {nodes:[],wires:[]}).length < 7 ? [{id:'mixer-line',label:'+ Mixer line'}] : []}, {label:'Input devices',items:audioInputs.filter(n => !graph?.nodes.some(added => added.id === n.id)).map(n => ({id:n.id,label:n.label}))}, {label:'Effects',items:[...Object.entries(processors).filter(([id]) => id !== 'oscillator').map(([id,label]) => ({id,label})), ...vsts.plugins.filter(p => p.effect).map(p => ({id:`vst:${p.format ?? 'vst3'}:${p.path}:${p.uid}`,label:`${p.name} · ${(p.format ?? 'vst3').toUpperCase()}`}))]}, {label:'Instruments',items:[...instruments.filter(i => i.audio_input || i.audio_output).map(i => ({id:`instrument-${i.id}`,label:i.name})).filter(i => !graph?.nodes.some(n => n.id === i.id)), ...vsts.plugins.filter(p => p.instrument).map(p => ({id:`vst:${p.format ?? 'vst3'}:${p.path}:${p.uid}`,label:`${p.name} · ${(p.format ?? 'vst3').toUpperCase()}`}))]}, {label:'Generators',items:[{id:'oscillator',label:processors.oscillator}]}, {label:'Patches',footer:<MidiButton disabled={busy} onClick={() => void add('new-patch')}>+ New patch</MidiButton>,items:files.map(name => ({id:`patch:${name}`,label:name.replace(/\.json$/, '')}))}]} actions={null} onAdd={(id, point) => void add(id, point)} /><div className="routing-scroll" onDragOver={paletteDragOver} onDrop={e => paletteDrop(e, (id, point) => void add(id, point), canvas.current!, canvasWidth, zoom)} onPointerDown={e => { if (e.target === e.currentTarget) { setSelected(null); } }}><div className="routing-canvas-space" style={{ width: canvasWidth * zoom, height: canvasHeight * zoom }}><div className="routing-canvas" ref={canvas} style={{ width:canvasWidth, height:canvasHeight, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
       onPointerDownCapture={e => { const field = document.activeElement; if (field instanceof HTMLElement && field.matches('input, textarea, select') && field !== e.target && !field.contains(e.target as Node)) field.blur(); }}
       onPointerDown={e => { if (e.target !== e.currentTarget || busy || e.button !== 0) return; e.preventDefault(); setSelected(null); const p = position(e); const drag = {pointer:e.pointerId,start:p,end:p}; marquee.current = drag; setBox(drag); e.currentTarget.setPointerCapture(e.pointerId); }}
       onPointerMove={e => {
@@ -387,6 +390,13 @@ export function Routing({ active = true, audio, control }: { active?: boolean; a
       })}
       <PatchSelectionBox box={box} />
     </div></div></div></div>
+    <PluginMidiTargets ids={(graph?.nodes??[]).filter(n=>n.kind==='vst').map(n=>n.id)} />
+    {selectedNode?.kind==='vst' && <section className="plugin-inspector" aria-label={`${selectedNode.label} plugin controls`}>
+      <button disabled={busy} onClick={()=>{void invoke('vst_open_editor',{id:selectedNode.id}).catch(e=>setError(String(e)));}}>Open editor</button>
+      <button disabled={busy} onClick={()=>{const descriptor=vsts.plugins.find(p=>p.uid===selectedNode.vst?.uid && (p.format??'vst3')===(selectedNode.vst?.format??'vst3'));if(!descriptor){setError('Plugin is unavailable. Install it or add its folder in Settings and scan again.');return;}if(JSON.stringify(descriptor.inputs)!==JSON.stringify(selectedNode.vst?.inputs)||JSON.stringify(descriptor.outputs)!==JSON.stringify(selectedNode.vst?.outputs)){setError('This plugin now has different buses. Add a new instance and reconnect its ports.');return;}void invoke('vst_recover',{id:selectedNode.id,descriptor:{...descriptor,offline_bypass:selectedNode.vst?.offline_bypass??false}}).then(()=>apply()).catch(e=>setError(String(e)));}}>Recover / relink installed plugin</button>
+      <label>If unavailable <select aria-label="Offline plugin behavior" value={selectedNode.vst?.offline_bypass?'bypass':'silence'} onChange={e=>edit({...graph!,nodes:graph!.nodes.map(n=>n.id===selectedNode.id?{...n,vst:{...n.vst!,offline_bypass:e.target.value==='bypass'}}:n)})}><option value="silence">Silence</option><option value="bypass">Pass audio through</option></select></label>
+      <PluginControls key={selectedNode.id} id={selectedNode.id} name={selectedNode.custom_label??selectedNode.label} />
+    </section>}
     {selected && <div className="patching-selection"><span>{selectedObjects > 1 ? `${selectedObjects} objects selected` : selectedNode?.label ?? `${selectedWire?.from} → ${selectedWire?.to}`}</span>{selectedWire && 'wire' in selected && <label>Wire gain <Slider {...midi(wireMidiId(selectedWire))} aria-label="Wire gain" disabled={busy} type="range" min="0" max="2" step="0.01" value={selectedWire.gain} onPointerDown={() => {gesture.current = current.current;}} onPointerUp={endGesture} onPointerCancel={endGesture} onChange={e => edit({...graph!, wires:graph!.wires.map((w,i) => i === selected.wire ? {...w,gain:Number(e.target.value)} : w)})} /><output>{selectedWire.gain.toFixed(2)}×</output></label>}<MidiButton disabled={busy || !!selectedNode && !graph?.nodes.some(n => selectedIds.includes(n.id) && removable(n))} title={selectedNode && !graph?.nodes.some(n => selectedIds.includes(n.id) && removable(n)) ? 'Default routing nodes cannot be removed' : undefined} onClick={removeSelection}>{selectedObjects > 1 ? 'Remove selected' : selectedNode ? 'Remove node' : 'Disconnect'}</MidiButton></div>}
   </PatchingPage>;
 }

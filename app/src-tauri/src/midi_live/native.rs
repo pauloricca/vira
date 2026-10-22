@@ -188,6 +188,12 @@ impl Router {
                     .any(|e| e.id == id)
                     .then_some(Source::Midi(id))
             }
+            Destination::Vst { id } => {
+                let host = crate::vst::midi_host(id)?;
+                let generation = host.generation.load(SeqCst);
+                (generation != 0 && !host.muted.load(SeqCst))
+                    .then_some(Source::Vst(id.clone(), generation))
+            }
             Destination::Teia { slot } => {
                 let host = patterns::teia_host(*slot)?;
                 let generation = host.generation.load(SeqCst);
@@ -386,7 +392,7 @@ impl Router {
         let sources: Vec<_> = monitored
             .iter()
             .cloned()
-            .filter(|s| matches!(s, Source::Teia(..)))
+            .filter(|s| matches!(s, Source::Teia(..) | Source::Vst(..)))
             .collect();
         for old in &self.teia {
             if !sources.contains(old) {
@@ -394,10 +400,35 @@ impl Router {
             }
         }
         for source in &sources {
-            let Source::Teia(slot, generation) = *source else {
+            if let Source::Vst(id, _) = source {
+                if let Some((host, events)) = crate::vst::take_output(id) {
+                    if !self.teia.contains(source) {
+                        continue;
+                    }
+                    match events {
+                        Ok(events) => {
+                            for packet in events {
+                                if packet.epoch == host.epoch.load(SeqCst) {
+                                    self.core.message(
+                                        source,
+                                        &packet.data[..packet.len],
+                                        host.time_at(packet.frame).clamp(ns, ns + 40_000_000),
+                                        sink,
+                                    );
+                                }
+                            }
+                        }
+                        Err(()) => self.core.reset(source, sink, ns),
+                    }
+                }
                 continue;
+            }
+            let (host, generation) = match source {
+                Source::Teia(slot, generation) => (patterns::teia_host(*slot), *generation),
+                Source::Vst(id, generation) => (crate::vst::midi_host(id), *generation),
+                _ => continue,
             };
-            let Some(host) = patterns::teia_host(slot) else {
+            let Some(host) = host else {
                 continue;
             };
             let events = host.take_output();

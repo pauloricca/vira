@@ -34,3 +34,9 @@ test('hybrid plugins appear in both categories, create independent instances, ex
  const model:RoutingNode={id:first,kind:'vst',deck:null,label:'Hybrid',x:0,y:0,value:1,vst:hybrid};
  expect(inputs(model)).toEqual(['in-0','in-1']);expect(outputs(model)).toEqual(['out-0','out-1']);
 });
+test('failed scans can be explicitly retried without clearing valid cached plugins',async()=>{
+ invoke.mockImplementation(c=>Promise.resolve(c==='vst_paths'?[]:c==='vst_catalog'?{scanning:false,plugins:[hybrid],errors:['Quarantined']} : undefined));
+ render(<VstSettings/>);await screen.findByText('Quarantined');
+ fireEvent.click(screen.getByRole('button',{name:'Retry failed scans'}));
+ expect(invoke).toHaveBeenCalledWith('vst_rescan',{retry:true});
+});

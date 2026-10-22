@@ -1,6 +1,7 @@
 //! VST3 discovery, instances and block adapter. Discovery runs in bounded child
 //! processes; plugin creation and editors run on the macOS main thread.
 use crate::decks::{Frame, PRODUCER_FRAMES};
+use crate::plugin_host::Control;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,10 +11,10 @@ use std::{
 };
 use truce_rack_core::buffer::BusRange;
 use truce_rack_core::{
-    AudioBuffer, BusLayout, EventList, Plugin, PluginCore, PluginInfo, PluginScanner,
-    ProcessContext, ProcessStatus,
+    AudioBuffer, BusLayout, EventList, PluginInfo, PluginScanner, ProcessContext, ProcessStatus,
 };
-use truce_rack_vst3::{Vst3Plugin, Vst3Scanner};
+use truce_rack_vst3::Vst3Scanner;
+pub static PLAYBACK_CLOCK: crate::teia_midi::PlaybackClock = crate::teia_midi::PlaybackClock::new();
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Bus {
     pub id: String,
@@ -22,6 +23,14 @@ pub struct Bus {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Descriptor {
+    #[serde(default = "default_format")]
+    pub format: String,
+    #[serde(default)]
+    pub offline_bypass: bool,
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub midi_output: bool,
     pub path: PathBuf,
     pub uid: String,
     pub name: String,
@@ -31,21 +40,29 @@ pub struct Descriptor {
     pub effect: bool,
     pub instrument: bool,
 }
+fn default_format() -> String {
+    "vst3".into()
+}
 impl Descriptor {
     fn info(&self) -> PluginInfo {
         PluginInfo {
             name: self.name.clone(),
-            vendor: String::new(),
+            vendor: self.vendor.clone(),
             version: 0,
             category: truce_rack_core::PluginCategory::Tool,
             path: self.path.clone(),
             unique_id: self.uid.clone(),
-            format: "vst3",
+            format: match self.format.as_str() {
+                "clap" => "clap",
+                "au" => "au",
+                _ => "vst3",
+            },
             has_editor: false,
             accepts_midi: self.midi_input,
         }
     }
-    fn from_plugin(p: &Vst3Plugin) -> Result<Self> {
+    fn from_plugin(control: &Control) -> Result<Self> {
+        let p = control.plugin();
         let layout = p
             .supported_layouts()
             .first()
@@ -63,13 +80,30 @@ impl Descriptor {
         let inputs = buses(&layout.inputs, "in");
         let outputs = buses(&layout.outputs, "out");
         let midi_input = p.info().accepts_midi;
-        ensure!(!outputs.is_empty(), "Plugin has no audio outputs");
+        let midi_output = control.midi_output();
+        ensure!(
+            !outputs.is_empty() || midi_output,
+            "Plugin has no audio or event outputs"
+        );
         Ok(Self {
+            offline_bypass: false,
+            format: p.info().format.into(),
+            vendor: p.info().vendor.clone(),
+            midi_output,
             path: p.info().path.clone(),
             uid: p.info().unique_id.clone(),
             name: p.info().name.clone(),
-            effect: !inputs.is_empty(),
-            instrument: midi_input || inputs.is_empty(),
+            effect: !inputs.is_empty()
+                || matches!(
+                    p.info().category,
+                    truce_rack_core::PluginCategory::Effect
+                        | truce_rack_core::PluginCategory::NoteEffect
+                        | truce_rack_core::PluginCategory::Analyzer
+                ),
+            instrument: matches!(
+                p.info().category,
+                truce_rack_core::PluginCategory::Instrument
+            ) || (!outputs.is_empty() && (midi_input || inputs.is_empty())),
             inputs,
             outputs,
             midi_input,
@@ -77,15 +111,25 @@ impl Descriptor {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.path.is_absolute()
-                && self.path.extension().is_some_and(|e| e == "vst3")
-                && self.uid.len() == 32
-                && self.uid.bytes().all(|b| b.is_ascii_hexdigit()),
-            "Invalid VST3 identity"
+            match self.format.as_str() {
+                "vst3" =>
+                    self.path.is_absolute()
+                        && self.path.extension().is_some_and(|e| e == "vst3")
+                        && self.uid.len() == 32
+                        && self.uid.bytes().all(|b| b.is_ascii_hexdigit()),
+                "clap" =>
+                    self.path.is_absolute()
+                        && self.path.extension().is_some_and(|e| e == "clap")
+                        && !self.uid.is_empty()
+                        && self.uid.len() <= 512,
+                "au" => self.uid.split(':').count() == 3 && self.uid.len() <= 64,
+                _ => false,
+            },
+            "Invalid plugin identity"
         );
         ensure!(
             self.inputs.len() <= 32
-                && !self.outputs.is_empty()
+                && (!self.outputs.is_empty() || self.midi_output)
                 && self.outputs.len() <= 32
                 && self
                     .inputs
@@ -102,7 +146,7 @@ impl Descriptor {
         Ok(())
     }
 }
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
     pub scanning: bool,
     pub plugins: Vec<Descriptor>,
@@ -116,7 +160,13 @@ static CATALOG: Mutex<Catalog> = Mutex::new(Catalog {
 static SCAN: Mutex<()> = Mutex::new(());
 static INSTANCE_ERRORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub fn report_error(error: String) {
-    INSTANCE_ERRORS.lock().unwrap().push(error);
+    let mut errors = INSTANCE_ERRORS.lock().unwrap();
+    if !errors.contains(&error) {
+        if errors.len() == 256 {
+            errors.remove(0);
+        }
+        errors.push(error);
+    }
 }
 pub fn catalog() -> Catalog {
     let mut catalog = CATALOG.lock().unwrap().clone();
@@ -125,9 +175,9 @@ pub fn catalog() -> Catalog {
         .extend(INSTANCE_ERRORS.lock().unwrap().iter().cloned());
     for (id, instance) in instances().lock().unwrap().iter() {
         if let Ok(instance) = instance.try_lock() {
-            if instance.failed {
+            if instance.failure.load(std::sync::atomic::Ordering::Acquire) {
                 catalog.errors.push(format!(
-                    "{} ({id}): processing failed; remove and add this instance again",
+                    "{} ({id}): processing failed; select the node and use Recover / relink installed plugin",
                     instance.descriptor.name
                 ));
             }
@@ -139,7 +189,7 @@ pub fn paths() -> Vec<PathBuf> {
     std::fs::read(crate::paths::support().join("vst-paths.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(truce_rack_vst3::default_vst3_paths)
+        .unwrap_or_default()
 }
 pub fn save_paths(paths: Vec<PathBuf>) -> Result<()> {
     ensure!(
@@ -176,7 +226,7 @@ fn bundles(
     if !seen.insert(path.clone()) {
         return;
     }
-    if path.extension().is_some_and(|x| x == "vst3") {
+    if path.extension().is_some_and(|x| x == "vst3" || x == "clap") {
         found.insert(path);
         return;
     }
@@ -193,90 +243,341 @@ fn bundles(
 }
 /// Called by the CLI probe, before creating VIRA's engine or service.
 pub fn probe(path: &Path) -> Result<Vec<Descriptor>> {
-    let entries = Vst3Scanner.scan_path(path)?;
+    #[cfg(target_os = "macos")]
+    if path.to_string_lossy() == "vira-au-registry" {
+        return truce_rack_au::AuScanner
+            .scan()?
+            .iter()
+            .map(|p| {
+                Ok(Descriptor {
+                    offline_bypass: false,
+                    format: "au".into(),
+                    vendor: p.vendor.clone(),
+                    midi_output: false,
+                    path: PathBuf::new(),
+                    uid: p.unique_id.clone(),
+                    name: p.name.clone(),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    midi_input: p.accepts_midi,
+                    effect: false,
+                    instrument: false,
+                })
+            })
+            .collect();
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(uid) = path.to_string_lossy().strip_prefix("au:") {
+        let info = truce_rack_au::AuScanner
+            .scan()?
+            .into_iter()
+            .find(|p| p.unique_id == uid)
+            .context("AUv2 is no longer registered")?;
+        return Ok(vec![Descriptor::from_plugin(&Control::load(&info)?)?]);
+    }
+    let entries = if path.extension().is_some_and(|e| e == "clap") {
+        truce_rack_clap::ClapScanner.scan_path(path)?
+    } else {
+        Vst3Scanner.scan_path(path)?
+    };
     ensure!(
         !entries.is_empty(),
-        "No loadable VST3 classes (check Apple Silicon compatibility)"
+        "No loadable plugin classes (check Apple Silicon compatibility)"
     );
     entries
         .iter()
         .map(|info| {
-            let plugin = Vst3Scanner.load(info)?;
+            let plugin = Control::load(info)?;
             Descriptor::from_plugin(&plugin)
         })
         .collect()
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct CacheEntry {
+    fingerprint: String,
+    plugins: Vec<Descriptor>,
+    error: Option<String>,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct ScanCache {
+    version: u32,
+    entries: HashMap<PathBuf, CacheEntry>,
+}
+fn cache_path() -> PathBuf {
+    crate::paths::support().join("plugin-cache-v2.json")
+}
+/// Content inventory catches changed bundle executables/resources without loading code.
+fn fingerprint(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    fn visit(path: &Path, hash: &mut Sha256, seen: &mut HashSet<PathBuf>) {
+        let Ok(path) = path.canonicalize() else {
+            return;
+        };
+        if !seen.insert(path.clone()) {
+            return;
+        }
+        if let Ok(m) = std::fs::metadata(&path) {
+            hash.update(path.to_string_lossy().as_bytes());
+            hash.update(m.len().to_le_bytes());
+            hash.update(
+                m.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+            if m.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&path) {
+                    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                    paths.sort();
+                    for p in paths {
+                        visit(&p, hash, seen)
+                    }
+                }
+            }
+        }
+    }
+    let mut hash = Sha256::new();
+    visit(path, &mut hash, &mut HashSet::new());
+    format!("{:x}", hash.finalize())
+}
+fn isolated_probe(path: &Path) -> Result<Vec<Descriptor>> {
+    use std::io::Read;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("--vst-probe")
+        .arg(path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let mut pipe = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let r = pipe
+            .by_ref()
+            .take(4 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = tx.send(r);
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed().as_secs() >= 20 {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Scan timed out; quarantined until Retry failed scans");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    };
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    ensure!(
+        status.success(),
+        "Plugin probe failed or crashed ({status}); quarantined until Retry failed scans"
+    );
+    let bytes = rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .context("Probe output timed out")??;
+    let output = String::from_utf8(bytes)?;
+    let line = output
+        .lines()
+        .rev()
+        .find_map(|s| s.strip_prefix("VIRA_VST_PROBE:"))
+        .context("Missing probe result")?;
+    Ok(serde_json::from_str(line)?)
+}
 pub fn scan() {
+    scan_with_retry(false);
+}
+pub fn scan_with_retry(retry: bool) {
     let Ok(_scan) = SCAN.try_lock() else { return };
-    CATALOG.lock().unwrap().scanning = true;
+    let mut cache: ScanCache = std::fs::read(cache_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(|c: &ScanCache| c.version == 2)
+        .unwrap_or_default();
+    cache.version = 2;
+    {
+        let mut current = CATALOG.lock().unwrap();
+        current.scanning = true;
+        if current.plugins.is_empty() {
+            current.plugins = cache
+                .entries
+                .values()
+                .flat_map(|e| e.plugins.clone())
+                .collect();
+        }
+    }
     let mut result = Catalog::default();
     let mut found = HashSet::new();
     let mut seen = HashSet::new();
+    let mut defaults = truce_rack_vst3::default_vst3_paths();
+    defaults.extend(truce_rack_clap::default_clap_paths());
+    for root in defaults {
+        if root.exists() {
+            bundles(&root, &mut found, &mut seen, &mut result.errors)
+        }
+    }
     for root in paths() {
         bundles(&root, &mut found, &mut seen, &mut result.errors)
     }
-    let mut found: Vec<_> = found.into_iter().collect();
-    found.sort();
-    for bundle in found {
-        let outcome = (|| -> Result<Vec<Descriptor>> {
-            let mut child = std::process::Command::new(std::env::current_exe()?)
-                .arg("--vst-probe")
-                .arg(&bundle)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()?;
-            // Drain stdout concurrently so large multi-class bundles cannot fill a pipe.
-            use std::io::Read;
-            let mut pipe = child.stdout.take().unwrap();
-            let reader = std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                pipe.by_ref()
-                    .take(4 * 1024 * 1024)
-                    .read_to_end(&mut bytes)
-                    .map(|_| bytes)
-            });
-            let started = std::time::Instant::now();
-            let status = loop {
-                if let Some(status) = child.try_wait()? {
-                    break status;
-                }
-                if started.elapsed().as_secs() >= 20 {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = reader.join();
-                    anyhow::bail!("Scan timed out")
-                }
-                std::thread::sleep(std::time::Duration::from_millis(30));
-            };
-            let bytes = reader
-                .join()
-                .map_err(|_| anyhow::anyhow!("Probe reader failed"))??;
-            ensure!(
-                status.success(),
-                "Plugin probe failed or crashed ({status})"
+    let mut work: Vec<_> = found
+        .into_iter()
+        .map(|p| {
+            let f = fingerprint(&p);
+            (p, f)
+        })
+        .collect();
+    work.sort();
+    #[cfg(target_os = "macos")]
+    match isolated_probe(Path::new("vira-au-registry")) {
+        Ok(entries) => {
+            // AU registry IDs are stable; changes to installed component bundles invalidate their metadata.
+            let mut roots = vec![
+                PathBuf::from("/System/Library/Components"),
+                PathBuf::from("/Library/Audio/Plug-Ins/Components"),
+            ];
+            if let Some(home) = std::env::var_os("HOME") {
+                roots.push(PathBuf::from(home).join("Library/Audio/Plug-Ins/Components"));
+            }
+            roots.extend(paths());
+            let stamp = roots
+                .iter()
+                .map(|p| fingerprint(p))
+                .collect::<Vec<_>>()
+                .join(":");
+            work.extend(
+                entries
+                    .into_iter()
+                    .map(|p| (PathBuf::from(format!("au:{}", p.uid)), stamp.clone())),
             );
-            // A plugin may print to stdout; use the explicit final marker.
-            let output = String::from_utf8(bytes)?;
-            let line = output
-                .lines()
-                .rev()
-                .find_map(|s| s.strip_prefix("VIRA_VST_PROBE:"))
-                .context("Missing probe result")?;
-            Ok(serde_json::from_str(line)?)
-        })();
-        match outcome {
-            Ok(mut entries) => result.plugins.append(&mut entries),
-            Err(e) => result.errors.push(format!("{}: {e:#}", bundle.display())),
         }
+        Err(e) => result.errors.push(format!("AU registry: {e:#}")),
     }
+    let mut next = HashMap::new();
+    for (path, stamp) in work {
+        let cached = cache
+            .entries
+            .remove(&path)
+            .filter(|e| e.fingerprint == stamp && (!retry || e.error.is_none()));
+        let entry = cached.unwrap_or_else(|| match isolated_probe(&path) {
+            Ok(plugins) => CacheEntry {
+                fingerprint: stamp,
+                plugins,
+                error: None,
+            },
+            Err(e) => CacheEntry {
+                fingerprint: stamp,
+                plugins: Vec::new(),
+                error: Some(format!("{}: {e:#}", path.display())),
+            },
+        });
+        result.plugins.extend(entry.plugins.clone());
+        if let Some(e) = &entry.error {
+            result.errors.push(e.clone());
+        }
+        next.insert(path, entry);
+    }
+    // Collapse duplicate installations within a format; retain explicit format variants.
+    result.plugins.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then(a.format.cmp(&b.format))
+            .then(a.path.cmp(&b.path))
+    });
+    let mut ids = HashSet::new();
     result
         .plugins
-        .sort_by(|a, b| a.name.cmp(&b.name).then(a.uid.cmp(&b.uid)));
+        .retain(|p| ids.insert((p.format.clone(), p.uid.clone())));
+    cache.entries = next;
+    if let Err(e) = (|| -> Result<()> {
+        let path = cache_path();
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(path.with_extension("tmp"), serde_json::to_vec(&cache)?)?;
+        std::fs::rename(path.with_extension("tmp"), path)?;
+        Ok(())
+    })() {
+        result.errors.push(format!("Scan cache: {e:#}"));
+    }
     *CATALOG.lock().unwrap() = result;
 }
 
+fn preallocated_events() -> EventList {
+    let e = truce_rack_core::Event {
+        sample_offset: 0,
+        body: truce_rack_core::EventBody::Midi(truce_rack_core::MidiData::NoteOff {
+            channel: 0,
+            note: 0,
+            velocity: 0,
+        }),
+    };
+    let mut list = EventList::from_slice(&[e; 4096]);
+    list.clear();
+    list
+}
+#[derive(Clone, Copy)]
+pub struct MidiPacket {
+    pub frame: u64,
+    pub epoch: u64,
+    pub data: [u8; 8],
+    pub len: usize,
+}
+fn midi_bytes(body: truce_rack_core::MidiData) -> Option<([u8; 8], usize)> {
+    use truce_rack_core::MidiData::*;
+    let (status, a, b, len) = match body {
+        NoteOn {
+            channel,
+            note,
+            velocity,
+        } => (0x90 | (channel & 15), note, velocity, 3),
+        NoteOff {
+            channel,
+            note,
+            velocity,
+        } => (0x80 | (channel & 15), note, velocity, 3),
+        ControlChange {
+            channel,
+            controller,
+            value,
+        } => (0xb0 | (channel & 15), controller, value, 3),
+        PitchBend { channel, value } => (
+            0xe0 | (channel & 15),
+            (value & 127) as u8,
+            ((value >> 7) & 127) as u8,
+            3,
+        ),
+        PolyAftertouch {
+            channel,
+            note,
+            pressure,
+        } => (0xa0 | (channel & 15), note, pressure, 3),
+        ChannelAftertouch { channel, pressure } => (0xd0 | (channel & 15), pressure, 0, 2),
+        ProgramChange { channel, program } => (0xc0 | (channel & 15), program, 0, 2),
+        Raw { len, data } => return (len > 0 && len <= 8).then_some((data, len as usize)),
+    };
+    if a > 127 || b > 127 {
+        return None;
+    }
+    Some(([status, a, b, 0, 0, 0, 0, 0], len))
+}
 pub struct Instance {
-    pub plugin: Vst3Plugin,
+    plugin: crate::plugin_host::Audio,
     layout: BusLayout,
     midi: crate::teia_midi::Render,
     inputs: Vec<[f32; PRODUCER_FRAMES]>,
@@ -284,45 +585,210 @@ pub struct Instance {
     in_ranges: Vec<BusRange>,
     out_ranges: Vec<BusRange>,
     pub descriptor: Descriptor,
-    failed: bool,
+    pub failed: bool,
+    failure: Arc<std::sync::atomic::AtomicBool>,
     events: EventList,
+    outbound: EventList,
+    output: rtrb::Producer<MidiPacket>,
+    overflow: Arc<std::sync::atomic::AtomicBool>,
 }
-type Shared = Arc<Mutex<Instance>>;
+pub struct ControlInstance {
+    pub audio: Arc<Mutex<Instance>>,
+    pub plugin: Control,
+    pub descriptor: Descriptor,
+    pub host: Arc<crate::teia_midi::Host>,
+    pub latency: u32,
+    generation: u64,
+
+    failure: Arc<std::sync::atomic::AtomicBool>,
+}
+#[derive(Clone)]
+struct Endpoint {
+    host: Arc<crate::teia_midi::Host>,
+    output: Arc<Mutex<rtrb::Consumer<MidiPacket>>>,
+    overflow: Arc<std::sync::atomic::AtomicBool>,
+}
+static ENDPOINTS: OnceLock<Mutex<HashMap<String, Endpoint>>> = OnceLock::new();
+fn endpoints() -> &'static Mutex<HashMap<String, Endpoint>> {
+    ENDPOINTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub static SESSION_SAVE: Mutex<()> = Mutex::new(());
+type Shared = Arc<Mutex<ControlInstance>>;
 static INSTANCES: OnceLock<Mutex<HashMap<String, Shared>>> = OnceLock::new();
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static RETIRED: Mutex<Vec<Shared>> = Mutex::new(Vec::new());
 fn instances() -> &'static Mutex<HashMap<String, Shared>> {
     INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 pub fn instance(id: &str) -> Option<Shared> {
     instances().lock().unwrap().get(id).cloned()
 }
-pub fn save_all() {
-    for (id, instance) in instances().lock().unwrap().iter() {
-        if let Ok(instance) = instance.lock() {
-            if let Err(e) = instance.save(id) {
-                eprintln!("VST save {id}: {e:#}");
+pub fn audio_instance(id: &str) -> Option<Arc<Mutex<Instance>>> {
+    instance(id).map(|i| i.lock().unwrap().audio.clone())
+}
+pub fn service() -> Vec<(String, (u32, u32))> {
+    RETIRED
+        .lock()
+        .unwrap()
+        .retain(|i| Arc::strong_count(i) > 1 || Arc::strong_count(&i.lock().unwrap().audio) > 1);
+    let mut resized = Vec::new();
+    for (id, shared) in instances().lock().unwrap().iter() {
+        let mut i = shared.lock().unwrap();
+        if let Some(size) = i.plugin.service() {
+            resized.push((id.clone(), size));
+        }
+    }
+    resized
+}
+pub fn refresh_latencies() -> bool {
+    let mut changed = false;
+    for shared in instances().lock().unwrap().values() {
+        let mut i = shared.lock().unwrap();
+        let n = i.plugin.latency_samples();
+        if i.latency != n {
+            i.latency = n;
+            changed = true;
+        }
+    }
+    changed
+}
+pub fn take_output(id: &str) -> Option<(Arc<crate::teia_midi::Host>, Result<Vec<MidiPacket>, ()>)> {
+    let i = endpoints().lock().unwrap().get(id).cloned()?;
+    let mut queue = i.output.lock().unwrap();
+    let packets = (0..4096).map_while(|_| queue.pop().ok()).collect();
+    Some((
+        i.host.clone(),
+        if i.overflow.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            Err(())
+        } else {
+            Ok(packets)
+        },
+    ))
+}
+pub fn latency(id: &str) -> u32 {
+    instance(id).map(|i| i.lock().unwrap().latency).unwrap_or(0)
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StateBlob {
+    format: String,
+    uid: String,
+    bytes: Vec<u8>,
+}
+static STATES: OnceLock<Mutex<HashMap<String, StateBlob>>> = OnceLock::new();
+fn states() -> &'static Mutex<HashMap<String, StateBlob>> {
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub fn restore_states(bytes: &[u8]) {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Ok(saved) =
+            serde_json::from_value::<HashMap<String, StateBlob>>(value["plugin_states"].clone())
+        {
+            *states().lock().unwrap() = saved;
+        }
+    }
+}
+pub fn snapshot(graph: &crate::routing::Graph) -> Result<()> {
+    for node in &graph.nodes {
+        if let Some(instance) = instance(&node.id) {
+            instance.lock().unwrap().save(&node.id)?;
+        }
+    }
+    Ok(())
+}
+pub fn with_states(mut value: serde_json::Value) -> Result<serde_json::Value> {
+    let saved = states().lock().unwrap();
+    let mut blobs = HashMap::new();
+    if let Some(nodes) = value["nodes"].as_array() {
+        for node in nodes {
+            if let Some(id) = node["id"].as_str() {
+                if let Some(state) = saved.get(id) {
+                    blobs.insert(id.to_owned(), state.clone());
+                }
             }
         }
     }
+    value["plugin_state_version"] = 1.into();
+    value["plugin_states"] = serde_json::to_value(blobs)?;
+    Ok(value)
+}
+fn checkpoint() -> Result<()> {
+    let _write = SESSION_SAVE.lock().unwrap();
+    let path = crate::teia::Host::default_root().join(".vira-routing.json");
+    if let Ok(bytes) = std::fs::read(&path) {
+        let value = with_states(serde_json::from_slice(&bytes)?)?;
+        std::fs::write(path.with_extension("tmp"), serde_json::to_vec(&value)?)?;
+        std::fs::rename(path.with_extension("tmp"), path)?;
+    }
+    Ok(())
+}
+pub fn save_all() {
+    for (id, instance) in instances().lock().unwrap().iter() {
+        if let Err(e) = instance.lock().unwrap().save(id) {
+            report_error(format!("Plugin save {id}: {e:#}"));
+        }
+    }
+    if let Err(e) = checkpoint() {
+        report_error(format!("Session checkpoint: {e:#}"));
+    }
+}
+/// Main-thread reclamation after plans and editor windows have released references.
+/// State files survive eviction so undo can instantiate the same identity again.
+pub fn retain(ids: &HashSet<String>) {
+    instances().lock().unwrap().retain(|id, value| {
+        if ids.contains(id) || Arc::strong_count(value) > 1 {
+            return true;
+        }
+        let i = value.lock().unwrap();
+        if Arc::strong_count(&i.audio) > 1 {
+            return true;
+        }
+        if let Err(e) = i.save(id) {
+            report_error(format!("Plugin save {id}: {e:#}"));
+            return true;
+        }
+        endpoints().lock().unwrap().remove(id);
+        states().lock().unwrap().remove(id);
+        false
+    });
 }
 pub fn sync_routing(graph: &crate::routing::Graph) {
     use std::sync::atomic::Ordering::SeqCst;
     for (id, instance) in instances().lock().unwrap().iter() {
         let instance = instance.lock().unwrap();
-        let host = &instance.midi.host;
+        let host = &instance.host;
         let active = graph
             .nodes
             .iter()
             .any(|n| n.kind == crate::routing::Kind::Vst && &n.id == id);
-        if active && !instance.failed {
+        if active && !instance.failure.load(SeqCst) {
             host.muted.store(false, SeqCst);
-            host.generation.store(1, SeqCst);
+            host.generation.store(instance.generation, SeqCst);
         } else if !host.muted.load(SeqCst) {
             host.mute();
         }
     }
 }
 pub fn midi_host(id: &str) -> Option<Arc<crate::teia_midi::Host>> {
-    instance(id).map(|i| i.lock().unwrap().midi.host.clone())
+    endpoints().lock().unwrap().get(id).map(|i| i.host.clone())
+}
+impl ControlInstance {
+    pub fn save(&self, id: &str) -> Result<()> {
+        let dir = crate::paths::support().join("vst-state");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{id}.bin"));
+        let bytes = self.plugin.plugin().save_state()?;
+        std::fs::write(path.with_extension("tmp"), &bytes)?;
+        std::fs::rename(path.with_extension("tmp"), &path)?;
+        states().lock().unwrap().insert(
+            id.into(),
+            StateBlob {
+                format: self.descriptor.format.clone(),
+                uid: self.descriptor.uid.clone(),
+                bytes,
+            },
+        );
+        Ok(())
+    }
 }
 /// Must be called on the UI thread. Instances survive plan replacement and undo.
 pub fn prepare(id: &str, descriptor: &Descriptor) -> Result<()> {
@@ -334,30 +800,61 @@ pub fn prepare(id: &str, descriptor: &Descriptor) -> Result<()> {
     );
     descriptor.validate()?;
     if let Some(existing) = instance(id) {
+        let guard = existing.lock().unwrap();
         ensure!(
-            existing.lock().unwrap().descriptor == *descriptor,
-            "VST instance identity changed"
+            guard.descriptor.format == descriptor.format
+                && guard.descriptor.uid == descriptor.uid
+                && guard.descriptor.inputs == descriptor.inputs
+                && guard.descriptor.outputs == descriptor.outputs,
+            "Plugin identity or buses changed"
         );
-        return Ok(());
+        if !guard.failure.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let _ = guard.save(id);
+        guard.host.mute();
+        drop(guard);
+        if let Some(old) = instances().lock().unwrap().remove(id) {
+            RETIRED.lock().unwrap().push(old);
+        }
     }
     ensure!(
         instances().lock().unwrap().len() < 128,
-        "VST instance limit reached; reopen VIRA"
+        "Active plugin instance limit reached (128)"
     );
-    let mut plugin = Vst3Scanner.load(&descriptor.info())?;
+    let mut resolved = descriptor.clone();
+    if !descriptor.path.exists() || descriptor.format == "au" {
+        if let Some(found) = catalog()
+            .plugins
+            .into_iter()
+            .find(|p| p.format == descriptor.format && p.uid == descriptor.uid)
+        {
+            resolved.path = found.path;
+        }
+    }
+    let mut plugin = Control::load(&resolved.info())?;
     let actual = Descriptor::from_plugin(&plugin)?;
     ensure!(
-        actual == *descriptor,
-        "VST buses changed; remove and add the plugin again"
+        actual.uid == descriptor.uid
+            && actual.format == descriptor.format
+            && actual.inputs == descriptor.inputs
+            && actual.outputs == descriptor.outputs,
+        "Plugin buses changed; relink to a compatible plugin"
     );
-    let layout = plugin.supported_layouts()[0].clone();
+    let layout = plugin.plugin().supported_layouts()[0].clone();
     let state = crate::paths::support()
         .join("vst-state")
         .join(format!("{id}.bin"));
-    if let Ok(bytes) = std::fs::read(state) {
-        plugin.load_state(&bytes)?
+    let saved = states()
+        .lock()
+        .unwrap()
+        .get(id)
+        .filter(|s| s.format == descriptor.format && s.uid == descriptor.uid)
+        .map(|s| s.bytes.clone());
+    if let Some(bytes) = saved.or_else(|| std::fs::read(state).ok()) {
+        plugin.plugin_mut().load_state(&bytes)?;
     }
-    plugin.activate(
+    plugin.plugin_mut().activate(
         layout.clone(),
         crate::sample_rate::get() as f64,
         PRODUCER_FRAMES,
@@ -374,19 +871,30 @@ pub fn prepare(id: &str, descriptor: &Descriptor) -> Result<()> {
             })
             .collect()
     };
-    let midi = crate::teia_midi::channel();
+    let midi = crate::teia_midi::channel_with_clock(Some(&PLAYBACK_CLOCK));
     use std::sync::atomic::Ordering::SeqCst;
-    midi.host.generation.store(1, SeqCst);
+    let generation = GENERATION.fetch_add(1, SeqCst);
+    midi.host.generation.store(generation, SeqCst);
+    let host = midi.host.clone();
+    let latency = plugin.latency_samples();
+    let processor = plugin.split_processor();
+    let failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (output, consumer) = rtrb::RingBuffer::new(4096);
+    let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let instance = Instance {
+        output,
+        overflow: overflow.clone(),
         inputs: vec![[0.; PRODUCER_FRAMES]; layout.total_input_channels() as usize],
         outputs: vec![[0.; PRODUCER_FRAMES]; layout.total_output_channels() as usize],
         in_ranges: ranges(&layout.inputs),
         out_ranges: ranges(&layout.outputs),
         layout,
-        plugin,
+        plugin: processor,
         midi,
         descriptor: actual,
         failed: false,
+        failure: failure.clone(),
+        outbound: preallocated_events(),
         events: {
             let event = truce_rack_core::Event {
                 sample_offset: 0,
@@ -401,20 +909,32 @@ pub fn prepare(id: &str, descriptor: &Descriptor) -> Result<()> {
             events
         },
     };
-    instances()
-        .lock()
-        .unwrap()
-        .insert(id.into(), Arc::new(Mutex::new(instance)));
+    endpoints().lock().unwrap().insert(
+        id.into(),
+        Endpoint {
+            host: host.clone(),
+            output: Arc::new(Mutex::new(consumer)),
+            overflow,
+        },
+    );
+    instances().lock().unwrap().insert(
+        id.into(),
+        Arc::new(Mutex::new(ControlInstance {
+            plugin,
+            descriptor: descriptor.clone(),
+            audio: Arc::new(Mutex::new(instance)),
+            host,
+            latency,
+            generation,
+            failure,
+        })),
+    );
     Ok(())
 }
 impl Instance {
-    pub fn save(&self, id: &str) -> Result<()> {
-        let dir = crate::paths::support().join("vst-state");
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{id}.bin"));
-        std::fs::write(path.with_extension("tmp"), self.plugin.save_state()?)?;
-        std::fs::rename(path.with_extension("tmp"), path)?;
-        Ok(())
+    pub fn stop(&mut self) {
+        self.plugin.stop();
+        self.midi.host.mute();
     }
     pub fn render(
         &mut self,
@@ -444,10 +964,6 @@ impl Instance {
         use std::sync::atomic::Ordering::SeqCst;
         use truce_rack_core::{Event, EventBody, MidiData};
         let start = block[0].output_frame;
-        #[cfg(target_os = "macos")]
-        self.midi
-            .host
-            .anchor(start, unsafe { crate::teia_midi::now_ns() });
         self.midi.prepare_input(self.midi.host.epoch.load(SeqCst));
         self.events.clear();
         if self.midi.host.panic.swap(false, SeqCst) {
@@ -481,6 +997,19 @@ impl Instance {
                     note,
                     velocity: 0,
                 },
+                EventKind::ControlChange {
+                    channel,
+                    controller,
+                    value,
+                } => MidiData::ControlChange {
+                    channel: channel.saturating_sub(1),
+                    controller,
+                    value: (value.clamp(0., 1.) * 127.).round() as u8,
+                },
+                EventKind::PitchBend { channel, value, .. } => MidiData::PitchBend {
+                    channel: channel.saturating_sub(1),
+                    value,
+                },
                 _ => continue,
             };
             self.events.push(Event {
@@ -509,7 +1038,7 @@ impl Instance {
             &self.in_ranges,
             &self.out_ranges,
         );
-        let mut outbound = EventList::new();
+        self.outbound.clear();
         let frame = &block[0];
         let mut context = ProcessContext {
             sample_rate: crate::sample_rate::get() as f64,
@@ -523,15 +1052,40 @@ impl Instance {
                 playing: frame.master_running,
                 ..Default::default()
             }),
-            output_events: &mut outbound,
+            output_events: &mut self.outbound,
         };
         if !matches!(
             self.plugin.process(&mut buffer, &self.events, &mut context),
             Ok(ProcessStatus::Continue | ProcessStatus::Sleep | ProcessStatus::Tail { .. })
         ) {
             self.failed = true;
+            self.failure.store(true, SeqCst);
             self.midi.host.mute();
             return;
+        }
+        for e in self.outbound.iter().take(4096) {
+            let EventBody::Midi(body) = e.body else {
+                continue;
+            };
+            let Some((data, len)) = midi_bytes(body) else {
+                continue;
+            };
+            if e.sample_offset >= PRODUCER_FRAMES as u32 {
+                continue;
+            }
+            if self
+                .output
+                .push(MidiPacket {
+                    frame: start + e.sample_offset as u64,
+                    epoch: self.midi.host.epoch.load(SeqCst),
+                    data,
+                    len,
+                })
+                .is_err()
+            {
+                self.overflow.store(true, SeqCst);
+                self.midi.host.output_drops.fetch_add(1, SeqCst);
+            }
         }
         let mut offset = 0;
         for (bus, b) in self.layout.outputs.iter().enumerate() {
@@ -552,7 +1106,7 @@ pub fn check(path: &Path) -> Result<serde_json::Value> {
     let d = descriptors.first().context("No plugin")?;
     let id = "vst-00000000-0000-0000-0000-000000000000";
     prepare(id, d)?;
-    let shared = instance(id).unwrap();
+    let shared = audio_instance(id).unwrap();
     let mut plugin = shared.lock().unwrap();
     use teia_kernel::hosted::EventKind;
     plugin.midi.host.enqueue(
@@ -598,13 +1152,148 @@ pub fn check(path: &Path) -> Result<serde_json::Value> {
     }
     ensure!(!plugin.failed, "VST processing failed");
     ensure!(peak > 0.00001, "Plugin produced no audible output");
+    drop(plugin);
+    let control = instance(id).unwrap();
+    let parameter = {
+        let mut c = control.lock().unwrap();
+        let p = c.plugin.plugin_mut();
+        let index = (0..p.parameter_count()).find(|&n| {
+            p.parameter_info(n)
+                .map(|i| {
+                    i.max > i.min
+                        && !i
+                            .flags
+                            .contains(truce_rack_core::info::ParameterFlags::READ_ONLY)
+                })
+                .unwrap_or(false)
+        });
+        if let Some(index) = index {
+            let info = p.parameter_info(index)?;
+            let current = p.parameter_value(index)?;
+            let value = if current < (info.min + info.max) * 0.5 {
+                info.max
+            } else {
+                info.min
+            };
+            p.set_parameter(index, value)?;
+            Some((index, info))
+        } else {
+            None
+        }
+    };
+    if parameter.is_some() {
+        let mut audio = shared.lock().unwrap();
+        audio.render(&routed, &block, &mut output);
+    }
+    let expected = parameter
+        .as_ref()
+        .map(|(index, _)| {
+            control
+                .lock()
+                .unwrap()
+                .plugin
+                .plugin()
+                .parameter_value(*index)
+        })
+        .transpose()?;
+    let state = control.lock().unwrap().plugin.plugin().save_state()?;
+    let mut restored = Control::load(&d.info())?;
+    restored.plugin_mut().load_state(&state)?;
+    let restored_layout = restored.plugin().supported_layouts()[0].clone();
+    restored.plugin_mut().activate(
+        restored_layout,
+        crate::sample_rate::get() as f64,
+        PRODUCER_FRAMES,
+    )?;
+    if let (Some((index, info)), Some(expected)) = (&parameter, expected) {
+        let actual = restored.plugin().parameter_value(*index)?;
+        ensure!(
+            (actual - expected).abs() <= (info.max - info.min).abs() * 0.00001 + 1e-6,
+            "Native state did not restore parameter {}: {expected} -> {actual}",
+            info.name
+        );
+    }
+
+    // Hold the UI/control lock deliberately while the worker processes. The audio
+    // handle must continue advancing without needing that lock.
+    let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let observed = progress.clone();
+    let worker = std::thread::spawn(move || {
+        let mut audio = shared.lock().unwrap();
+        for i in 0..128 {
+            audio.render(&routed, &block, &mut output);
+            observed.store(i + 1, std::sync::atomic::Ordering::Release);
+        }
+        !audio.failed
+    });
+    let guard = control.lock().unwrap();
+    for _ in 0..16 {
+        let _ = guard.plugin.plugin().save_state()?;
+    }
+    let concurrent_blocks = progress.load(std::sync::atomic::Ordering::Acquire);
+    drop(guard);
+    ensure!(
+        worker.join().unwrap_or(false),
+        "Audio failed during concurrent state capture"
+    );
     Ok(
-        serde_json::json!({"plugin":d,"peak":peak,"frames":750*PRODUCER_FRAMES,"sample_rate":crate::sample_rate::get(),"passed":true}),
+        serde_json::json!({"plugin":d,"peak":peak,"frames":750*PRODUCER_FRAMES,"sample_rate":crate::sample_rate::get(),"passed":true,"state_roundtrip_bytes":state.len(),"concurrent_blocks_during_state_capture":concurrent_blocks}),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scan_fingerprint_tracks_nested_resources_and_cache_keeps_quarantine() {
+        let root = std::env::temp_dir().join(format!("vira-plugin-cache-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Synth.clap/Contents")).unwrap();
+        let file = root.join("Synth.clap/Contents/data");
+        std::fs::write(&file, b"v1").unwrap();
+        let first = super::fingerprint(&root);
+        assert_eq!(first, super::fingerprint(&root));
+        std::fs::write(&file, b"v2-changed").unwrap();
+        assert_ne!(first, super::fingerprint(&root));
+        let entry = super::CacheEntry {
+            fingerprint: first,
+            plugins: Vec::new(),
+            error: Some("Crash quarantined".into()),
+        };
+        let cache = super::ScanCache {
+            version: 2,
+            entries: [(root.clone(), entry)].into_iter().collect(),
+        };
+        let decoded: super::ScanCache =
+            serde_json::from_slice(&serde_json::to_vec(&cache).unwrap()).unwrap();
+        assert_eq!(
+            decoded.entries[&root].error.as_deref(),
+            Some("Crash quarantined")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn plugin_output_preserves_channel_voice_messages() {
+        use truce_rack_core::MidiData;
+        assert_eq!(
+            super::midi_bytes(MidiData::PitchBend {
+                channel: 2,
+                value: 8192
+            }),
+            Some(([0xe2, 0, 64, 0, 0, 0, 0, 0], 3))
+        );
+        assert_eq!(
+            super::midi_bytes(MidiData::ProgramChange {
+                channel: 0,
+                program: 23
+            }),
+            Some(([0xc0, 23, 0, 0, 0, 0, 0, 0], 2))
+        );
+        assert!(super::midi_bytes(MidiData::Raw {
+            len: 9,
+            data: [0; 8]
+        })
+        .is_none());
+    }
+
     use super::*;
     #[test]
     fn overlapping_scan_roots_find_bundles_once_without_descending_into_them() {
@@ -624,6 +1313,10 @@ mod tests {
     #[test]
     fn plugin_bus_ports_roundtrip_and_reject_invalid_topology() {
         let descriptor = Descriptor {
+            offline_bypass: false,
+            format: "vst3".into(),
+            vendor: String::new(),
+            midi_output: false,
             path: "/Plugins/Hybrid.vst3".into(),
             uid: "a".repeat(32),
             name: "Hybrid".into(),

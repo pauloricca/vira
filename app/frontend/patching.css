@@ -88,3 +88,8 @@
 
 .selector-buttons { display:flex; flex-wrap:wrap; gap:5px; }
 .selector-buttons button[aria-pressed=true] { color:#09211c; background:#76d2b7; border-color:#76d2b7; }
+
+.plugin-inspector { padding:16px; border-top:1px solid var(--border); max-height:320px; overflow:auto; }
+.plugin-parameters { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+.plugin-parameters > label, .plugin-parameters > p {flex-basis:100%;}
+.plugin-parameter-row { display:flex; align-items:center; gap:6px; }

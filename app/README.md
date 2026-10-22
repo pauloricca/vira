@@ -1293,30 +1293,46 @@ timing advance. Their Play schedules combine and simultaneous
 identical Play messages are sent once. External hardware timing requires macOS
 testing.
 
-VST3 plugins use the pinned `truce-rack-vst3` 1.1.5 host in `vendor/` (local
-compatibility changes are listed in `vendor/truce-rack-vst3/VIRA-PATCHES.md`).
-In **Settings → VST plugins**, add absolute scan folder paths. The standard user
-and system VST3 locations are the initial defaults. Folders are scanned recursively
-at startup; **Scan now** applies new paths immediately. Overlapping roots are
-deduplicated. Each bundle is probed in a separate process with a 20-second timeout;
-missing folders, failed probes and incompatible binaries appear under scan issues.
-Use Apple Silicon VST3 plugins; VST2 bundles are not supported.
+Plugins use pinned truce-rack 1.1.5 adapters in `vendor/`. Each adapter has a
+`VIRA-PATCHES.md` receipt describing its local compatibility changes.
+In **Settings → Plugins**, add absolute custom scan paths. Standard user and
+system VST3/CLAP folders are always scanned too. AUv2 uses macOS's component
+registry. Discovery runs in bounded child processes; successful metadata and
+quarantined failures are cached across restarts. **Scan now** checks changed
+bundles; **Retry failed scans** explicitly retries quarantined entries.
 
-The actual audio/event buses determine the Routing palette categories: audio inputs
-and outputs identify effects; note input or audio generation identifies instruments.
-A hybrid appears in both. Drag a plugin into Routing, connect its named buses, and
-**Apply routing**. Each placement is an independent instance. Double-click the node
-to open its native editor. In **Patterns → VST instruments**, choose that same applied
-instance to route patterns or live MIDI notes to it. Plugin state is saved on editor
-close and normal app exit; routing placements and class identities survive restart.
-Scan roots and instance state live in the app support folder as `vst-paths.json` and
-`vst-state/`. Moving a plugin requires removing and re-adding its routing node.
+Effects and Instruments combine declared categories with actual audio/event
+buses. A hybrid can appear in both categories. Format variants have explicit
+VST3/CLAP/AU labels; duplicate installations with the same format/ID collapse.
+Drag plugins into audio Routing and double-click an instance for its native
+editor. The same instance appears under Plugins in musical routing when it has
+MIDI inputs or outputs. Select an audio node to browse parameters, MIDI-map them,
+and choose which parameters its pinned controls display.
 
-Each plugin bus uses a stereo cable: mono inputs are averaged and mono outputs are
-duplicated; multichannel buses use L/R, with remaining inputs silent. Sidechain and
-auxiliary buses remain independently patchable. Dynamic bus changes, plugin latency
-compensation, MIDI CC/pitch-bend conversion and plugin MIDI output routing are not
-yet supported. Discovery is isolated; live DSP runs inside VIRA, so a plugin crash
-while processing can still terminate the app. Native plugin timing and GUI
-compatibility need verification on macOS; Docker tests do not establish audio-device
-acceptance.
+The device playback clock timestamps plugin MIDI. Native control/editor/state
+calls use independent audio handles, so they do not acquire the DSP mutex.
+Removed instances retire after audio plans and editors release them; per-instance
+state backups allow undo/recreation. Routing saves embed versioned plugin states
+in the same atomic session JSON. VST3 state includes component and controller
+blobs, with migration from older component-only backups. Editor close, periodic
+checkpoints and orderly quit also save native state.
+
+Missing plugins keep their IDs, connections and state. Their offline policy can
+be silence or audio pass-through. After scanning a moved/reinstalled plugin,
+select its node and use **Recover / relink installed plugin**. Stable IDs resolve
+its installation path. Changed buses require a new node with reconnection.
+Plugin latency aligns parallel paths, sidechains and hardware outputs using
+preallocated delays; metadata changes trigger an off-thread plan rebuild. Delays
+are limited to 960000 frames per path and 32 MB total; exceeding a limit is an
+explicit error.
+
+Each audio bus still uses a stereo cable: mono inputs are averaged, mono outputs
+are duplicated, channels beyond L/R receive silence and their outputs are omitted.
+Dynamic bus reconfiguration, timeline parameter automation, VST3 CC/pitch-bend
+input via IMidiMapping, and long SysEx/UMP output are not implemented. Plugin MIDI
+output uses the musical-routing worker; internal plugin-to-plugin feedback is not
+a same-block/sample-accurate event graph. Plugins run in-process during playback,
+so a native plugin crash can terminate VIRA. AUv3, LV2 and VST2 are not included.
+
+See [VERIFICATION-PLUGINS.md](VERIFICATION-PLUGINS.md) for the tested plugins,
+commands and limits of the compatibility evidence.

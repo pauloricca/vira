@@ -4,6 +4,7 @@ mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
 pub mod vst;
+mod plugin_host;
 #[cfg(target_os = "macos")]
 mod vst_window;
 #[cfg(target_os = "macos")]
@@ -525,8 +526,21 @@ pub fn run() {
     #[tauri::command]
     async fn set_routing_graph(
         graph: routing::Graph,
+        app: tauri::AppHandle,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
+        let prepare_graph = graph.clone();
+        crate::vst_window::ui(app, move |_| {
+            for node in &prepare_graph.nodes {
+                let Some(descriptor) = &node.vst else { continue };
+                if crate::vst::instance(&node.id).is_none() {
+                    if let Err(e) = crate::vst::prepare(&node.id, descriptor) {
+                        crate::vst::report_error(format!("{} remains offline: {e:#}", node.label));
+                    }
+                }
+            }
+            crate::vst::snapshot(&prepare_graph)
+        }).await?;
         let engine = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
             engine
@@ -884,6 +898,10 @@ pub fn run() {
             vst_window::vst_rescan,
             vst_window::vst_prepare,
             vst_window::vst_open_editor,
+            vst_window::vst_retain,
+            vst_window::vst_parameters,
+            vst_window::vst_set_parameter,
+            vst_window::vst_recover,
             midi_mapping::midi_mapping_poll,
             midi_mapping::get_midi_devices,
             patterns_deck_keys,
@@ -947,6 +965,10 @@ pub fn run() {
             teia_window::teia_midi_configure,
             teia_window::teia_load_draft
         ])
+        .setup(|app| {
+            vst_window::maintenance(app.handle().clone());
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("Unable to start VIRA")
         .run(move |_, event| {

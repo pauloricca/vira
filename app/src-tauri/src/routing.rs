@@ -263,9 +263,23 @@ impl Default for Graph {
 }
 struct Link {
     source: usize,
+    source_id: String,
     output: usize,
     port: usize,
     gain: f32,
+    delay: Vec<[f32; 2]>,
+    cursor: usize,
+}
+impl Link {
+    fn sample(&mut self, value: [f32; 2]) -> [f32; 2] {
+        if self.delay.is_empty() {
+            return value;
+        }
+        let out = self.delay[self.cursor];
+        self.delay[self.cursor] = value;
+        self.cursor = (self.cursor + 1) % self.delay.len();
+        out
+    }
 }
 struct Step {
     index: usize,
@@ -603,6 +617,9 @@ impl Graph {
                 .position(|p| *p == w.input)
                 .ok_or_else(|| anyhow::anyhow!("Invalid audio input port"))?;
             links[target].push(Link {
+                source_id: w.from.clone(),
+                delay: Vec::new(),
+                cursor: 0,
                 source,
                 output: self.nodes[source]
                     .outputs()
@@ -726,6 +743,20 @@ impl Plan {
     }
     // Preserve processor history across edits; bounded swaps do not allocate or free.
     pub fn inherit(&mut self, previous: &mut Self) {
+        for old in &previous.steps {
+            if let Some(audio) = &old.vst {
+                if !self.steps.iter().any(|s| {
+                    s.vst
+                        .as_ref()
+                        .is_some_and(|next| std::sync::Arc::ptr_eq(audio, next))
+                }) {
+                    if let Ok(mut audio) = audio.try_lock() {
+                        audio.stop();
+                    }
+                }
+            }
+        }
+
         for step in &mut self.steps {
             if let Some(old) = previous
                 .steps
@@ -735,6 +766,17 @@ impl Plan {
                 std::mem::swap(&mut step.dsp, &mut old.dsp);
                 step.phase = old.phase;
                 step.envelope = old.envelope;
+                for link in &mut step.links {
+                    if let Some(previous) = old.links.iter_mut().find(|l| {
+                        l.source_id == link.source_id
+                            && l.output == link.output
+                            && l.port == link.port
+                            && l.delay.len() == link.delay.len()
+                    }) {
+                        std::mem::swap(&mut link.delay, &mut previous.delay);
+                        link.cursor = previous.cursor;
+                    }
+                }
             }
         }
     }
@@ -771,6 +813,85 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plugin_delay_compensation_aligns_parallel_paths_and_keeps_history() {
+        let default = super::Graph::default();
+        let source = default
+            .nodes
+            .iter()
+            .find(|n| n.id == "a-player")
+            .unwrap()
+            .clone();
+        let master = default
+            .nodes
+            .iter()
+            .find(|n| n.id == "master")
+            .unwrap()
+            .clone();
+        let mut fx = source.clone();
+        fx.id = "gain-latent".into();
+        fx.kind = super::Kind::Gain;
+        fx.deck = None;
+        fx.value = 1.;
+        let graph = super::Graph {
+            nodes: vec![source, fx, master],
+            wires: vec![
+                super::Wire {
+                    from: "a-player".into(),
+                    to: "gain-latent".into(),
+                    output: "audio".into(),
+                    input: "audio".into(),
+                    gain: 1.,
+                },
+                super::Wire {
+                    from: "gain-latent".into(),
+                    to: "master".into(),
+                    output: "audio".into(),
+                    input: "audio".into(),
+                    gain: 1.,
+                },
+                super::Wire {
+                    from: "a-player".into(),
+                    to: "master".into(),
+                    output: "audio".into(),
+                    input: "audio".into(),
+                    gain: 1.,
+                },
+            ],
+        };
+        let mut plan = graph.compile().unwrap();
+        plan.compensate(&[(1, 16)]).unwrap();
+        let output = plan
+            .steps
+            .iter_mut()
+            .find(|s| s.node.id == "master")
+            .unwrap();
+        let direct = output
+            .links
+            .iter_mut()
+            .find(|l| l.source_id == "a-player")
+            .unwrap();
+        assert_eq!(direct.delay.len(), 16);
+        assert_eq!(direct.sample([1.; 2]), [0.; 2]);
+        for _ in 0..15 {
+            assert_eq!(direct.sample([0.; 2]), [0.; 2]);
+        }
+        let mut replacement = graph.compile().unwrap();
+        replacement.compensate(&[(1, 16)]).unwrap();
+        replacement.inherit(&mut plan);
+        let link = replacement
+            .steps
+            .iter_mut()
+            .find(|s| s.node.id == "master")
+            .unwrap()
+            .links
+            .iter_mut()
+            .find(|l| l.source_id == "a-player")
+            .unwrap();
+        assert_eq!(link.sample([0.; 2]), [1.; 2]);
+        assert!(replacement.compensate(&[(1, u32::MAX)]).is_err());
+    }
+
     #[test]
     fn live_sources_require_a_nonzero_route_to_an_output() {
         let mut graph = super::Graph::default();
@@ -1435,12 +1556,73 @@ impl Plan {
             }
         }
     }
-    pub fn bind_vsts(&mut self) {
+    pub fn bind_vsts(&mut self) -> Result<()> {
         for step in &mut self.steps {
             if step.node.kind == Kind::Vst {
-                step.vst = crate::vst::instance(&step.node.id);
+                step.vst = crate::vst::audio_instance(&step.node.id);
             }
         }
+        let latencies: Vec<_> = self
+            .steps
+            .iter()
+            .map(|s| (s.index, crate::vst::latency(&s.node.id)))
+            .collect();
+        self.compensate(&latencies)
+    }
+    fn compensate(&mut self, latencies: &[(usize, u32)]) -> Result<()> {
+        // The graph is topologically ordered. Align every input (including sidechains)
+        // to the longest upstream path, then align all hardware output paths.
+        const MAX_DELAY: usize = 960000;
+        let mut arrival = [0usize; NODE_LIMIT + 1];
+        for step in &self.steps {
+            let upstream = step
+                .links
+                .iter()
+                .map(|l| arrival[l.source])
+                .max()
+                .unwrap_or(0);
+            let own = latencies
+                .iter()
+                .find(|(i, _)| *i == step.index)
+                .map_or(0, |(_, n)| *n as usize);
+            arrival[step.index] = upstream.saturating_add(own);
+            ensure!(
+                arrival[step.index] <= MAX_DELAY,
+                "Plugin path latency exceeds 960000 frames"
+            );
+        }
+        let end = self
+            .steps
+            .iter()
+            .filter(|s| s.node.kind == Kind::Output)
+            .map(|s| arrival[s.index])
+            .max()
+            .unwrap_or(0);
+        let mut allocated = 0usize;
+        for step in &mut self.steps {
+            let target = if step.node.kind == Kind::Output {
+                end
+            } else {
+                step.links
+                    .iter()
+                    .map(|l| arrival[l.source])
+                    .max()
+                    .unwrap_or(0)
+            };
+            for link in &mut step.links {
+                let delay = target.saturating_sub(arrival[link.source]);
+                allocated += delay;
+                ensure!(
+                    allocated <= 4_000_000,
+                    "Plugin delay compensation requires more than 32 MB"
+                );
+                if link.delay.len() != delay {
+                    link.delay = vec![[0.; 2]; delay];
+                    link.cursor = 0;
+                }
+            }
+        }
+        Ok(())
     }
     pub fn has_patch(&self, slot: usize) -> bool {
         self.steps
@@ -1466,9 +1648,10 @@ impl Plan {
             }
             for (i, frame) in block.iter().enumerate() {
                 let mut input = [[0.; 2]; 32];
-                for link in &step.links {
+                for link in &mut step.links {
+                    let value = link.sample(outputs[link.source][i][link.output]);
                     for c in 0..2 {
-                        input[link.port][c] += outputs[link.source][i][link.output][c] * link.gain;
+                        input[link.port][c] += value[c] * link.gain;
                     }
                 }
                 let value = step.process(
@@ -1512,10 +1695,30 @@ impl Plan {
             }
             if step.node.kind == Kind::Vst {
                 outputs[step.index].fill([[0.; 2]; 32]);
+                let mut offline = true;
                 if let Some(instance) = &step.vst {
-                    // The audio producer never waits on a plugin editor/state operation.
+                    // DSP-only mutex: no editor, state, metadata or filesystem work
+                    // can hold it. Plans are consumed by one producer thread.
                     if let Ok(mut instance) = instance.try_lock() {
                         instance.render(routed_inputs, block, &mut outputs[step.index]);
+                        offline = instance.failed;
+                    }
+                }
+                if offline && step.node.vst.as_ref().is_some_and(|v| v.offline_bypass) {
+                    for i in 0..PRODUCER_FRAMES {
+                        for bus in 0..step.node.vst.as_ref().unwrap().outputs.len() {
+                            for c in 0..2 {
+                                outputs[step.index][i][bus][c] = routed_inputs[bus.min(
+                                    step.node
+                                        .vst
+                                        .as_ref()
+                                        .unwrap()
+                                        .inputs
+                                        .len()
+                                        .saturating_sub(1),
+                                )][c][i];
+                            }
+                        }
                     }
                 }
             }
