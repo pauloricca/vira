@@ -425,3 +425,21 @@ test('cue pattern ports connect to deck cue triggers and keep pitch inputs separ
   await waitFor(() => expect(bank.graph!.wires.some(w => w.from === 'cue-node' && w.to === 'deck-0' && w.kind === 'cue')).toBe(true));
   expect(screen.getByLabelText('deck-0 input midi')).toBeTruthy();
 });
+
+test('Selected deck can be added again and follows selection independently of active audio', async () => {
+  await mount();
+  fireEvent.doubleClick(screen.getByRole('button', {name:'Selected deck'}));
+  await saved();
+  const node = bank.graph!.nodes.find(n => n.deck === 3)!;
+  expect(node.label).toBe('Selected deck');
+  for (const pin of ['input midi', 'input cue', 'output notes', 'output scale']) expect(screen.getByLabelText(`${node.id} ${pin}`)).toBeTruthy();
+  fireEvent.doubleClick(screen.getByRole('button', {name:'Selected deck'}));
+  await waitFor(() => expect(bank.graph!.nodes.filter(n => n.deck === 3)).toHaveLength(1));
+  const {linkedHarmony} = await import('./patternModel');
+  const graph = bank.graph!;
+  graph.wires.push({id:'selected-root',from:node.id,to:'pattern-p',kind:'notes'}, {id:'selected-scale',from:node.id,to:'pattern-p',kind:'scale'});
+  const keys = [{key:0,scale:0}, {key:7,scale:1}];
+  expect(linkedHarmony(bank,'p',keys,'root',{},0,1)?.harmony).toEqual(keys[1]);
+  expect(linkedHarmony(bank,'p',keys,'scale',{},1,0)?.harmony).toEqual(keys[0]);
+  expect(() => connectMusical(graph,{id:'feedback',from:'pattern-p',to:'deck-0',kind:'midi'})).toThrow(/cannot drive/);
+});

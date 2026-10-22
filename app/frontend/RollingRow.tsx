@@ -14,6 +14,39 @@ export function RollingRow({ state, running, window, control, transition, master
   const pinnedBeat = useRef<HTMLDivElement>(null);
   const hoverX = useRef<number | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const cueDrag = useRef<{ pointer: number; slot: number; x: number; scale: number; seconds: number; origin: number; position: number } | null>(null);
+  const cueEnabled = running && !!control && !!state.track && !state.loading && !state.grid_edit && !state.grid_saving && !state.grid_previewing && !state.launch_pending && !state.cue_preview;
+  useEffect(() => { cueDrag.current = null; }, [state.generation, cueEnabled]);
+  function cueHit(event: { currentTarget: HTMLCanvasElement; clientX: number; clientY: number }) {
+    if (!cueEnabled) return -1;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const y = event.clientY - bounds.top;
+    if (y < bounds.height - 24 || y > bounds.height) return -1;
+    const position = clock.current.at(performance.now());
+    return state.hot_cue_seconds?.findIndex(seconds => {
+      if (seconds == null) return false;
+      const x = bounds.width * (.5 + (seconds - position) / (window * (state.speed ?? 1)));
+      return x >= 0 && x <= bounds.width && Math.abs(event.clientX - bounds.left - Math.min(x + 7, bounds.width - 7)) <= 10;
+    }) ?? -1;
+  }
+  function moveCue(event: PointerEvent<HTMLCanvasElement>) {
+    const drag = cueDrag.current;
+    if (!drag || drag.pointer !== event.pointerId) return;
+    drag.seconds = Math.max(state.track?.start_seconds ?? 0, Math.min((state.track?.duration_seconds ?? 0) - 1 / trackSampleRate(state.track), drag.seconds + (event.clientX - drag.x) * drag.scale * (event.shiftKey ? .1 : 1)));
+    drag.x = event.clientX;
+    paint.current(performance.now());
+  }
+  function finishCue(event: PointerEvent<HTMLCanvasElement>, cancel = false) {
+    const drag = cueDrag.current;
+    if (!drag || drag.pointer !== event.pointerId) return false;
+    if (!cancel) moveCue(event);
+    cueDrag.current = null;
+    if (!cancel && drag.seconds !== drag.origin) void control?.(state.deck, `hot_cue_move_${drag.slot}`, drag.seconds);
+    event.currentTarget.style.cursor = '';
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    paint.current(performance.now());
+    return true;
+  }
   useTrackpadJog(canvas, state, running, control, onInteract);
   const latest = useRef({ state, running, window, timingOpen, transition, masterBpm });
   const gridDrag = useRef<{ pointer: number; x: number; scale: number; position: number; cursor: 'grabbing' | 'ew-resize' } | null>(null);
@@ -75,7 +108,7 @@ export function RollingRow({ state, running, window, control, transition, master
     const element=canvas.current; if (!element || !visible) return;
     const {state,window,timingOpen,transition,masterBpm}=latest.current, {width,height,dpr}=size.current;
     if (width<=0) return; const ctx=element.getContext('2d'); if (!ctx) return;
-    const began=performance.now(), speed=state.speed ?? 1, position=gridDrag.current?.position ?? gesture.current?.position ?? clock.current.at(now);
+    const began=performance.now(), speed=state.speed ?? 1, position=cueDrag.current?.position ?? gridDrag.current?.position ?? gesture.current?.position ?? clock.current.at(now);
     if (state.grid_edit && hoverX.current != null && !gridDrag.current) element.style.cursor = gridCursor(element, hoverX.current, position);
     const colour=state.deck===0 ? '#89d2ee' : '#efa264';
     ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,width,height);
@@ -113,6 +146,7 @@ export function RollingRow({ state, running, window, control, transition, master
     }
     state.hot_cue_seconds?.forEach((seconds, slot) => {
       if (seconds == null) return;
+      if (cueDrag.current?.slot === slot) seconds = cueDrag.current.seconds;
       const x = loopX(seconds);
       if (x < 0 || x > width) return;
       ctx.strokeStyle = ['#b9a0fa', '#69d9be', '#f3c96a', '#ef96bc'][slot];
@@ -178,14 +212,24 @@ export function RollingRow({ state, running, window, control, transition, master
     if (state.playing && !state.launch_pending && running && visible) return animate(now=>paint.current(now));
   },[state.playing,state.launch_pending,running,visible,state.generation]);
   return <div className={`rolling-row deck-${state.deck}${state.grid_edit ? ' editing-grid' : ''}${state.grid_pin != null ? ' grid-pinned' : ''}${state.grid_edit && (state.playing || state.launch_pending || state.grid_previewing) ? ' grid-listening' : ''}`} onPointerDownCapture={() => onInteract?.(state.deck)} onFocusCapture={() => onInteract?.(state.deck)}>
-    <canvas {...waveformHandlers} {...midi(`deck:${state.deck}:jog`)} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`}
-      onPointerDown={event => { if (!state.grid_edit) waveformHandlers.onPointerDown(event); }}
+    <canvas {...waveformHandlers} {...midi(`deck:${state.deck}:jog`)} ref={canvas} role="img" aria-label={`Rolling waveform deck ${state.deck===0 ? 'A' : 'B'}`} title="Drag a cue letter to adjust its position; hold Shift for fine adjustment"
+      onPointerDown={event => { if (!state.grid_edit && !cueDrag.current) waveformHandlers.onPointerDown(event); }}
       onPointerLeave={event => { hoverX.current = null; if (!gridDrag.current) event.currentTarget.style.cursor = ''; }}
-      onPointerMove={event => { if (state.grid_edit) moveGrid(event); else waveformHandlers.onPointerMove(event); }}
-      onPointerUp={event => { if (state.grid_edit) finishGrid(event); else waveformHandlers.onPointerUp(event); }}
-      onPointerCancel={event => { if (state.grid_edit) finishGrid(event, false); else waveformHandlers.onPointerCancel(event); }}
-      onLostPointerCapture={event => { if (state.grid_edit) finishGrid(event, false); else waveformHandlers.onLostPointerCapture(event); }}
+      onPointerMove={event => { if (cueDrag.current) moveCue(event); else if (state.grid_edit) moveGrid(event); else { waveformHandlers.onPointerMove(event); if (cueHit(event) >= 0) event.currentTarget.style.cursor = 'ew-resize'; } }}
+      onPointerUp={event => { if (finishCue(event)) return; if (state.grid_edit) finishGrid(event); else waveformHandlers.onPointerUp(event); }}
+      onPointerCancel={event => { if (finishCue(event, true)) return; if (state.grid_edit) finishGrid(event, false); else waveformHandlers.onPointerCancel(event); }}
+      onLostPointerCapture={event => { if (finishCue(event, true)) return; if (state.grid_edit) finishGrid(event, false); else waveformHandlers.onLostPointerCapture(event); }}
       onPointerDownCapture={event => {
+        if (cueDrag.current) { event.preventDefault(); event.stopPropagation(); return; }
+        const slot = event.button === 0 ? cueHit(event) : -1;
+        if (slot >= 0) {
+          event.preventDefault(); event.stopPropagation();
+          const seconds = state.hot_cue_seconds![slot]!;
+          cueDrag.current = { pointer: event.pointerId, slot, x: event.clientX, scale: window * (state.speed ?? 1) / Math.max(1, event.currentTarget.getBoundingClientRect().width), seconds, origin: seconds, position: clock.current.at(performance.now()) };
+          event.currentTarget.style.cursor = 'ew-resize';
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          return;
+        }
         if (state.grid_edit) {
           event.preventDefault();
           if (event.button !== 0 || state.grid_saving || state.grid_previewing || state.playing || state.launch_pending || !running || !control || gridDrag.current) return;
@@ -204,6 +248,7 @@ export function RollingRow({ state, running, window, control, transition, master
         }
         waveformHandlers.onPointerDownCapture(event); if (event.defaultPrevented) return; if (event.detail <= 1) firstClick.current = { anchor: clock.current.at(performance.now()), at: performance.now() }; }}
       onDoubleClick={event => {
+        if (cueHit(event) >= 0) return;
         if (state.grid_edit || !timingOpen || !running || state.playing || !state.track || !control) return;
         const bounds = event.currentTarget.getBoundingClientRect();
         const anchor = firstClick.current && performance.now() - firstClick.current.at < 700 ? firstClick.current.anchor : clock.current.at(performance.now());

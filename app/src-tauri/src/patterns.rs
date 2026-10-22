@@ -273,6 +273,13 @@ pub struct Host {
     ns: AtomicU64,
     state: Mutex<State>,
 }
+static SELECTED_DECK: AtomicU64 = AtomicU64::new(0);
+pub fn selected_deck() -> usize {
+    SELECTED_DECK.load(SeqCst) as usize
+}
+pub fn publish_selected_deck(deck: usize) {
+    SELECTED_DECK.store(deck.min(1) as u64, SeqCst);
+}
 static ACTIVE_DECK: AtomicU64 = AtomicU64::new(0);
 pub fn active_deck() -> usize {
     ACTIVE_DECK.load(SeqCst) as usize
@@ -295,6 +302,7 @@ pub fn attach_decks(hosts: &[Arc<crate::teia_midi::Host>]) {
 pub(crate) fn internal_host(dest: &Destination) -> Option<Arc<crate::teia_midi::Host>> {
     match dest {
         Destination::Teia { slot } => teia_host(*slot),
+        Destination::Vst { id } => crate::vst::midi_host(id),
         Destination::Deck { deck } => DECKS.lock().unwrap().get(*deck)?.upgrade(),
         Destination::DeckCue { deck } => DECK_CUES.lock().unwrap().get(*deck)?.upgrade(),
         _ => None,
@@ -340,7 +348,10 @@ fn destination(p: &Pattern) -> Destination {
 fn lead(p: &Pattern) -> f64 {
     if matches!(
         destination(p),
-        Destination::Teia { .. } | Destination::Deck { .. } | Destination::DeckCue { .. }
+        Destination::Vst { .. }
+            | Destination::Teia { .. }
+            | Destination::Deck { .. }
+            | Destination::DeckCue { .. }
     ) {
         40.
     } else {
@@ -469,7 +480,7 @@ pub fn state() -> Value {
             .entry(owner)
             .or_insert(json!({"start":v.start,"stop":v.stop}));
     }
-    json!({"inputs":s.inputs,"liveRoots":s.live_roots,"deviceNotes":s.device_notes,"instruments":instruments(),"deckKeys":s.decks,"activeDeck":active_deck(),"bank":s.bank.as_ref(),"outputs":s.outputs,"error":s.error,"clockReady":ready,"beat":beat,"bpm":bpm,"voices":voices})
+    json!({"inputs":s.inputs,"liveRoots":s.live_roots,"deviceNotes":s.device_notes,"instruments":instruments(),"deckKeys":s.decks,"activeDeck":active_deck(),"selectedDeck":selected_deck(),"bank":s.bank.as_ref(),"outputs":s.outputs,"error":s.error,"clockReady":ready,"beat":beat,"bpm":bpm,"voices":voices})
 }
 pub fn save(bank: Bank) -> Result<()> {
     bank.validate()?;
@@ -869,6 +880,7 @@ mod mac {
         let mut resolved_source = Arc::new(Bank::default());
         let mut previous_decks = [None, None];
         let mut previous_active = usize::MAX;
+        let mut previous_selected = usize::MAX;
         let mut generations = Vec::new();
         let mut last_beat = None;
         let mut sync = crate::midi_sync::Scheduler::default();
@@ -953,11 +965,19 @@ mod mac {
                 halted = false;
             }
             let active = active_deck();
+            let selected = selected_deck();
             let roots = if live_running {
-                live.tick(&resolved_source, &mut ports, now, active, s.decks)
+                live.tick(&resolved_source, &mut ports, now, active, selected, s.decks)
             } else {
                 // UI controller permissions remain useful while audio routing is halted.
-                live.tick(&Bank::default(), &mut ports, now, active, [None, None]);
+                live.tick(
+                    &Bank::default(),
+                    &mut ports,
+                    now,
+                    active,
+                    selected,
+                    [None, None],
+                );
                 HashMap::new()
             };
             s.inputs = live.inputs();
@@ -980,6 +1000,7 @@ mod mac {
             let bank = if Arc::ptr_eq(&previous_source, &resolved_source)
                 && previous_decks == s.decks
                 && previous_active == active
+                && previous_selected == selected
                 && generations == live_generations
                 && previous_roots == roots
             {
@@ -1001,7 +1022,8 @@ mod mac {
                         }
                     }
                 }
-                let mut resolved = pattern_routing::resolve_active(&effective, s.decks, active);
+                let mut resolved =
+                    pattern_routing::resolve_decks(&effective, s.decks, active, selected);
                 previous_roots = roots;
                 for p in &mut resolved.patterns {
                     if let Some(h) = internal_host(&destination(p)) {
@@ -1011,6 +1033,7 @@ mod mac {
                 previous_source = resolved_source.clone();
                 previous_decks = s.decks;
                 previous_active = active;
+                previous_selected = selected;
                 generations = live_generations;
                 Arc::new(resolved)
             };

@@ -1094,6 +1094,13 @@ provides the same root-note, scale and note-input ports as a fixed deck. Switchi
 replans existing MIDI routes and releases notes owned on the old destination.
 Selection is measured on the audio clock, independently of UI polling.
 
+The **Selected deck** entry follows the highlighted deck: the last deck clicked,
+loaded, or interacted with, including rolling-waveform interactions and Alt+Left /
+Alt+Right selection. It starts on A and stays selected regardless of playback or
+volume. It exposes the same note, scale, MIDI and cue ports as the other deck
+nodes; changing selection updates its routes and releases notes on the previous
+destination.
+
 Patch lime **note out** and orange **scale** outputs to the matching pattern
 inputs independently. Each mapping input accepts one source, and a source can feed
 several patterns. Drag cyan **MIDI out** to an instrument's **MIDI in** or a deck's
@@ -1285,3 +1292,31 @@ the greatest clock-enabled advance. Each instrument’s Play schedule uses its o
 timing advance. Their Play schedules combine and simultaneous
 identical Play messages are sent once. External hardware timing requires macOS
 testing.
+
+VST3 plugins use the pinned `truce-rack-vst3` 1.1.5 host in `vendor/` (local
+compatibility changes are listed in `vendor/truce-rack-vst3/VIRA-PATCHES.md`).
+In **Settings → VST plugins**, add absolute scan folder paths. The standard user
+and system VST3 locations are the initial defaults. Folders are scanned recursively
+at startup; **Scan now** applies new paths immediately. Overlapping roots are
+deduplicated. Each bundle is probed in a separate process with a 20-second timeout;
+missing folders, failed probes and incompatible binaries appear under scan issues.
+Use Apple Silicon VST3 plugins; VST2 bundles are not supported.
+
+The actual audio/event buses determine the Routing palette categories: audio inputs
+and outputs identify effects; note input or audio generation identifies instruments.
+A hybrid appears in both. Drag a plugin into Routing, connect its named buses, and
+**Apply routing**. Each placement is an independent instance. Double-click the node
+to open its native editor. In **Patterns → VST instruments**, choose that same applied
+instance to route patterns or live MIDI notes to it. Plugin state is saved on editor
+close and normal app exit; routing placements and class identities survive restart.
+Scan roots and instance state live in the app support folder as `vst-paths.json` and
+`vst-state/`. Moving a plugin requires removing and re-adding its routing node.
+
+Each plugin bus uses a stereo cable: mono inputs are averaged and mono outputs are
+duplicated; multichannel buses use L/R, with remaining inputs silent. Sidechain and
+auxiliary buses remain independently patchable. Dynamic bus changes, plugin latency
+compensation, MIDI CC/pitch-bend conversion and plugin MIDI output routing are not
+yet supported. Discovery is isolated; live DSP runs inside VIRA, so a plugin crash
+while processing can still terminate the app. Native plugin timing and GUI
+compatibility need verification on macOS; Docker tests do not establish audio-device
+acceptance.

@@ -698,6 +698,37 @@ test('rolling waveform follows drag displacement beneath a fixed center playhead
   } finally {cleanup();vi.useRealTimers();vi.unstubAllGlobals();}
 });
 
+test('rolling cue letters drag without seeking, with fine adjustment, clamping and cancellation', async () => {
+  vi.stubGlobal('PointerEvent', MouseEvent);
+  const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+  const control = vi.fn().mockResolvedValue(undefined);
+  try {
+    const deck = { ...state, position_seconds: 50, speed: 2, hot_cue_seconds: [50, null, null, null] };
+    const { rerender } = render(<RollingRow state={deck} running window={10} control={control} />);
+    const wave = screen.getByRole('img', { name: 'Rolling waveform deck A' });
+    vi.spyOn(wave, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 100, height: 100 } as DOMRect);
+    const down = () => fireEvent.pointerDown(wave, { button: 0, clientX: 57, clientY: 90 });
+    down();
+    fireEvent.pointerMove(wave, { clientX: 67, clientY: 90 });
+    expect(control).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.pointerUp(wave, { clientX: 77, clientY: 90, shiftKey: true }); });
+    expect(control.mock.calls).toEqual([[0, 'hot_cue_move_0', 52.2]]);
+    control.mockClear();
+    down();
+    await act(async () => { fireEvent.pointerUp(wave, { clientX: -1000, clientY: 90 }); });
+    expect(control).toHaveBeenCalledWith(0, 'hot_cue_move_0', 0);
+    control.mockClear();
+    down();
+    fireEvent.pointerMove(wave, { clientX: 80, clientY: 90 });
+    fireEvent.pointerCancel(wave);
+    expect(control).not.toHaveBeenCalled();
+    down();
+    rerender(<RollingRow state={{ ...deck, generation: 2 }} running window={10} control={control} />);
+    await act(async () => { fireEvent.pointerUp(wave, { clientX: 80, clientY: 90 }); });
+    expect(control).not.toHaveBeenCalled();
+  } finally { now.mockRestore(); vi.unstubAllGlobals(); }
+});
+
 test('Cue handles pointer release, keyboard repeat, cancellation and Play during preview', () => {
   vi.stubGlobal('PointerEvent', MouseEvent);
   const control = vi.fn().mockResolvedValue(undefined);

@@ -19,7 +19,7 @@ export function fitSteps(p: Pattern, steps: number, stepDivision = p.stepDivisio
 export function fitLength(p: Pattern, bars: number): Pattern { return { ...fitSteps(p, bars * 4 * (p.stepDivision ?? 4)), bars }; }
 export function snap(beat: number, grid: number) { return Math.round(beat * grid) / grid; }
 export type Harmony = { key: number; scale: number };
-export type Destination = { kind: 'midi'; output: number } | { kind: 'teia'; slot: number };
+export type Destination = { kind: 'vst'; id: string } | { kind: 'midi'; output: number } | { kind: 'teia'; slot: number };
 export type Transformation = { kind: 'selector'; selected: string; ports: string[] } | { kind: 'octaveShift'; octaves: number } | { kind: 'filter'; direction: 'above' | 'below'; note: number };
 export type MusicalNode = { id: string; kind: 'pattern' | 'deck' | 'instrument' | 'transformation'; transformation?: Transformation; custom_label?: string | null; label: string; x: number; y: number; pattern?: string | null; deck?: number | null; destination?: Destination | null; input?: number | null; channel?: number | null; harmony?: Harmony | null };
 export type MusicalWire = { input?: string; id: string; from: string; to: string; kind: 'key' | 'root' | 'scale' | 'midi' | 'notes' | 'cue'; route?: number | null };
@@ -53,7 +53,8 @@ export function patternTargets(bank: Bank, id: string) {
   };
   return visit(node.id);
 }
-export function linkedHarmony(bank: Bank, id: string, decks: (Harmony | null)[], component: 'root' | 'scale' = 'root', liveRoots: Record<string, number> = {}, activeDeck = 0): { source: string; harmony: Harmony | null } | null {
+export const physicalDeck = (deck: number | null | undefined, active: number, selected: number) => deck === 2 ? active : deck === 3 ? selected : deck ?? 0;
+export function linkedHarmony(bank: Bank, id: string, decks: (Harmony | null)[], component: 'root' | 'scale' = 'root', liveRoots: Record<string, number> = {}, activeDeck = 0, selectedDeck = 0): { source: string; harmony: Harmony | null } | null {
   const graph = bank.graph; const node = graph?.nodes.find(n => n.pattern === id);
   const wire = graph?.wires.find(w => (w.kind === (component === 'root' ? 'notes' : 'scale') || w.kind === component || w.kind === 'key') && w.to === node?.id);
   let source = graph?.nodes.find(n => n.id === wire?.from);
@@ -64,7 +65,7 @@ export function linkedHarmony(bank: Bank, id: string, decks: (Harmony | null)[],
     const upstream = graph?.wires.find(w => w.to === selector.id && w.input === selected && (component === 'scale' ? w.kind === 'scale' : ['notes','midi'].includes(w.kind)));
     source = graph?.nodes.find(n => n.id === upstream?.from);
   }
-  return source ? { source: source.label, harmony: source.kind === 'deck' ? decks[source.deck === 2 ? activeDeck : source.deck ?? 0] ?? null : liveRoots[node!.id] === undefined ? null : { key: liveRoots[node!.id] % 12, scale: bank.patterns.find(p => p.id === id)?.scale ?? 0 } } : null;
+  return source ? { source: source.label, harmony: source.kind === 'deck' ? decks[physicalDeck(source.deck, activeDeck, selectedDeck)] ?? null : liveRoots[node!.id] === undefined ? null : { key: liveRoots[node!.id] % 12, scale: bank.patterns.find(p => p.id === id)?.scale ?? 0 } } : null;
 }
 export function connectMusical(graph: MusicalGraph, wire: MusicalWire, replace?: string): MusicalGraph {
   const from = graph.nodes.find(n => n.id === wire.from), to = graph.nodes.find(n => n.id === wire.to);
@@ -102,9 +103,9 @@ export function connectMusical(graph: MusicalGraph, wire: MusicalWire, replace?:
   };
   for (const deck of graph.nodes.filter(n => n.kind === 'deck')) {
     for (const pattern of destinations(deck.id).filter(n => n.kind === 'pattern')) {
-      if (destinations(pattern.id).some(n => n.kind === 'deck' && (deck.deck === n.deck || deck.deck === 2 || n.deck === 2))) throw new Error('A deck cannot drive a pattern root while that pattern controls its pitch.');
+      if (destinations(pattern.id).some(n => n.kind === 'deck' && (deck.deck === n.deck || (deck.deck ?? 0) >= 2 || (n.deck ?? 0) >= 2))) throw new Error('A deck cannot drive a pattern root while that pattern controls its pitch.');
     }
   }
-  if (next.some(w => ['root', 'notes'].includes(w.kind) && graph.nodes.some(n => n.id === w.from && n.kind === 'deck') && next.some(out => ['midi', 'notes'].includes(out.kind) && out.from === w.to && graph.nodes.some(target => target.id === out.to && target.kind === 'deck' && graph.nodes.some(source => source.id === w.from && (source.deck === target.deck || source.deck === 2 || target.deck === 2)))))) throw new Error('A deck cannot drive a pattern root while that pattern controls its pitch.');
+  if (next.some(w => ['root', 'notes'].includes(w.kind) && graph.nodes.some(n => n.id === w.from && n.kind === 'deck') && next.some(out => ['midi', 'notes'].includes(out.kind) && out.from === w.to && graph.nodes.some(target => target.id === out.to && target.kind === 'deck' && graph.nodes.some(source => source.id === w.from && (source.deck === target.deck || (source.deck ?? 0) >= 2 || (target.deck ?? 0) >= 2)))))) throw new Error('A deck cannot drive a pattern root while that pattern controls its pitch.');
   return { ...graph, wires: next };
 }

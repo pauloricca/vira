@@ -1175,6 +1175,7 @@ pub enum Command {
     CueRelease(usize, u64),
     HotCue(usize, u64, usize, bool),
     HotCueRelease(usize, u64, usize),
+    HotCueMove(usize, u64, usize, f64),
     Stop(usize, u64),
     LoopIn(usize, u64, bool),
     LoopOut(usize, u64, bool),
@@ -2145,6 +2146,26 @@ impl Decks {
                         };
                         return self.command(command, latest);
                     }
+                }
+            }
+            Command::HotCueMove(d, g, slot, seconds) => {
+                if slot >= 4 || !seconds.is_finite() || seconds < 0. {
+                    return None;
+                }
+                if let Some(v) = &mut self.voices[d] {
+                    if v.generation != g || v.hot_cues[slot].is_none() || v.cue_preview {
+                        return None;
+                    }
+                    let position = ((seconds * crate::sample_rate::get() as f64).round() as usize)
+                        .clamp(v.start, v.source.len().saturating_sub(1));
+                    v.hot_cues[slot] = Some(position);
+                    return v.cue_identity.as_ref().map(|identity| {
+                        Retired::CueChange(CueChange {
+                            identity: identity.clone(),
+                            slot,
+                            seconds: Some(position as f64 / crate::sample_rate::get() as f64),
+                        })
+                    });
                 }
             }
             Command::HotCue(d, g, slot, clear) => {
@@ -5706,6 +5727,42 @@ mod tests {
             .command(Command::HotCue(0, 0, 0, true), [1, 1])
             .is_none());
         assert_eq!(decks.voices[0].as_ref().unwrap().hot_cues[0], Some(0));
+    }
+    #[test]
+    fn hot_cue_move_preserves_transport_and_emits_a_clamped_save() {
+        let mut decks = Decks::new();
+        install(&mut decks, 0, 1, source());
+        let voice = decks.voices[0].as_mut().unwrap();
+        voice.cue_identity = Some(Arc::from("a".repeat(64)));
+        voice.restore_hot_cues([Some(0.25), None, None, None]);
+        let position = voice.position;
+        let playing = voice.playing;
+        let Some(Retired::CueChange(saved)) =
+            decks.command(Command::HotCueMove(0, 1, 0, 0.12345), [1, 1])
+        else {
+            panic!("Cue move must emit a save")
+        };
+        let expected = (0.12345 * crate::sample_rate::get() as f64).round() as usize;
+        assert_eq!(
+            saved.seconds,
+            Some(expected as f64 / crate::sample_rate::get() as f64)
+        );
+        assert_eq!(saved.slot, 0);
+        assert_eq!(decks.voices[0].as_ref().unwrap().position, position);
+        assert_eq!(decks.voices[0].as_ref().unwrap().playing, playing);
+        for (generation, slot, seconds) in [(0, 0, 0.5), (1, 1, 0.5), (1, 0, f64::NAN), (1, 0, -1.)]
+        {
+            assert!(decks
+                .command(Command::HotCueMove(0, generation, slot, seconds), [1, 1])
+                .is_none());
+        }
+        assert_eq!(
+            decks.voices[0].as_ref().unwrap().hot_cues[0],
+            Some(expected)
+        );
+        decks.command(Command::HotCueMove(0, 1, 0, 1000.), [1, 1]);
+        let voice = decks.voices[0].as_ref().unwrap();
+        assert_eq!(voice.hot_cues[0], Some(voice.source.len() - 1));
     }
     #[test]
     fn hot_cues_capture_recall_clear_and_reset_with_track() {

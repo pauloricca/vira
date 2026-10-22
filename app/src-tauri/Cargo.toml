@@ -12,10 +12,12 @@ anyhow = "=1.0.100"
 rtrb = "=0.3.2"
 libc = "=0.2.177"
 sha2 = "=0.10.9"
+truce-rack-core = "=1.1.5"
+truce-rack-vst3 = { path = "../vendor/truce-rack-vst3" }
 teia-kernel = { package = "vira-teia-native", path = "../vendor/teia-native" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri = { version = "=2.8.5", features = ["custom-protocol"] }
+tauri = { version = "=2.8.5", features = ["custom-protocol", "unstable"] }
 cpal = "=0.16.0"
 
 [build-dependencies]

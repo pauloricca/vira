@@ -216,6 +216,7 @@ pub fn nodes() -> Result<Vec<crate::routing::Node>> {
             y: 650. + (i / 8) as f32 * 150.,
             value: 1.,
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
         })

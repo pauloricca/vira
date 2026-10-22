@@ -25,6 +25,7 @@ pub enum Kind {
     RingModulation,
     Selector,
     Patch,
+    Vst,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PatchInput {
@@ -43,6 +44,8 @@ pub struct Node {
     pub y: f32,
     pub value: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vst: Option<crate::vst::Descriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_inputs: Option<Vec<PatchInput>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq: Option<[f32; 3]>,
@@ -52,6 +55,11 @@ impl Node {
         self.custom_label.as_deref().unwrap_or(&self.label)
     }
     pub fn inputs(&self) -> Vec<&str> {
+        if self.kind == Kind::Vst {
+            return self.vst.as_ref().map_or_else(Vec::new, |v| {
+                v.inputs.iter().map(|b| b.id.as_str()).collect()
+            });
+        }
         if self.kind == Kind::Patch || self.kind == Kind::Selector {
             if let Some(ports) = &self.patch_inputs {
                 return ports.iter().map(|p| p.id.as_str()).collect();
@@ -66,13 +74,19 @@ impl Node {
         };
         ports.to_vec()
     }
-    pub fn outputs(&self) -> &'static [&'static str] {
-        match self.kind {
+    pub fn outputs(&self) -> Vec<&str> {
+        if self.kind == Kind::Vst {
+            return self.vst.as_ref().map_or_else(Vec::new, |v| {
+                v.outputs.iter().map(|b| b.id.as_str()).collect()
+            });
+        }
+        let ports: &[&str] = match self.kind {
             Kind::Output => &[],
             Kind::Compressor | Kind::RingModulation => &["audio", "dry"],
             Kind::Oscillator => &["audio", "cosine"],
             _ => &["audio"],
-        }
+        };
+        ports.to_vec()
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -176,6 +190,7 @@ impl Default for Graph {
             for (i, (name, kind)) in stages.iter().enumerate() {
                 nodes.push(Node {
                     custom_label: None,
+                    vst: None,
                     patch_inputs: None,
                     eq: None,
                     id: format!("{prefix}-{name}"),
@@ -225,6 +240,7 @@ impl Default for Graph {
         ] {
             nodes.push(Node {
                 custom_label: None,
+                vst: None,
                 patch_inputs: None,
                 eq: None,
                 id: id.into(),
@@ -261,6 +277,7 @@ struct Step {
     external_detector: bool,
     capture: Option<std::sync::Arc<crate::audio_inputs::Capture>>,
     send: Option<crate::instrument_output::Output>,
+    vst: Option<std::sync::Arc<std::sync::Mutex<crate::vst::Instance>>>,
 }
 pub struct Plan {
     pub history: std::sync::Arc<crate::rolling::History>,
@@ -270,7 +287,7 @@ pub struct Plan {
     master: usize,
     headphones: usize,
     faders: [usize; 2],
-    block_outputs: Box<[[[[f32; 2]; 2]; crate::decks::PRODUCER_FRAMES]]>,
+    block_outputs: Box<[[[[f32; 2]; 32]; crate::decks::PRODUCER_FRAMES]]>,
     routed_inputs: Box<[[[f32; crate::decks::PRODUCER_FRAMES]; 2]]>,
     patch_frames: Box<[crate::decks::Frame; crate::decks::PRODUCER_FRAMES]>,
 }
@@ -433,6 +450,7 @@ impl Graph {
                         && n.kind == o.kind
                         && n.deck == o.deck
                         && n.value == o.value
+                        && n.vst == o.vst
                         && n.patch_inputs == o.patch_inputs
                         && n.eq == o.eq
                 })
@@ -503,6 +521,7 @@ impl Graph {
                                 | Kind::Oscillator
                                 | Kind::RingModulation
                                 | Kind::Selector
+                                | Kind::Vst
                                 | Kind::Patch
                                 | Kind::Trim
                                 | Kind::Eq
@@ -517,6 +536,13 @@ impl Graph {
                     Kind::Output =>
                         n.id.starts_with("instrument-out-")
                             || default.nodes.iter().any(|b| b.id == n.id),
+                    Kind::Vst =>
+                        n.vst.as_ref().is_some_and(|v| v.validate().is_ok())
+                            && n.id.starts_with("vst-")
+                            && n.id.len() == 40
+                            && n.id[4..]
+                                .bytes()
+                                .all(|b| b.is_ascii_hexdigit() || b == b'-'),
                     Kind::Patch => patch_slot(&n.id).is_some(),
                     Kind::Trim if n.deck.is_none() => (-12. ..=12.).contains(&n.value),
                     Kind::Filter if n.deck.is_none() => (-1. ..=1.).contains(&n.value),
@@ -629,6 +655,7 @@ impl Graph {
                 phase: 0.,
                 capture: None,
                 send: None,
+                vst: None,
             })
             .collect();
         Ok(Box::new(Plan {
@@ -637,7 +664,7 @@ impl Graph {
             conventional,
             steps,
             routed_inputs: vec![[[0.; crate::decks::PRODUCER_FRAMES]; 2]; 32].into_boxed_slice(),
-            block_outputs: vec![[[[0.; 2]; 2]; crate::decks::PRODUCER_FRAMES]; NODE_LIMIT + 1]
+            block_outputs: vec![[[[0.; 2]; 32]; crate::decks::PRODUCER_FRAMES]; NODE_LIMIT + 1]
                 .into_boxed_slice(),
             patch_frames: vec![crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES]
                 .into_boxed_slice()
@@ -782,6 +809,7 @@ mod tests {
                 y: 0.,
                 value: 1.,
                 custom_label: None,
+                vst: None,
                 patch_inputs: None,
                 eq: None,
             });
@@ -849,6 +877,7 @@ mod tests {
             y: 0.,
             value: 1.,
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
         });
@@ -861,6 +890,7 @@ mod tests {
             y: 0.,
             value: 0.5,
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
         });
@@ -916,6 +946,7 @@ mod tests {
                 y: 650.,
                 value: 1.,
                 custom_label: None,
+                vst: None,
                 patch_inputs: None,
                 eq: None,
             });
@@ -955,6 +986,7 @@ mod tests {
         let mut g = Graph::default();
         g.nodes.push(Node {
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
             id: "comp".into(),
@@ -1000,6 +1032,7 @@ mod tests {
         let mut graph = Graph::default();
         graph.nodes.push(Node {
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
             id: "test-gain".into(),
@@ -1026,6 +1059,7 @@ mod tests {
         // An unused processor forces the general schedule without changing its signal chain.
         graph.nodes.push(Node {
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
             id: "unused".into(),
@@ -1068,6 +1102,7 @@ mod tests {
         graph.wires.clear();
         graph.nodes.push(Node {
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
             id: "comp".into(),
@@ -1262,7 +1297,7 @@ impl Step {
                 std::array::from_fn(|c| 0.45 * (input[0][c] * cross[0] + input[1][c] * cross[1]))
             }
             Kind::Cue => std::array::from_fn(|c| 0.45 * (input[0][c] + input[1][c])),
-            Kind::Output | Kind::Patch | Kind::Selector => input[0],
+            Kind::Output | Kind::Patch | Kind::Vst | Kind::Selector => input[0],
             Kind::Gain => input[0].map(|v| v * self.node.value),
             Kind::Compressor => {
                 let detector = if self.external_detector {
@@ -1304,6 +1339,7 @@ impl Graph {
         self.nodes.push(Node {
             eq: None,
             custom_label: None,
+            vst: None,
             patch_inputs: Some(Vec::new()),
             id: id.clone(),
             kind: Kind::Patch,
@@ -1399,6 +1435,13 @@ impl Plan {
             }
         }
     }
+    pub fn bind_vsts(&mut self) {
+        for step in &mut self.steps {
+            if step.node.kind == Kind::Vst {
+                step.vst = crate::vst::instance(&step.node.id);
+            }
+        }
+    }
     pub fn has_patch(&self, slot: usize) -> bool {
         self.steps
             .iter()
@@ -1411,7 +1454,6 @@ impl Plan {
     ) {
         use crate::decks::{Frame, PRODUCER_FRAMES};
         let outputs = &mut self.block_outputs;
-        outputs.fill([[[0.; 2]; 2]; PRODUCER_FRAMES]);
         let patch = &mut self.patch_frames;
         let routed_inputs = &mut self.routed_inputs;
         for step in &mut self.steps {
@@ -1419,7 +1461,7 @@ impl Plan {
             if let Some(source) = &step.capture {
                 source.render(&mut captured);
             }
-            if step.node.kind == Kind::Patch {
+            if matches!(step.node.kind, Kind::Patch | Kind::Vst) {
                 routed_inputs.fill([[0.; PRODUCER_FRAMES]; 2]);
             }
             for (i, frame) in block.iter().enumerate() {
@@ -1452,8 +1494,12 @@ impl Plan {
                 } else {
                     input[0]
                 };
-                if step.node.kind == Kind::Patch {
-                    for port in 0..step.node.patch_inputs.as_ref().map_or(1, Vec::len) {
+                if matches!(step.node.kind, Kind::Patch | Kind::Vst) {
+                    for port in 0..if step.node.kind == Kind::Vst {
+                        step.node.vst.as_ref().map_or(0, |v| v.inputs.len())
+                    } else {
+                        step.node.patch_inputs.as_ref().map_or(1, Vec::len)
+                    } {
                         for c in 0..2 {
                             routed_inputs[port][c][i] = input[port][c];
                         }
@@ -1462,6 +1508,15 @@ impl Plan {
                         samples: input[0],
                         ..*frame
                     };
+                }
+            }
+            if step.node.kind == Kind::Vst {
+                outputs[step.index].fill([[0.; 2]; 32]);
+                if let Some(instance) = &step.vst {
+                    // The audio producer never waits on a plugin editor/state operation.
+                    if let Ok(mut instance) = instance.try_lock() {
+                        instance.render(routed_inputs, block, &mut outputs[step.index]);
+                    }
                 }
             }
             if step.node.kind == Kind::Patch {
@@ -1655,6 +1710,7 @@ mod rolling_tests {
             y: 0.,
             value: 440.,
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
         });
@@ -1699,6 +1755,7 @@ mod parameter_tests {
             deck: None,
             label: "Gain".into(),
             custom_label: None,
+            vst: None,
             patch_inputs: None,
             eq: None,
             x: 10.,
@@ -2009,6 +2066,7 @@ mod selector_tests {
             y: 0.,
             value: 0.,
             eq: None,
+            vst: None,
             patch_inputs: Some(
                 (0..40)
                     .map(|i| PatchInput {

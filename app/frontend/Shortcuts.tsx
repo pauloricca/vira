@@ -3,6 +3,7 @@ import { normalizeSearch, SettingsSearch } from './SettingsSearch';
 
 const shortcutCategories = [
   { title: 'Deck playback & tempo', shortcuts: [
+    ['Drag A–D cue letter / Shift-drag', 'Move a cue continuously without snapping or seeking playback; hold Shift for ten times finer movement. Release saves the cue per track', 'Rolling waveform; existing cue; audio running; loaded deck; not loading, editing or previewing a grid, waiting to launch or previewing a cue'],
     ['Drag master BPM', 'Adjust master tempo continuously; drag right or up to speed up, left or down to slow down; release to stop. Click without dragging to enter a target BPM', 'Header BPM number or bpm label; MIDI map mode off'],
     ['Drag / scroll current deck BPM', 'Change playback tempo; when the locked deck is the only playing track, change master BPM and keep it locked; scroll up speeds up, down slows down; Shift-scroll adjusts in 0.01 BPM steps', 'Loaded deck with a timing grid; audio running; deck not loading; unlocked or locked and the only playing track'],
     ['Double-click original / current deck BPM', 'Unlock and restore the track’s original playback tempo', 'Loaded deck with a timing grid; audio running; deck not loading'],

@@ -755,6 +755,23 @@ impl EngineHandle {
     }
     pub fn set_routing_graph(&self, graph: crate::routing::Graph) -> Result<()> {
         let mut plan = graph.compile()?;
+        for node in graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == crate::routing::Kind::Vst)
+        {
+            let instance = crate::vst::instance(&node.id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} is unavailable; remove it and add the VST again",
+                    node.label
+                )
+            })?;
+            anyhow::ensure!(
+                node.vst.as_ref() == Some(&instance.lock().unwrap().descriptor),
+                "VST instance identity or buses changed"
+            );
+        }
+        plan.bind_vsts();
         #[cfg(target_os = "macos")]
         plan.bind_inputs(&graph, &self.shared.inputs);
         let mut current = self.graph.lock().unwrap();
@@ -773,6 +790,7 @@ impl EngineHandle {
         let temporary = root.join(".vira-routing.tmp");
         std::fs::write(&temporary, serde_json::to_vec(&graph.saved_value()?)?)?;
         std::fs::rename(temporary, root.join(".vira-routing.json"))?;
+        crate::vst::sync_routing(&graph);
         *current = graph;
         Ok(())
     }
@@ -1287,6 +1305,12 @@ impl EngineHandle {
             "play_pause" => Command::PlayPause(deck, generations[deck]),
             "cue_press" => Command::CuePress(deck, generations[deck]),
             "cue_release" => Command::CueRelease(deck, generations[deck]),
+            "hot_cue_move_0" | "hot_cue_move_1" | "hot_cue_move_2" | "hot_cue_move_3" => {
+                let seconds = value.ok_or_else(|| anyhow::anyhow!("Cue move requires seconds"))?;
+                ensure!(seconds.is_finite() && seconds >= 0., "Invalid cue position");
+                let slot = action.as_bytes()[action.len() - 1] - b'0';
+                Command::HotCueMove(deck, generations[deck], slot as usize, seconds)
+            }
             "hot_cue" | "hot_cue_clear" | "hot_cue_release" => {
                 let slot = value.ok_or_else(|| anyhow::anyhow!("Cue requires a slot"))?;
                 ensure!([0., 1., 2., 3.].contains(&slot), "Cue slot must be A–D");
@@ -1785,6 +1809,7 @@ fn native_output(
         .chain(cue_midi)
         .collect();
     let mut initial_plan = initial_graph.compile()?;
+    initial_plan.bind_vsts();
     initial_plan.history = history;
     // A disconnected saved input should not prevent deck playback on launch.
     initial_plan.bind_inputs(&initial_graph, &shared.inputs);

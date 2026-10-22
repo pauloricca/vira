@@ -1,5 +1,36 @@
 fn main() {
     #[cfg(target_os = "macos")]
+    if let Some(path) = std::env::args()
+        .skip_while(|a| a != "--vst-editor-check")
+        .nth(1)
+    {
+        vira::vst_editor_check(std::path::PathBuf::from(path));
+        return;
+    }
+    if let Some(path) = std::env::args().skip_while(|a| a != "--vst-check").nth(1) {
+        match vira::vst::check(std::path::Path::new(&path)) {
+            Ok(report) => println!("VIRA_VST_CHECK:{}", report),
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Some(path) = std::env::args().skip_while(|a| a != "--vst-probe").nth(1) {
+        match vira::vst::probe(std::path::Path::new(&path)) {
+            Ok(entries) => println!(
+                "VIRA_VST_PROBE:{}",
+                serde_json::to_string(&entries).unwrap()
+            ),
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    #[cfg(target_os = "macos")]
     if let Some(position) = std::env::args().position(|arg| arg == "--audio-device-check") {
         let name = std::env::args().nth(position + 1);
         match vira::check_audio_device(name.as_deref()) {

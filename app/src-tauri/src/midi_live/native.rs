@@ -207,6 +207,7 @@ impl Router {
         sink: &mut impl Sink,
         ns: u64,
         active: usize,
+        selected: usize,
         decks: [Option<crate::pattern_routing::Harmony>; 2],
     ) -> HashMap<String, u8> {
         self.error = None;
@@ -257,7 +258,7 @@ impl Router {
                 let dest = if to.kind == "pattern" {
                     None
                 } else if to.kind == "deck" {
-                    crate::pattern_routing::deck_index(to.deck, active)
+                    crate::pattern_routing::deck_index(to.deck, active, selected)
                         .map(|deck| Destination::Deck { deck })
                 } else {
                     to.destination.clone()
@@ -300,8 +301,9 @@ impl Router {
             }
         }
         // Publish deck note values so transformed deck roots use the same path as live MIDI.
-        for deck in 0..=2 {
-            let physical = if deck == 2 { active.min(1) } else { deck };
+        for deck in 0..=3 {
+            let physical =
+                crate::pattern_routing::deck_index(Some(deck), active, selected).unwrap();
             if let Some(harmony) = decks[physical] {
                 self.core.message(
                     &Source::Deck(deck),

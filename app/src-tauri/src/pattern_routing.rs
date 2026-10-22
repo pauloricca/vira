@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 pub enum Destination {
     Midi { output: i32 },
     Teia { slot: usize },
+    Vst { id: String },
     Deck { deck: usize },
     DeckCue { deck: usize },
 }
@@ -262,13 +263,14 @@ impl Graph {
                     );
                 }
                 "deck" => ensure!(
-                    n.deck.is_some_and(|d| d <= 2)
+                    n.deck.is_some_and(|d| d <= 3)
                         && n.destination.is_none()
                         && n.pattern.is_none(),
                     "Invalid deck node"
                 ),
                 "instrument" => ensure!(
                     n.destination.as_ref().is_some_and(|d| match d {
+                        Destination::Vst { id } => id.starts_with("vst-") && id.len() == 40,
                         Destination::Midi { .. } => true,
                         Destination::Teia { slot } => *slot < crate::routing::PATCH_LIMIT,
                         Destination::Deck { .. } | Destination::DeckCue { .. } => false,
@@ -426,8 +428,8 @@ impl Graph {
                                 && target.kind == "deck"
                                 && self.nodes.iter().any(|source| source.id == w.from
                                     && (source.deck == target.deck
-                                        || source.deck == Some(2)
-                                        || target.deck == Some(2)))))),
+                                        || source.deck.is_some_and(|d| d >= 2)
+                                        || target.deck.is_some_and(|d| d >= 2)))))),
             "A deck cannot drive a pattern root while that pattern controls its pitch"
         );
         Ok(())
@@ -435,13 +437,25 @@ impl Graph {
 }
 /// Produces one independently owned playback route per MIDI cable. Its old
 /// destination remains in the previous plan until every owned note is released.
-pub fn deck_index(deck: Option<usize>, active: usize) -> Option<usize> {
-    deck.map(|d| if d == 2 { active.min(1) } else { d })
+pub fn deck_index(deck: Option<usize>, active: usize, selected: usize) -> Option<usize> {
+    deck.map(|d| match d {
+        2 => active.min(1),
+        3 => selected.min(1),
+        _ => d,
+    })
 }
 pub fn resolve(bank: &Bank, decks: [Option<Harmony>; 2]) -> Bank {
     resolve_active(bank, decks, crate::patterns::active_deck())
 }
 pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -> Bank {
+    resolve_decks(bank, decks, active, crate::patterns::selected_deck())
+}
+pub fn resolve_decks(
+    bank: &Bank,
+    decks: [Option<Harmony>; 2],
+    active: usize,
+    selected: usize,
+) -> Bank {
     let Some(graph) = &bank.graph else {
         return bank.clone();
     };
@@ -510,7 +524,7 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
             p.output = 0;
             Some(Destination::Midi { output: 0 })
         } else if target.kind == "deck" {
-            deck_index(target.deck, active).map(|deck| {
+            deck_index(target.deck, active, selected).map(|deck| {
                 if w.kind == "cue" {
                     Destination::DeckCue { deck }
                 } else {
@@ -539,7 +553,7 @@ pub fn resolve_active(bank: &Bank, decks: [Option<Harmony>; 2], active: usize) -
                 .and_then(|w| graph.nodes.iter().find(|n| n.id == w.from))
                 .and_then(|n| {
                     if n.kind == "deck" {
-                        deck_index(n.deck, active).and_then(|d| decks[d])
+                        deck_index(n.deck, active, selected).and_then(|d| decks[d])
                     } else {
                         n.harmony
                     }
@@ -749,7 +763,7 @@ mod tests {
         }
         migrate(&mut b);
         let graph = b.graph.as_ref().unwrap();
-        graph.validate(&b).unwrap();
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
         assert_eq!(
             graph
                 .nodes
@@ -1093,6 +1107,62 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("expanded MIDI route"));
+    }
+    #[test]
+    fn selected_deck_tracks_selection_for_harmony_notes_and_cues() {
+        let mut b = bank();
+        migrate(&mut b);
+        let graph = b.graph.as_mut().unwrap();
+        graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == "deck-0")
+            .unwrap()
+            .deck = Some(3);
+        for kind in ["notes", "scale"] {
+            graph.wires.push(Wire {
+                id: kind.into(),
+                from: "deck-0".into(),
+                to: "pattern-p".into(),
+                kind: kind.into(),
+                route: None,
+                input: None,
+            });
+        }
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
+        let keys = [
+            Some(Harmony { key: 0, scale: 0 }),
+            Some(Harmony { key: 7, scale: 1 }),
+        ];
+        for (active, selected) in [(0, 1), (1, 0)] {
+            let resolved = resolve_decks(&b, keys, active, selected);
+            assert_eq!(
+                (resolved.patterns[0].key, resolved.patterns[0].scale),
+                if selected == 0 { (0, 0) } else { (7, 1) }
+            );
+        }
+        let graph = b.graph.as_mut().unwrap();
+        graph.wires.retain(|w| w.kind == "midi");
+        graph.wires[0].to = "deck-0".into();
+        let a = resolve_decks(&b, keys, 1, 0);
+        let c = resolve_decks(&b, keys, 0, 1);
+        assert_eq!(
+            a.patterns[0].destination,
+            Some(Destination::Deck { deck: 0 })
+        );
+        assert_eq!(
+            c.patterns[0].destination,
+            Some(Destination::Deck { deck: 1 })
+        );
+        assert_eq!(a.patterns[0].id, c.patterns[0].id);
+        assert_eq!(a.patterns[0].route, c.patterns[0].route);
+        b.patterns[0].kind = "cue".into();
+        b.graph.as_mut().unwrap().wires[0].kind = "cue".into();
+        b.graph.as_ref().unwrap().validate(&b).unwrap();
+        assert_eq!(
+            resolve_decks(&b, keys, 0, 1).patterns[0].destination,
+            Some(Destination::DeckCue { deck: 1 })
+        );
     }
     #[test]
     fn active_deck_maps_harmony_and_destination_without_changing_cable_owner() {

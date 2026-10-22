@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import type { Graph } from './Routing';
 import { selectorPorts, SelectorControl } from './selector';
 import { ParameterKnob } from './ParameterKnob';
 import { PinButton, PinnedSource, instrumentPin, patchPin } from './pinnedComponents';
@@ -9,11 +11,13 @@ import { addSessionPatch, usePatchLibrary } from './patchLibrary';
 import { PatchSelectionBox, patchSelectionRect, patchIntersects, movePatchGroup, type PatchMarquee, snapPatchPoint, snapPatchGraph, PatchingPage, PatchingHeading, PatchingNodeHeader, patchPortTop, patchPortPoint, NodePalette, nodePlacement, paletteDrop, paletteDragOver, usePatchingKeys, type PatchPoint } from './Patching';
 import { useRef, useState, type PointerEvent } from 'react';
 import { canvasPosition, cablePath } from './routingGeometry';
-import { connectMusical, pitchLabel, linkedHarmony, keys, scales, uid, type Bank, type Harmony, type MusicalGraph, type MusicalNode, type MusicalWire, type Pattern } from './patternModel';
-type Props = { activeDeck: number; deviceNotes: Record<string,number>; inputs: {id:number;name:string}[]; liveRoots: Record<string,number>; bank: Bank; outputs: { id: number; name: string }[]; instruments: { slot: number; name: string | null; loaded: boolean; running: boolean }[]; deckKeys: (Harmony | null)[]; active: boolean; status: (p: Pattern) => string; canPlay: (p: Pattern) => boolean; onGraph: (g: MusicalGraph) => void; onCreate: (point?: PatchPoint, kind?: Pattern['kind']) => void; onExpand: (id: string) => void; onPlay: (p: Pattern) => void; error: (text: string) => void };
+import { physicalDeck, connectMusical, pitchLabel, linkedHarmony, keys, scales, uid, type Bank, type Harmony, type MusicalGraph, type MusicalNode, type MusicalWire, type Pattern } from './patternModel';
+type Props = { activeDeck: number; selectedDeck: number; deviceNotes: Record<string,number>; inputs: {id:number;name:string}[]; liveRoots: Record<string,number>; bank: Bank; outputs: { id: number; name: string }[]; instruments: { slot: number; name: string | null; loaded: boolean; running: boolean }[]; deckKeys: (Harmony | null)[]; active: boolean; status: (p: Pattern) => string; canPlay: (p: Pattern) => boolean; onGraph: (g: MusicalGraph) => void; onCreate: (point?: PatchPoint, kind?: Pattern['kind']) => void; onExpand: (id: string) => void; onPlay: (p: Pattern) => void; error: (text: string) => void };
 type CableDrag = { input?: string; pointer: number; from: string; kind: MusicalWire['kind']; x: number; y: number; fromInput?: boolean; reconnect?: { wire: MusicalWire; end: 'source' | 'target' } };
 const portPoint = (n: MusicalNode, output: boolean, kind: string, input?: string) => patchPortPoint(n, n.transformation?.kind === 'selector' ? output ? 0 : n.transformation.ports.indexOf(input ?? 'A') : kind === 'scale' || kind === 'cue' && !output || n.kind === 'transformation' && kind === 'midi' || output && n.kind !== 'deck' && kind === 'midi' ? 1 : 0, output);
-export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots, outputs, instruments, deckKeys, active, status, canPlay, onGraph, onCreate, onExpand, onPlay, error }: Props) {
+export function PatternCanvas({ activeDeck, selectedDeck, bank, deviceNotes, inputs, liveRoots, outputs, instruments, deckKeys, active, status, canPlay, onGraph, onCreate, onExpand, onPlay, error }: Props) {
+  const [vstInstances,setVstInstances] = useState<Graph['nodes']>([]);
+  useEffect(() => {if (!active) return; let alive=true;const poll=()=>{void invoke<Graph>('get_routing_graph').then(g=>{if(alive && g?.nodes) setVstInstances(g.nodes.filter(n=>n.kind==='vst' && n.vst?.midi_input));}).catch(()=>{});};poll();const timer=window.setInterval(poll,1500);return()=>{alive=false;window.clearInterval(timer);};},[active]);
   const namedInstruments = useInstruments(active);
   const [adding, setAdding] = useState(false);
   const addingRef = useRef(false);
@@ -104,6 +108,13 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
     if (addingRef.current) return;
     addingRef.current = true; setAdding(true);
     try {
+      if (value.startsWith('vst:')) {
+        const instance = vstInstances.find(n => n.id === value.slice(4));
+        if (!instance) throw new Error('Add this VST instance in Routing first.');
+        const existing = graph.nodes.find(n => n.destination?.kind === 'vst' && n.destination.id === instance.id);
+        const node: MusicalNode = existing ? {...existing,...point} : {id:uid(),kind:'instrument',label:instance.custom_label ?? instance.label,destination:{kind:'vst',id:instance.id},...point};
+        edit({...graph,nodes:[...graph.nodes.filter(n=>n.id!==node.id),node]});setSelection({node:node.id});return;
+      }
       if (value.startsWith('named:')) {
         const instrument = namedInstruments.find(i => i.id === value.slice(6));
         if (!instrument) throw new Error('Instrument no longer exists');
@@ -123,7 +134,7 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
         const isPattern = value.startsWith('pattern:'), id = value.split(':')[1];
         const p = bank.patterns.find(p => p.id === id);
         const existing = graph.nodes.find(n => isPattern ? n.pattern === id : n.deck === Number(id));
-        const n: MusicalNode = existing ? {...existing, ...point} : isPattern ? {id:uid(), kind:'pattern', pattern:id, label:p!.name, ...point} : {id:uid(), kind:'deck', deck:Number(id), label:Number(id) === 2 ? 'Active deck' : `Deck ${Number(id) === 0 ? 'A' : 'B'}`, ...point};
+        const n: MusicalNode = existing ? {...existing, ...point} : isPattern ? {id:uid(), kind:'pattern', pattern:id, label:p!.name, ...point} : {id:uid(), kind:'deck', deck:Number(id), label:Number(id) === 3 ? 'Selected deck' : Number(id) === 2 ? 'Active deck' : `Deck ${Number(id) === 0 ? 'A' : 'B'}`, ...point};
         edit({...graph, nodes:[...graph.nodes.filter(old => old.id !== n.id), n]}); setSelection({node:n.id}); return;
       }
       if (value === 'octaveShift' || value === 'filter' || value === 'selector') {
@@ -149,8 +160,9 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
   const categories = [
     {label:'Transformations', items:[{id:'selector',label:'Selector'}, {id:'octaveShift',label:'Octave shift'}, {id:'filter',label:'Filter'}]},
     {label:'Patterns', footer:<><button disabled={adding || bank.patterns.length >= 128} onClick={() => void addNode('new-melodic')}>+ Melodic pattern</button><button disabled={adding || bank.patterns.length >= 128} onClick={() => void addNode('new-percussion')}>+ Percussion pattern</button><button disabled={adding || bank.patterns.length >= 128} onClick={() => void addNode('new-cue')}>+ Cue point pattern</button></>, items:bank.patterns.map(p => ({id:`pattern:${p.id}`, label:p.name}))},
-    {label:'Decks', items:[{id:'deck:0',label:'Deck A'}, {id:'deck:1',label:'Deck B'}, {id:'deck:2',label:'Active deck'}]},
+    {label:'Decks', items:[{id:'deck:0',label:'Deck A'}, {id:'deck:1',label:'Deck B'}, {id:'deck:2',label:'Active deck'}, {id:'deck:3',label:'Selected deck'}]},
     {label:'Instruments', items:namedInstruments.filter(i => i.midi_input || i.midi_output).map(i => ({id:`named:${i.id}`,label:i.name}))},
+    {label:'VST instruments',items:vstInstances.map(n=>({id:`vst:${n.id}`,label:n.custom_label ?? n.label}))},
     {label:'MIDI destinations', items:outputs.map(o => ({id:`midi:${o.id}`,label:o.name}))},
     {label:'MIDI sources', items:inputs.map(o => ({id:`input:${o.id}`,label:o.name}))},
     {label:'Patches', footer:<button disabled={adding} onClick={() => void addNode('new-patch')}>+ New patch</button>, items:[...new Set([...files, ...instruments.filter(i => i.loaded && i.name).map(i => i.name!)])].map(name => ({id:`patch:${name}`, label:name.replace(/\.json$/, '')}))},
@@ -160,8 +172,8 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
   function nodeType(n: MusicalNode) {
     if (n.transformation) return n.transformation.kind === 'octaveShift' ? 'Octave shift' : n.transformation.kind === 'selector' ? 'Selector' : 'Filter';
     if (n.kind === 'pattern') return bank.patterns.find(p => p.id === n.pattern)?.kind === 'cue' ? 'Cue point pattern' : bank.patterns.find(p => p.id === n.pattern)?.kind === 'percussion' ? 'Percussion pattern' : 'Melodic pattern';
-    if (n.kind === 'deck') return n.deck === 2 ? 'Active deck' : `Deck ${n.deck === 0 ? 'A' : 'B'}`;
-    return n.destination?.kind === 'teia' ? 'Teia instrument' : n.destination?.kind === 'midi' && n.destination.output === 0 ? 'MIDI source' : 'MIDI instrument';
+    if (n.kind === 'deck') return n.deck === 3 ? 'Selected deck' : n.deck === 2 ? 'Active deck' : `Deck ${n.deck === 0 ? 'A' : 'B'}`;
+    return n.destination?.kind === 'vst' ? n.label : n.destination?.kind === 'teia' ? 'Teia instrument' : n.destination?.kind === 'midi' && n.destination.output === 0 ? 'MIDI source' : 'MIDI instrument';
   }
   function nodeTitle(n: MusicalNode) { return n.kind === 'pattern' ? bank.patterns.find(p => p.id === n.pattern)?.name ?? n.label : n.custom_label ?? nodeType(n); }
   const midi = useMidiMarkers();
@@ -180,14 +192,14 @@ export function PatternCanvas({ activeDeck, bank, deviceNotes, inputs, liveRoots
       {show.nodes.map(raw => {
         const named = namedInstruments.find(i => raw.id === `instrument-${i.id}`);
         const n = raw.id.startsWith('instrument-') ? {...raw, destination:{kind:'midi' as const, output:named?.midi_output?.device ?? 0}, input:named?.midi_input?.device ?? 0} : raw;
-        const p = bank.patterns.find(p => p.id === n.pattern); const harmony = n.kind === 'deck' ? deckKeys[n.deck === 2 ? activeDeck : n.deck ?? 0] : n.harmony;
-        const mapping = p ? { key: linkedHarmony(bank, p.id, deckKeys, 'root', liveRoots, activeDeck)?.harmony?.key ?? p.key, scale: linkedHarmony(bank, p.id, deckKeys, 'scale', liveRoots, activeDeck)?.harmony?.scale ?? p.scale } : null;
+        const p = bank.patterns.find(p => p.id === n.pattern); const harmony = n.kind === 'deck' ? deckKeys[physicalDeck(n.deck, activeDeck, selectedDeck)] : n.harmony;
+        const mapping = p ? { key: linkedHarmony(bank, p.id, deckKeys, 'root', liveRoots, activeDeck, selectedDeck)?.harmony?.key ?? p.key, scale: linkedHarmony(bank, p.id, deckKeys, 'scale', liveRoots, activeDeck, selectedDeck)?.harmony?.scale ?? p.scale } : null;
         const hasSource = n.destination?.kind === 'midi'
           ? inputs.some(i => n.input != null ? n.input !== 0 && i.id === n.input : i.name === (outputs.find(o => n.destination?.kind === 'midi' && o.id === n.destination.output)?.name ?? n.label))
           : n.destination?.kind === 'teia' && instruments.some(i => n.destination?.kind === 'teia' && i.slot === n.destination.slot && i.loaded && i.running);
         const outs: MusicalWire['kind'][] = n.transformation?.kind === 'selector' ? ['key'] : p?.kind === 'cue' ? ['cue'] : n.kind === 'transformation' || n.kind === 'pattern' ? ['notes', 'midi'] : n.kind === 'instrument' ? hasSource ? ['notes', 'midi'] : [] : ['notes', 'scale']; const inputPorts: MusicalWire['kind'][] = n.transformation?.kind === 'selector' ? [] : n.kind === 'transformation' ? ['notes', 'midi'] : n.kind === 'deck' ? ['midi', 'cue'] : n.kind === 'pattern' ? p?.kind !== 'melodic' ? [] : ['notes', 'scale'] : n.destination?.kind === 'midi' && n.destination.output === 0 ? [] : ['midi'];
-        const available = n.destination?.kind === 'midi' ? n.destination.output === 0 ? inputs.some(i => i.id === n.input) : outputs.some(o => o.id === (n.destination as { output: number }).output) : n.destination?.kind === 'teia' ? instruments.some(i => i.slot === (n.destination as { slot: number }).slot && i.loaded && i.running) : true;
-        return <div key={n.id} data-musical-node={n.id} className={`routing-node musical-node ${n.kind === 'deck' ? `deck-${n.deck === 2 ? activeDeck : n.deck}` : ''} ${selectedIds.includes(n.id) ? 'selected' : ''}`} style={{ left: n.x, top: n.y, height:nodeSize(n).height }} onPointerDown={e => { e.stopPropagation(); if (!selectedIds.includes(n.id)) selectNodes([n.id]); }} onDoubleClick={e => { e.stopPropagation(); if ((e.target as HTMLElement).closest('button')) return; if (p) onExpand(p.id); else if (n.destination?.kind === 'teia') void invoke('teia_open_editor', {slot:n.destination.slot}).catch(e => error(String(e))); }}>
+        const available = n.destination?.kind === 'midi' ? n.destination.output === 0 ? inputs.some(i => i.id === n.input) : outputs.some(o => o.id === (n.destination as { output: number }).output) : n.destination?.kind === 'vst' ? vstInstances.some(v=>n.destination?.kind==='vst' && v.id===n.destination.id) : n.destination?.kind === 'teia' ? instruments.some(i => i.slot === (n.destination as { slot: number }).slot && i.loaded && i.running) : true;
+        return <div key={n.id} data-musical-node={n.id} className={`routing-node musical-node ${n.kind === 'deck' ? `deck-${physicalDeck(n.deck, activeDeck, selectedDeck)}` : ''} ${selectedIds.includes(n.id) ? 'selected' : ''}`} style={{ left: n.x, top: n.y, height:nodeSize(n).height }} onPointerDown={e => { e.stopPropagation(); if (!selectedIds.includes(n.id)) selectNodes([n.id]); }} onDoubleClick={e => { e.stopPropagation(); if ((e.target as HTMLElement).closest('button')) return; if (p) onExpand(p.id); else if (n.destination?.kind === 'vst') void invoke('vst_open_editor',{id:n.destination.id}).catch(e=>error(String(e))); else if (n.destination?.kind === 'teia') void invoke('teia_open_editor', {slot:n.destination.slot}).catch(e => error(String(e))); }}>
           <PinButton id={n.id.startsWith('instrument-') ? instrumentPin(n.id) : n.destination?.kind === 'teia' ? patchPin(instruments.find(i => n.destination?.kind === 'teia' && i.slot === n.destination.slot)?.name ?? n.label) : `patterns:${n.id}`} name={nodeTitle(n)} />
           <PatchingNodeHeader title={nodeTitle(n)} nameLabel={`${n.id} name`} disabled={adding} onRename={name => { const g = current.current; edit({...g,nodes:g.nodes.map(old => old.id === n.id ? {...old,...(p ? {label:name,custom_label:null} : {custom_label:name})} : old)}); }} subtitle={nodeType(n)} onPointerDown={e => { beginMove(e,n); }} />
           <div className="routing-ports" style={n.transformation?.kind === 'selector' ? {height:Math.max(72,n.transformation.ports.length * 26 + 16)} : undefined}>

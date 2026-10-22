@@ -8,6 +8,7 @@ import { Instruments } from './Instruments';
 import { AuditionControls, PlayIcon, StopIcon, useAudition } from './Audition';
 import { useAutopilot, type AutopilotSelection } from './Autopilot';
 import { TagsSidebar, TrackTags, useTags, TRACKS_MIME } from './Tags';
+import { VstSettings } from './VstSettings';
 import { FolderSettings } from './FolderSettings';
 import { CollectionSelector } from './CollectionSelector';
 import { TrackActions } from './Dropdown';
@@ -202,6 +203,7 @@ function Workspace() {
   const trackRows = useRef(new Map<string, HTMLTableRowElement>());
   const [beats, setBeats] = useState(32);
   const [activeDeck, setActiveDeck] = useState(0);
+  useEffect(() => { void invoke('patterns_select_deck', { deck: activeDeck }).catch(() => undefined); }, [activeDeck]);
   const deckPositions = useRef<Array<() => number>>([]);
   const registerDeckPosition = (deck: number, getPosition: () => number) => { deckPositions.current[deck] = getPosition; };
   const [driftRate, setDriftRate] = useState(() => {
@@ -760,6 +762,7 @@ function Workspace() {
     </section><Patches /></div>
     </div>{view === 'instruments' && <Instruments />}{view === 'shortcuts' && <Shortcuts />}<section hidden={view !== 'settings'} className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><div><h2>Settings</h2><p>Workspace controls and system status</p></div><SettingsSearch label="Search settings" value={settingsQuery} onChange={setSettingsQuery} /></div><SettingsSearchContext.Provider value={settingsQuery}><div className="settings-grid">
       <Audio audio={decks.audio} active={view === 'settings'} />
+      <VstSettings active={view === 'settings'} />
       <FolderSettings onMusicChange={async folders => {
         setSelectedCollections(current => { const remaining = (current ?? []).filter(path => folders.includes(path)); return remaining.length ? remaining : folders.slice(0, 1); });
         await refresh();

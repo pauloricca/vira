@@ -3,8 +3,13 @@ use std::{collections::HashSet, time::Duration};
 mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
+pub mod vst;
+#[cfg(target_os = "macos")]
+mod vst_window;
 #[cfg(target_os = "macos")]
 pub use audio_devices::check as check_audio_device;
+#[cfg(target_os = "macos")]
+pub use vst_window::check_editor as vst_editor_check;
 mod audio_inputs;
 mod cue_output;
 mod deck_notes;
@@ -848,6 +853,17 @@ pub fn run() {
         patterns::transport(id, play).map_err(|e| e.to_string())
     }
     #[tauri::command]
+    fn patterns_select_deck(window: tauri::WebviewWindow, deck: usize) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        if deck > 1 {
+            return Err("Select deck A or B".into());
+        }
+        patterns::publish_selected_deck(deck);
+        Ok(())
+    }
+    #[tauri::command]
     fn patterns_deck_keys(
         window: tauri::WebviewWindow,
         keys: [Option<pattern_routing::Harmony>; 2],
@@ -857,12 +873,21 @@ pub fn run() {
         }
         patterns::deck_keys(keys).map_err(|e| e.to_string())
     }
+    vst_window::restore();
+    std::thread::spawn(vst::scan);
     tauri::Builder::default()
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
+            vst_window::vst_catalog,
+            vst_window::vst_paths,
+            vst_window::vst_save_paths,
+            vst_window::vst_rescan,
+            vst_window::vst_prepare,
+            vst_window::vst_open_editor,
             midi_mapping::midi_mapping_poll,
             midi_mapping::get_midi_devices,
             patterns_deck_keys,
+            patterns_select_deck,
             patterns_state,
             patterns_save,
             patterns_transport,
@@ -926,6 +951,7 @@ pub fn run() {
         .expect("Unable to start VIRA")
         .run(move |_, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                vst_window::save_all();
                 drop(keep_awake.take());
                 patterns::shutdown();
             }
