@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, time::Duration};
 mod active_deck;
+mod audition_stream;
 pub mod audio_benchmark;
 mod audio_devices;
 mod plugin_host;
@@ -640,6 +641,7 @@ pub fn run() {
         index: u64,
         track_id: String,
         output: Option<String>,
+        current_track_id: Option<String>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<(), String> {
         let engine = state.inner().clone();
@@ -650,6 +652,7 @@ pub fn run() {
                     index,
                     &track_id,
                     output.as_deref() == Some("master"),
+                    current_track_id.as_deref(),
                 )
                 .map_err(|e| format!("{e:#}"))
         })

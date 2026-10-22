@@ -579,8 +579,9 @@ pub struct EngineHandle {
     trim_control: Mutex<()>,
     sources: Mutex<HashMap<String, Weak<Source>>>,
     download: Mutex<()>,
-    audition_request: Mutex<u64>,
+    audition_request: Arc<Mutex<u64>>,
     audition_cache: Mutex<Vec<(String, Arc<Source>)>>,
+    audition_stream: Mutex<Option<(u64, Arc<crate::audition_stream::Status>)>>,
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
@@ -641,8 +642,9 @@ impl EngineHandle {
             trim_control: Mutex::new(()),
             sources: Mutex::new(HashMap::new()),
             download: Mutex::new(()),
-            audition_request: Mutex::new(0),
+            audition_request: Arc::new(Mutex::new(0)),
             audition_cache: Mutex::new(Vec::new()),
+            audition_stream: Mutex::new(None),
         });
         crate::patterns::attach_instruments(&handle.patches);
         let handle_history = handle.rolling.lock().unwrap().clone();
@@ -954,12 +956,20 @@ impl EngineHandle {
         let source = {
             let _download = self.download.lock().unwrap();
             ensure!(current(), "Audition cancelled");
-            let cached = self
-                .sources
+            let preview = self
+                .audition_cache
                 .lock()
                 .unwrap()
-                .get(&prepared.artifact_id)
-                .and_then(Weak::upgrade);
+                .iter()
+                .find(|(id, _)| id == &prepared.artifact_id)
+                .map(|(_, source)| source.clone());
+            let cached = preview.or_else(|| {
+                self.sources
+                    .lock()
+                    .unwrap()
+                    .get(&prepared.artifact_id)
+                    .and_then(Weak::upgrade)
+            });
             if let Some(source) = cached {
                 source
             } else {
@@ -993,6 +1003,10 @@ impl EngineHandle {
         );
         let mut voice = Box::new(crate::decks::Audition::new(source, generation));
         voice.master = master;
+        voice.set_grid(self.audition_grid(track_id, prepared.duration_seconds)?);
+        Ok(voice)
+    }
+    fn audition_grid(&self, track_id: &str, duration: f64) -> Result<Option<crate::timing::Grid>> {
         let timing =
             crate::service_response("/v1/timing/get", Some(json!({"track_id":track_id})), true)
                 .map_err(anyhow::Error::msg)?
@@ -1006,15 +1020,26 @@ impl EngineHandle {
         };
         if !value.is_null() {
             let grid: crate::timing::Grid = serde_json::from_value(value.clone())?;
-            voice.set_grid(Some(grid.validate(prepared.duration_seconds)?));
+            return Ok(Some(grid.validate(duration)?));
         }
-        Ok(voice)
+        Ok(None)
     }
     pub fn load_audition(&self, generation: u64, track_id: &str, master: bool) -> Result<u64> {
-        let voice = self.prepare_audition(generation, track_id, master)?;
+        let current = self.audition_request.clone();
+        let stream = crate::audition_stream::Stream::open(track_id.to_owned(), move || {
+            *current.lock().unwrap() == generation
+        })?;
+        let status = stream.status.clone();
+        let mut voice = Box::new(crate::decks::Audition::streaming(stream, generation));
+        voice.master = master;
         let request = self.audition_request.lock().unwrap();
         ensure!(*request == generation, "Audition cancelled");
+        ensure!(
+            master || self.shared.cue_running.load(Acquire),
+            "Cue headphones output is unavailable"
+        );
         self.send(Command::AuditionInstall(voice))?;
+        *self.audition_stream.lock().unwrap() = Some((generation, status));
         Ok(generation)
     }
     pub fn queue_audition(
@@ -1023,7 +1048,24 @@ impl EngineHandle {
         index: u64,
         track_id: &str,
         master: bool,
+        current_track_id: Option<&str>,
     ) -> Result<()> {
+        if index == 0
+            && self
+                .audition_stream
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|(g, _)| *g == generation)
+        {
+            let track = current_track_id
+                .ok_or_else(|| anyhow::anyhow!("Play All requires the current track"))?;
+            let prepared = self.prepare_audition(generation, track, master)?;
+            let request = self.audition_request.lock().unwrap();
+            ensure!(*request == generation, "Audition cancelled");
+            self.send(Command::AuditionUpgrade(generation, prepared))?;
+            *self.audition_stream.lock().unwrap() = None;
+        }
         let mut voice = self.prepare_audition(generation, track_id, master)?;
         voice.index = index + 1;
         let request = self.audition_request.lock().unwrap();
@@ -1764,7 +1806,17 @@ impl EngineHandle {
             "from":from, "style":match snapshot.auto_style { 2 => "smart", 1 => "bass-swap", _ => "crossfade" },
             "started":snapshot.auto_started, "points":snapshot.auto_points, "remaining_beats":snapshot.auto_remaining
         }));
-        json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / crate::sample_rate::get() as f64,"playing":snapshot.audition_playing},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
+        let audition_error =
+            self.audition_stream
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|(generation, status)| {
+                    (*generation == snapshot.audition_generation)
+                        .then(|| status.error())
+                        .flatten()
+                });
+        json!({"auto_fast":snapshot.auto_fast,"auto_transition":auto_transition,"audition":{"generation":snapshot.audition_generation,"index":snapshot.audition_index,"position_seconds":snapshot.audition_position as f64 / crate::sample_rate::get() as f64,"playing":snapshot.audition_playing,"error":audition_error},"auto_mode":snapshot.auto_mode,"crossfader":snapshot.crossfader,"crossfader_enabled":snapshot.crossfader_enabled,"master_bpm":snapshot.master_bpm_set.then_some(snapshot.master_bpm),"drift_rate":snapshot.drift_rate,"sync_quantum":snapshot.sync_quantum,"drift_target":snapshot.drift_target,"output_frame":snapshot.output_frame,"global_beat":snapshot.global_beat,"decks":decks,"running":self.shared.running.load(Acquire),"error":self.shared.error.lock().unwrap().clone(),
             "master_volume":f32::from_bits(self.shared.master_volume.load(Relaxed) as u32),
             "cue_volume":f32::from_bits(self.shared.cue_volume.load(Relaxed) as u32),
             "routing":{"master":routes.master,"cue":routes.cue,"master_channels":routes.master_channels,"cue_channels":routes.cue_channels,"cue_sample_rate":self.shared.cue_running.load(Acquire).then(|| self.shared.cue_sample_rate.load(Acquire)),"cue_running":self.shared.cue_running.load(Acquire),"cue_error":self.shared.cue_error.lock().unwrap().clone()},
@@ -1780,6 +1832,7 @@ impl EngineHandle {
                 "position_basis":"last source frame consumed by output callback; excludes physical speaker latency","end_to_end_latency_ms":null}})
     }
     pub fn shutdown(&self) {
+        *self.audition_request.lock().unwrap() += 1;
         self.shared.cancel.store(true, Release);
         if let Some(wake) = &self.wake {
             wake.notify();

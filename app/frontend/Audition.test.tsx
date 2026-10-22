@@ -47,6 +47,14 @@ test('an unavailable headphones output reports the native error', async () => {
   expect((await screen.findByRole('alert')).textContent).toContain('Select Cue headphones');
   expect(screen.queryByRole('group')).toBeNull();
 });
+test('an interrupted stream surfaces its native error after playback starts', async () => {
+  invoke.mockResolvedValue(8);
+  const { rerender } = render(<Harness />);
+  fireEvent.click(screen.getByText('Audition'));
+  await screen.findByText('0:30 / 2:00');
+  rerender(<Harness state={{ ...audio, audition: { ...audio.audition!, playing: false, error: 'Audition stream: connection closed' } }} />);
+  expect((await screen.findByRole('alert')).textContent).toContain('connection closed');
+});
 test('master output is passed to native audition and resets when a deck starts', async () => {
   invoke.mockResolvedValue(8);
   function OutputHarness({ playing }: { playing: boolean }) {
@@ -72,10 +80,10 @@ test('Play All preloads in displayed order, follows native handoffs, and stops w
   const { rerender } = render(<SequenceHarness />);
   fireEvent.click(screen.getByText('Play All'));
   fireEvent.click(screen.getByText('Start'));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('queue_audition', { generation: 8, index: 0, trackId: 'two', output: 'cue' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('queue_audition', { generation: 8, index: 0, trackId: 'two', output: 'cue', currentTrackId: 'one' }));
   expect(invoke).toHaveBeenCalledWith('audition_control', { action: 'sequence', generation: 8, value: 32 });
   rerender(<SequenceHarness index={1} />);
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('queue_audition', { generation: 8, index: 1, trackId: 'three', output: 'cue' }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('queue_audition', { generation: 8, index: 1, trackId: 'three', output: 'cue', currentTrackId: 'two' }));
   expect(screen.getByRole('group').title).toContain('Second');
   invoke.mockClear();
   rerender(<SequenceHarness index={2} />);

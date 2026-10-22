@@ -62,12 +62,13 @@ export function useAudition(audio: AudioState, tracks: Track[] = [], overlap = 8
         await invoke('audition_control', { action: 'sequence', generation, value: playAll && !decksPlaying ? overlap : -1 });
         const next = playlist.current[index + 1];
         if (!cancelled && playAll && !decksPlaying && next) {
-          await invoke('queue_audition', { generation, index, trackId: next.id, output });
+          await invoke('queue_audition', { generation, index, trackId: next.id, output, currentTrackId: playlist.current[index]?.id });
         }
       } catch (e) { if (!cancelled && request.current === current) setError(`Play All: ${String(e)}`); }
     })();
     return () => { cancelled = true; };
   }, [generation, index, playAll, overlap, decksPlaying, output]);
+  useEffect(() => { if (state?.error) setError(state.error); }, [state?.error]);
   const activeSelection = selection && { ...selection, track: playlist.current[index] ?? selection.track };
   return { selection: activeSelection, error, dismissError: () => setError(null), state, play, control, output, changeOutput, playAll, togglePlayAll: () => setPlayAll(value => !value) };
 }

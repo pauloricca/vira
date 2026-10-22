@@ -945,6 +945,7 @@ pub struct Audition {
     overlap_beats: f64,
     mixed_beats: f64,
     level: f32,
+    stream: Option<crate::audition_stream::Stream>,
 }
 impl Audition {
     pub fn new(source: Arc<Source>, generation: u64) -> Self {
@@ -971,6 +972,42 @@ impl Audition {
             overlap_beats: 0.,
             mixed_beats: 0.,
             level: 0.,
+            stream: None,
+        }
+    }
+    pub(crate) fn streaming(stream: crate::audition_stream::Stream, generation: u64) -> Self {
+        let mut voice = Self::new(
+            Arc::new(Source {
+                left: Vec::new(),
+                right: Vec::new(),
+                bass_profile: Default::default(),
+            }),
+            generation,
+        );
+        voice.stream = Some(stream);
+        voice
+    }
+    fn at_end(&self) -> bool {
+        self.stream
+            .as_ref()
+            .map_or(self.position >= self.source.len(), |stream| stream.ended())
+    }
+    fn seek(&mut self, position: usize) {
+        let frames = self
+            .stream
+            .as_ref()
+            .map_or(self.source.len(), |stream| stream.frames);
+        self.position = position.min(frames);
+        self.level = 0.;
+        if let Some(stream) = &mut self.stream {
+            stream.seek(self.position);
+        } else {
+            self.voice.seek(self.position);
+            self.mixed_beats = 0.;
+            if let Some(grid) = self.voice.grid {
+                self.set_tempo(grid.bpm);
+            }
+            self.plan_overlap();
         }
     }
     pub fn set_grid(&mut self, grid: Option<Grid>) {
@@ -1070,6 +1107,19 @@ impl Audition {
         if !self.playing {
             return Ok([0.; 2]);
         }
+        if let Some(stream) = &mut self.stream {
+            if let Some(sample) = stream.sample() {
+                self.position += 1;
+                self.level = (self.level + 1. / crate::sample_rate::fine_frames() as f32).min(1.);
+                return Ok(sample.map(|v| v * MIX_GAIN * self.level));
+            }
+            // Buffer starvation is temporary: hold source time rather than skip audio.
+            if stream.ended() {
+                self.playing = false;
+                self.level = 0.;
+            }
+            return Ok([0.; 2]);
+        }
         if self.sequence
             && self.queued.is_some()
             && (self.position >= self.source.len()
@@ -1159,6 +1209,7 @@ pub enum Command {
     AuditionStop,
     AuditionQueue(u64, u64, Box<Audition>),
     AuditionSequence(u64, bool, u8),
+    AuditionUpgrade(u64, Box<Audition>),
     AuditionControl(u64, Option<usize>),
     Routing(Box<crate::routing::Plan>),
     Install {
@@ -2015,6 +2066,23 @@ impl Decks {
                 voice.smart = self.auto_smart;
                 return self.audition.replace(voice).map(Retired::Audition);
             }
+            Command::AuditionUpgrade(generation, mut prepared) => {
+                if let Some(voice) = &self.audition {
+                    if voice.generation == generation && voice.index == 0 && voice.stream.is_some()
+                    {
+                        prepared.master = voice.master;
+                        prepared.sequence = voice.sequence;
+                        prepared.bars = voice.bars;
+                        prepared.bass_swap = voice.bass_swap;
+                        prepared.smart = voice.smart;
+                        prepared.seek(voice.position);
+                        prepared.playing = voice.playing;
+                        prepared.level = voice.level;
+                        return self.audition.replace(prepared).map(Retired::Audition);
+                    }
+                }
+                return Some(Retired::Audition(prepared));
+            }
             Command::AuditionQueue(generation, index, next) => {
                 if let Some(voice) = &mut self.audition {
                     if voice.generation == generation
@@ -2061,23 +2129,10 @@ impl Decks {
                 if let Some(voice) = &mut self.audition {
                     if voice.generation == generation {
                         if let Some(position) = position {
-                            voice.position = position.min(voice.source.len());
-                            voice.level = 0.;
-                            voice.voice.seek(voice.position);
-                            voice.mixed_beats = 0.;
-                            if let Some(grid) = voice.voice.grid {
-                                voice.set_tempo(grid.bpm);
-                            }
-                            voice.plan_overlap();
+                            voice.seek(position);
                         } else {
-                            if !voice.playing && voice.position >= voice.source.len() {
-                                voice.position = 0;
-                                voice.voice.seek(0);
-                                voice.mixed_beats = 0.;
-                                if let Some(grid) = voice.voice.grid {
-                                    voice.set_tempo(grid.bpm);
-                                }
-                                voice.plan_overlap();
+                            if !voice.playing && voice.at_end() {
+                                voice.seek(0);
                             }
                             voice.playing = !voice.playing;
                         }
@@ -7718,6 +7773,52 @@ mod timing_tests {
 #[cfg(test)]
 mod audition_sequence_tests {
     use super::*;
+    #[test]
+    fn audition_stream_pause_upgrade_and_stale_completion_preserve_transport() {
+        let mut decks = Decks::new();
+        let stream = crate::audition_stream::Stream::fixture(&vec![[0.2; 2]; 2048]);
+        let status = stream.status.clone();
+        drop(decks.command(
+            Command::AuditionInstall(Box::new(Audition::streaming(stream, 7))),
+            [0, 0],
+        ));
+        let mut peak = 0_f32;
+        for _ in 0..1024 {
+            let frame = decks.next().unwrap();
+            peak = peak.max(frame.cue_samples[0].abs());
+        }
+        assert!(peak > 0.);
+        let position = decks.audition.as_ref().unwrap().position;
+        decks.command(Command::AuditionControl(7, None), [0, 0]);
+        assert!(!decks.next().unwrap().audition_playing);
+        assert_eq!(decks.audition.as_ref().unwrap().position, position);
+        decks.command(Command::AuditionSequence(7, true, 1), [0, 0]);
+        drop(decks.command(Command::AuditionUpgrade(6, track(Some(120.), 0)), [0, 0]));
+        assert!(decks.audition.as_ref().unwrap().stream.is_some());
+        drop(decks.command(Command::AuditionUpgrade(7, track(Some(120.), 0)), [0, 0]));
+        let voice = decks.audition.as_ref().unwrap();
+        assert_eq!(voice.position, position);
+        assert!(!voice.playing);
+        assert!(voice.sequence);
+        assert!(voice.stream.is_none());
+        assert!(voice.voice.grid.is_some());
+        assert!(status.error().is_none());
+        drop(decks.command(Command::AuditionStop, [0, 0]));
+        drop(decks.command(Command::AuditionUpgrade(7, track(Some(120.), 0)), [0, 0]));
+        assert!(decks.audition.is_none());
+    }
+    #[test]
+    fn audition_stream_underflow_holds_position_instead_of_ending_or_skipping() {
+        let stream = crate::audition_stream::Stream::fixture(&[[0.2; 2]]);
+        let mut voice = Audition::streaming(stream, 7);
+        voice.next().unwrap();
+        voice.seek(0); // Discards the old epoch, waiting for the new seek buffer.
+        for _ in 0..1024 {
+            assert_eq!(voice.next().unwrap(), [0.; 2]);
+        }
+        assert!(voice.playing);
+        assert_eq!(voice.position, 0);
+    }
     fn track(bpm: Option<f64>, index: u64) -> Box<Audition> {
         let samples: Vec<f32> = (0..48000 * 8)
             .map(|i| (i as f32 * 440. * std::f32::consts::TAU / 48000.).sin() * 0.2)

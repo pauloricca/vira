@@ -27,7 +27,7 @@ class PriorityTests(unittest.TestCase):
         priority.background()
         self.assertEqual(priority.leases, {})
 
-    def test_deck_and_pcm_bypass_background_wait_in_both_server_modes(self):
+    def test_library_state_deck_and_pcm_bypass_background_wait_in_both_server_modes(self):
         for collections in (False, True):
             with self.subTest(collections=collections), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -53,8 +53,10 @@ class PriorityTests(unittest.TestCase):
 
                 try:
                     request("/v1/load-priority", {"token": "a", "active": True})
+                    # Polling must stay responsive even when a load lease is held.
+                    self.assertEqual(json.loads(request("/v1/library/state"))["tracks"][0]["id"], track)
                     with concurrent.futures.ThreadPoolExecutor() as pool:
-                        backgrounds = [pool.submit(request, path) for path in ("/v1/library/state", "/v1/artwork/" + track)]
+                        backgrounds = [pool.submit(request, "/v1/artwork/" + track)]
                         try:
                             with patch.object(child.preparation, "prepare", return_value={"prepared": True}), patch.object(child.preparation, "audio_path", return_value=pcm):
                                 self.assertEqual(json.loads(request("/v1/prepare", {"track_id": track, "deck": 0, "generation": 1})), {"prepared": True})

@@ -289,12 +289,16 @@ consecutive playback instead. Starting either deck stops Play All. Turning Play
 All off keeps the current track playing at its original BPM. Changing overlap
 length during a transition applies to the following transition.
 
-Audition preparation skips deck waveform peaks and frequency shading and returns
-only audio metadata. The native engine retains up to two recent audition sources
-within a 256 MiB total cache, so repeat previews can reuse verified PCM after
-source validation. Cold previews still decode and load the complete song before
-starting; playback is not streamed. Deck loading adds waveform data on demand
-while reusing the already decoded PCM.
+Auditions stream directly from FFmpeg after checking the selected file's size and
+timestamp. Playback starts with 2,048 decoded frames (about 43 ms at 48 kHz),
+without hashing the whole file, creating a PCM artifact, or calculating waveforms
+and bass analysis. Native PCM buffering is bounded to half a second; temporary
+underflow holds the playback position until more audio arrives. Seeking starts a
+new decoder at the requested position, and Stop or replacement closes the old
+stream. Play All starts through the same stream, then prepares the current and
+next track in the background for beat-matched transitions. The upgrade preserves
+position and pause state. Up to two fully prepared Play All sources are retained
+within a 256 MiB cache; deck loading can reuse them and add waveform data on demand.
 
 Collection rows show number, cover tile, title, artist, rounded BPM, Camelot and
 musical key (for example, 8B / Cmaj), A/B key compatibility, length and analysis
