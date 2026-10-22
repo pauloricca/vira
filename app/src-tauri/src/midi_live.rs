@@ -59,6 +59,9 @@ pub struct Core {
 }
 impl Core {
     pub fn reconcile(&mut self, routes: Vec<Route>, sink: &mut impl Sink, ns: u64) {
+        if routes == self.routes {
+            return;
+        }
         for old in &self.routes {
             if routes.contains(old) {
                 continue;
@@ -529,6 +532,26 @@ mod tests {
         c.reconcile(vec![], &mut sink, 6);
         assert!(c.roots().is_empty());
         assert_eq!(c.value(&src, None), Some(64));
+    }
+    #[test]
+    fn unchanged_routes_keep_held_notes_and_still_release_on_removal() {
+        let mut c = Core::default();
+        let mut sink = TestSink::default();
+        let routes = vec![route("notes", 1), route("root", 2)];
+        c.reconcile(routes.clone(), &mut sink, 0);
+        c.message(&Source::Midi(42), &[0x90, 67, 100], 1, &mut sink);
+        sink.events.clear();
+        for ns in 2..100 {
+            c.reconcile(routes.clone(), &mut sink, ns);
+        }
+        assert!(sink.events.is_empty());
+        assert_eq!(c.roots()["p"], 67);
+        c.message(&Source::Midi(42), &[0x90, 72, 100], 100, &mut sink);
+        assert_eq!(c.roots()["p"], 72);
+        sink.events.clear();
+        c.reconcile(vec![], &mut sink, 101);
+        assert_eq!(sink.events, vec!["cancel:1:[(1, 72, 1)]"]);
+        assert!(c.roots().is_empty());
     }
     #[test]
     fn parses_running_status_pressure_program_clock_system_and_fragmented_sysex() {

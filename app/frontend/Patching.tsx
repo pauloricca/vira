@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, PointerEventHandler, ReactNode } from 'react';
 import './patching.css';
 
@@ -27,8 +27,19 @@ export function PatchingNodeHeader({ title, subtitle, onPointerDown, onRename, n
 function EditableNodeName({ title, onRename, nameLabel, disabled }: { title: string; onRename: (name: string) => void; nameLabel?: string; disabled?: boolean }) {
   const [draft, setDraft] = useState<string | null>(null);
   const cancelled = useRef(false);
+  const nameClick = useRef<{input:HTMLInputElement;pointer:number;x:number;y:number}|null>(null);
+  useEffect(() => {
+    const finish = (event:globalThis.PointerEvent) => {
+      const click = nameClick.current;
+      if (!click || click.pointer !== event.pointerId) return;
+      nameClick.current = null;
+      if (event.type === 'pointerup' && Math.hypot(event.clientX-click.x,event.clientY-click.y) < 6) click.input.focus();
+    };
+    window.addEventListener('pointerup',finish); window.addEventListener('pointercancel',finish);
+    return () => {window.removeEventListener('pointerup',finish);window.removeEventListener('pointercancel',finish);};
+  },[]);
   return <input className="routing-node-name routing-node-name-input" aria-label={nameLabel ?? 'Node name'} title={`${title} · Click to rename`} value={draft ?? title} maxLength={80} disabled={disabled}
-    onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+    onPointerDown={event => { if (document.activeElement === event.currentTarget) event.stopPropagation(); else if (event.button === 0) nameClick.current = {input:event.currentTarget,pointer:event.pointerId,x:event.clientX,y:event.clientY}; }} onClick={event => event.currentTarget.focus()} onDoubleClick={event => event.stopPropagation()}
     onFocus={() => { cancelled.current = false; setDraft(title); }} onChange={event => setDraft(event.target.value)}
     onBlur={() => { const name = draft?.trim(); if (!cancelled.current && name && name !== title) onRename(name); setDraft(null); }}
     onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); cancelled.current = event.key === 'Escape'; event.currentTarget.blur(); } }} />;
@@ -53,7 +64,7 @@ export function NodePalette({ categories, actions, onAdd, disabled }: { categori
 export function nodePlacement(canvas: HTMLElement, width: number, zoom: number, event?: {clientX:number;clientY:number}): PatchPoint {
   const rect = canvas.getBoundingClientRect(), viewport = canvas.closest('.routing-scroll')!.getBoundingClientRect();
   const scale = rect.width > 0 ? rect.width / width : zoom;
-  return snapPatchPoint({x: Math.max(20, Math.min(Math.min(1500, width - 160), ((event?.clientX ?? (viewport.left + viewport.width / 2)) - rect.left) / scale - (event ? 0 : PATCH_NODE_WIDTH / 2))), y: Math.max(20, Math.min(900, ((event?.clientY ?? (viewport.top + viewport.height / 2)) - rect.top) / scale - (event ? 0 : 60)))});
+  return snapPatchPoint({x: ((event?.clientX ?? (viewport.left + viewport.width / 2)) - rect.left) / scale + Number(canvas.dataset.originX ?? 0) - (event ? 0 : PATCH_NODE_WIDTH / 2), y: ((event?.clientY ?? (viewport.top + viewport.height / 2)) - rect.top) / scale + Number(canvas.dataset.originY ?? 0) - (event ? 0 : 60)});
 }
 export function paletteDrop(event: import('react').DragEvent, add: (id:string, point:PatchPoint) => void, canvas: HTMLElement, width:number, zoom:number) {
   const id = event.dataTransfer.getData(NODE_MIME);
@@ -95,4 +106,39 @@ export function movePatchGroup<N extends PatchPoint & {id:string},G extends {nod
   const x = snapPatch(Math.max(bounds.x-left,Math.min(bounds.x+bounds.width-right,delta.x)));
   const y = snapPatch(Math.max(bounds.y-top,Math.min(bounds.y+bounds.height-bottom,delta.y)));
   return {...graph,nodes:graph.nodes.map(n => ids.includes(n.id) ? {...n,x:n.x+x,y:n.y+y} : n)};
+}
+
+// Keep half a workspace of empty space on every side, including negative world
+// coordinates. Preserve the visible world position when the origin expands.
+export function patchCanvasBounds<N extends PatchPoint>(nodes: N[], size: (node:N)=>{width:number;height:number}, minimum: {width:number;height:number}): PatchRect {
+  const left = Math.min(0,...nodes.map(n=>n.x)), top = Math.min(0,...nodes.map(n=>n.y));
+  const right = Math.max(minimum.width,...nodes.map(n=>n.x+size(n).width)), bottom = Math.max(minimum.height,...nodes.map(n=>n.y+size(n).height));
+  const marginX = patchSize((right-left)/2), marginY = patchSize((bottom-top)/2);
+  return {x:left-marginX,y:top-marginY,width:right-left+2*marginX,height:bottom-top+2*marginY};
+}
+export function usePatchCanvas<N extends PatchPoint>(canvas: import('react').RefObject<HTMLDivElement|null>, nodes:N[], size:(node:N)=>{width:number;height:number}, minimum:{width:number;height:number}, zoom:number, active = true) {
+  const [viewportSize,setViewportSize] = useState({width:0,height:0});
+  useLayoutEffect(() => {
+    const viewport = canvas.current?.closest('.routing-scroll');
+    if (!viewport || !active) return;
+    const measure = () => setViewportSize({width:viewport.clientWidth,height:viewport.clientHeight});
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure); observer.observe(viewport);
+    return () => observer.disconnect();
+  },[canvas,active]);
+  const bounds = patchCanvasBounds(nodes,size,{width:Math.max(minimum.width,patchSize(viewportSize.width/zoom)),height:Math.max(minimum.height,patchSize(viewportSize.height/zoom))});
+  const previous = useRef({x:0,y:0,zoom});
+  useLayoutEffect(() => {
+    if (!active) return;
+    const viewport = canvas.current?.closest('.routing-scroll');
+    if (!viewport) return;
+    viewport.scrollLeft = (viewport.scrollLeft/previous.current.zoom + previous.current.x-bounds.x)*zoom;
+    viewport.scrollTop = (viewport.scrollTop/previous.current.zoom + previous.current.y-bounds.y)*zoom;
+    previous.current = {x:bounds.x,y:bounds.y,zoom};
+  },[canvas,bounds.x,bounds.y,zoom,active]);
+  return bounds;
+}
+export function patchNodeDragTarget(target:EventTarget) {
+  return !(target instanceof Element) || !target.closest('button,select,textarea,a,[contenteditable=true],[role=slider],input:not(.routing-node-name-input)') && !(target.matches('.routing-node-name-input') && document.activeElement === target);
 }

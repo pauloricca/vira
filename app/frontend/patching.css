@@ -83,6 +83,8 @@
 
 .routing-node > .node-pin { position: absolute; top: 3px; right: 3px; z-index: 3; display: grid; place-items: center; width: 20px; height: 20px; min-height: 0; padding: 2px; border: 0; background: transparent; color: #8c9ba5; cursor: pointer; }
 .routing-node > .node-pin[aria-pressed=true] { color: #a1e4ff; background: #30434f; }
+.routing-node > .node-parameters { position: absolute; top: 23px; right: 3px; z-index: 3; width: 20px; height: 14px; min-height: 0; padding: 0; border: 0; background: transparent; color: #8c9ba5; cursor: pointer; }
+.routing-node > .node-parameters[aria-expanded=true] { color: #a1e4ff; background: #30434f; }
 .routing-node-title { padding-right: 26px; }
 .routing-line-node .routing-node-title { padding-right: 23px; }
 
@@ -93,3 +95,12 @@
 .plugin-parameters { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
 .plugin-parameters > label, .plugin-parameters > p {flex-basis:100%;}
 .plugin-parameter-row { display:flex; align-items:center; gap:6px; }
+
+.patching-world {position:absolute;inset:0;pointer-events:none;}
+.patching-world > .routing-node,.patching-world > .routing-mixer-line,.patching-world > .routing-wire-endpoint {pointer-events:auto;}
+.routing-node {cursor:grab;}
+.routing-node-name-input:not(:focus) {cursor:grab;user-select:none;}
+.routing-node-name-input:focus {cursor:text;user-select:text;}
+.routing-scroll {overflow-anchor:none;}
+
+.routing-canvas {overflow:hidden;}

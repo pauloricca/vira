@@ -215,7 +215,14 @@ impl Prepared {
             format!("{:x}", hash.finalize()) == self.pcm_hash,
             "Prepared PCM content hash mismatch; retry loading"
         );
-        let bass_profile = crate::smart::BassProfile::analyze(&left, &right, current)?;
+        let bass_profile = crate::smart::BassProfile::cached(
+            &crate::paths::support().join("cache/bass-profiles"),
+            &self.artifact_id,
+            &self.pcm_hash,
+            &left,
+            &right,
+            current,
+        )?;
         Ok(Arc::new(Source {
             left,
             right,

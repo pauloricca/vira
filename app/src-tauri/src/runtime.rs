@@ -313,6 +313,71 @@ impl Shared {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn routing_apply_undo_redo_preserves_the_session_patch_and_open_editor() {
+        let root = std::env::temp_dir().join(format!(
+            "vira-routing-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut engine = EngineHandle::with_patch_root(root.clone());
+        let (host, mut driver) = crate::teia::Host::new_slot(root.clone(), 0);
+        host.telemetry.alive.store(true, Release);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopping.load(Acquire) {
+                driver.commands();
+                driver.process(&mut [Frame::default(); PRODUCER_FRAMES]);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        let document = json!({"nodes":[],"links":[]});
+        let prepared = serde_json::from_value(json!({"profile":"native-scalar-v1","layout":"history-test","diagnostics":[],"parameters":[],"program":{"version":1,"values":[],"ops":[]}})).unwrap();
+        host.import("History.json", &document).unwrap();
+        let source = host.read("History.json").unwrap();
+        host.load(
+            "History.json",
+            source["hash"].as_str().unwrap(),
+            document,
+            prepared,
+        )
+        .unwrap();
+        host.open_session().unwrap();
+        Arc::get_mut(&mut engine).unwrap().patches[0] = host.clone();
+        engine.shared.running.store(true, Release);
+        let mut placed = crate::routing::Graph::default();
+        placed.add_patch(0, "History".into(), vec![]);
+        engine.apply_session_routing(placed.clone()).unwrap();
+        let installed = host.snapshot()["record"].clone();
+        let session = std::fs::read(root.join(".vira-session.json")).unwrap();
+        // Apply deletion, undo and apply, then redo and apply; restoring it again
+        // must remain saveable, even with its patch editor open throughout.
+        for graph in [
+            crate::routing::Graph::default(),
+            placed.clone(),
+            crate::routing::Graph::default(),
+            placed.clone(),
+        ] {
+            engine.apply_session_routing(graph.clone()).unwrap();
+            assert_eq!(engine.routing_graph(), graph);
+            assert_eq!(host.snapshot()["record"], installed);
+            assert_eq!(host.snapshot()["editorOpen"], true);
+            assert_eq!(
+                std::fs::read(root.join(".vira-session.json")).unwrap(),
+                session
+            );
+        }
+        stop.store(true, Release);
+        worker.join().unwrap();
+        drop(engine);
+        drop(host);
+        let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
     fn hot_cues_snapshot_distinguishes_empty_from_track_start() {
         let shared = Shared::new();
         assert_eq!(shared.audible().hot_cues, [[None; 4]; 2]);
@@ -501,6 +566,7 @@ pub struct DeckState {
 }
 
 pub struct EngineHandle {
+    patch_root: std::path::PathBuf,
     pub teia: Arc<crate::teia::Host>,
     pub patches: Vec<Arc<crate::teia::Host>>,
     pub patch_transaction: Mutex<()>,
@@ -518,22 +584,23 @@ pub struct EngineHandle {
 }
 impl EngineHandle {
     pub fn new() -> Arc<Self> {
+        Self::with_patch_root(crate::teia::Host::default_root())
+    }
+    fn with_patch_root(patch_root: std::path::PathBuf) -> Arc<Self> {
         let _ = crate::sample_rate::get();
         let mut patches = Vec::new();
         let mut drivers = Vec::new();
         for slot in 0..crate::routing::PATCH_LIMIT {
-            let (host, mut driver) =
-                crate::teia::Host::new_slot(crate::teia::Host::default_root(), slot);
+            let (host, mut driver) = crate::teia::Host::new_slot(patch_root.clone(), slot);
             driver.silent_bypass = true;
             patches.push(host);
             drivers.push(driver);
         }
         let teia = patches[0].clone();
-        let saved_graph =
-            std::fs::read(crate::teia::Host::default_root().join(".vira-routing.json"))
-                .ok()
-                .and_then(|bytes| crate::routing::Graph::from_saved(&bytes).ok())
-                .filter(|g| g.compile().is_ok());
+        let saved_graph = std::fs::read(patch_root.join(".vira-routing.json"))
+            .ok()
+            .and_then(|bytes| crate::routing::Graph::from_saved(&bytes).ok())
+            .filter(|g| g.compile().is_ok());
         let mut graph = saved_graph.clone().unwrap_or_default();
         if saved_graph.is_none() {
             for (slot, host) in patches.iter().enumerate() {
@@ -561,6 +628,7 @@ impl EngineHandle {
         let (tx, rx) = rtrb::RingBuffer::new(32);
         let wake = Wake::new().map(Arc::new);
         let handle = Arc::new(Self {
+            patch_root,
             teia,
             patches,
             patch_transaction: Mutex::new(()),
@@ -713,23 +781,6 @@ impl EngineHandle {
     }
     pub fn apply_session_routing(&self, mut graph: crate::routing::Graph) -> Result<()> {
         let _transaction = self.patch_transaction.lock().unwrap();
-        let previous = self.routing_graph();
-        let removed: Vec<_> = previous
-            .nodes
-            .iter()
-            .filter(|n| {
-                n.kind == crate::routing::Kind::Patch
-                    && !graph.nodes.iter().any(|next| next.id == n.id)
-            })
-            .filter_map(|n| crate::routing::patch_slot(&n.id))
-            .collect();
-        for &slot in &removed {
-            let state = self.patches[slot].snapshot();
-            anyhow::ensure!(
-                state["editorOpen"] == false,
-                "Close the patch editor before removing its routing node"
-            );
-        }
         for node in &graph.nodes {
             if node.kind == crate::routing::Kind::Patch {
                 let slot = crate::routing::patch_slot(&node.id)
@@ -747,11 +798,9 @@ impl EngineHandle {
                 crate::routing::patch_audio_inputs(&state["record"]["installed_document"]),
             );
         }
-        self.set_routing_graph(graph)?;
-        for slot in removed {
-            self.patches[slot].control("remove", None, None, None)?;
-        }
-        Ok(())
+        // Routing history owns placements, not session patches. Keep the host,
+        // editor and saved state alive so undo/redo can restore a placement.
+        self.set_routing_graph(graph)
     }
     pub fn rebind_plugins(&self) -> Result<()> {
         let graph = self.graph.lock().unwrap();
@@ -783,7 +832,7 @@ impl EngineHandle {
         #[cfg(target_os = "macos")]
         plan.bind_inputs(&graph, &self.shared.inputs);
         let mut current = self.graph.lock().unwrap();
-        let root = crate::teia::Host::default_root();
+        let root = &self.patch_root;
         std::fs::create_dir_all(&root)?;
         let _session_write = crate::vst::SESSION_SAVE.lock().unwrap();
         let session_path = root.join(".vira-routing.json");

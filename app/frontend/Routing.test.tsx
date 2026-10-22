@@ -2,7 +2,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { Patches } from './Patches';
-import { Routing, type Graph } from './Routing';
+import { Routing, inputs, type Graph } from './Routing';
+import { nativeHistory } from './historyMenu.testSupport';
 const { invoke, routingEvents } = vi.hoisted(() => ({ invoke: vi.fn(), routingEvents: { callback: null as ((event: { payload: Graph }) => void) | null } }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn((_name, callback) => { routingEvents.callback = callback; return Promise.resolve(() => { routingEvents.callback = null; }); }) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -15,7 +16,11 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   vi.stubGlobal('PointerEvent', TestPointerEvent);
   HTMLElement.prototype.setPointerCapture = vi.fn();
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 80, top: 200, width: 1280, height: 800, right: 1360, bottom: 1000, x: 80, y: 200, toJSON: () => ({}) });
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function(this:HTMLElement) {
+    const left = 80 + Number(this.dataset.originX ?? 0)*.8, top = 200 + Number(this.dataset.originY ?? 0)*.8;
+    const width = this.classList.contains('routing-canvas') ? parseFloat(this.style.width)*.8 : 1280;
+    return {left,top,width,height:800,right:left+width,bottom:top+800,x:left,y:top,toJSON:()=>({})};
+  });
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => null) });
 });
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -33,6 +38,23 @@ async function mount(initial = graph) {
 }
 const canvas = () => document.querySelector('.routing-canvas')!;
 const withGain:Graph = {...graph,nodes:[...graph.nodes,{id:'fx-existing',kind:'gain',deck:null,label:'Existing gain',x:400,y:100,value:1}]};
+test('Wet/Dry exposes wet and dry inputs, defaults to equal blend and updates live', async () => {
+  await mount(); create('Wet/Dry');
+  const field = screen.getByRole('spinbutton') as HTMLInputElement;
+  expect(field.closest('label')?.textContent).toContain('Wet mix');
+  expect(field.title).toBe('0 = totally dry; 1 = totally wet');
+  expect(field.value).toBe('0.5');
+  expect(field.min).toBe('0'); expect(field.max).toBe('1');
+  const saved = await applied();
+  const node = saved.nodes.find(n => n.kind === 'wet_dry')!;
+  expect(inputs(node)).toEqual(['dry', 'wet']);
+  expect(screen.getByRole('button', {name:`${node.id} input wet`})).toBeTruthy();
+  expect(screen.getByRole('button', {name:`${node.id} input dry`})).toBeTruthy();
+  expect(screen.getByRole('button', {name:`${node.id} output audio`})).toBeTruthy();
+  fireEvent.change(field, {target:{value:'0.75'}});
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters', {parameters:{nodes:[{id:node.id,value:.75,disabled:false,bypass:false}],wires:[]}}));
+});
+
 test('parameters are always live while new nodes and cables wait for Apply', async () => {
   await mount(withGain);
   expect(screen.queryByRole('checkbox',{name:'Live routing'})).toBeNull();
@@ -41,7 +63,7 @@ test('parameters are always live while new nodes and cables wait for Apply', asy
   fireEvent.change(fields[1],{target:{value:'3'}});
   expect(invoke).not.toHaveBeenCalledWith('set_routing_parameters',expect.anything());
   fireEvent.change(screen.getByLabelText('fx-existing value'),{target:{value:'.5'}});
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'fx-existing',value:.5}],wires:[]}}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'fx-existing',value:.5,disabled:false,bypass:false}],wires:[]}}));
   expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
   await waitFor(() => expect((screen.getByRole('button',{name:'Apply routing'}) as HTMLButtonElement).disabled).toBe(false));
   const saved=await applied(); expect(saved.nodes.at(-1)?.value).toBe(3); expect(saved.nodes.find(n => n.id === 'fx-existing')?.value).toBe(.5);
@@ -57,7 +79,7 @@ test('parameter writes serialize and coalesce later changes without applying dra
   expect((screen.getByRole('button',{name:'Applying…'}) as HTMLButtonElement).disabled).toBe(true);
   await act(async () => finish());
   await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters')).toHaveLength(2));
-  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters').at(-1)![1]).toEqual({parameters:{nodes:[{id:'fx-existing',value:4}],wires:[]}});
+  expect(invoke.mock.calls.filter(([c]) => c === 'set_routing_parameters').at(-1)![1]).toEqual({parameters:{nodes:[{id:'fx-existing',value:4,disabled:false,bypass:false}],wires:[]}});
   expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
   await act(async () => finish());
 });
@@ -153,6 +175,21 @@ test('delete selected node removes its connections; undo and redo restore whole 
   fireEvent.keyDown(window, { key: 'z', metaKey: true, shiftKey: true });
   expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
 });
+
+test('native Edit menu undo and redo use routing history and preserve text history', async () => {
+  await mount(); create('Compressor');
+  screen.getByRole('button', {name:'Undo'}).focus();
+  await act(async () => nativeHistory());
+  expect(screen.queryByRole('button', {name:/input sidechain/})).toBeNull();
+  await act(async () => nativeHistory(true));
+  expect(screen.getByRole('button', {name:/input sidechain/})).toBeTruthy();
+  const textUndo = vi.fn();
+  Object.defineProperty(document, 'execCommand', {configurable:true, value:textUndo});
+  screen.getByLabelText('a-eq name').focus();
+  await act(async () => nativeHistory());
+  expect(textUndo).toHaveBeenCalledWith('undo');
+  expect(screen.getByRole('button', {name:/input sidechain/})).toBeTruthy();
+});
 test('selected wires delete and empty-space deselects without removing default nodes', async () => {
   await mount();
   fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!, { button: 0 });
@@ -240,6 +277,21 @@ test('new patch nodes join an existing routing draft and survive undo of its pri
   expect(screen.getByRole('button', { name: 'patch-0 input audio' })).toBeTruthy();
 });
 
+test('plugins added from Patterns join a pending routing draft and survive undo', async () => {
+  const view = await mount(); create('Gain');
+  view.rerender(<Routing active={false} />);
+  const plugin = {id:'vst-patterns',kind:'vst' as const,deck:null,label:'Pattern synth',x:800,y:500,value:1,vst:{path:'/Synth.vst3',uid:'synth',name:'Synth',instrument:true,effect:false,midi_input:true,inputs:[],outputs:[{id:'out-0',label:'Main',channels:2}]}};
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command,args) => command === 'get_routing_graph' ? Promise.resolve({...graph,nodes:[...graph.nodes,plugin]}) : original(command,args));
+  act(() => window.dispatchEvent(new Event('vira-plugin-added')));
+  await waitFor(() => expect(document.querySelector('[data-node-id="vst-patterns"]')).toBeTruthy());
+  view.rerender(<Routing active />);
+  expect(screen.getByRole('spinbutton')).toBeTruthy();
+  fireEvent.keyDown(window,{key:'z',metaKey:true});
+  expect(screen.queryByRole('spinbutton')).toBeNull();
+  expect(document.querySelector('[data-node-id="vst-patterns"]')).toBeTruthy();
+});
+
 test('removed patch nodes and wires disappear from a routing draft and cannot return through undo', async () => {
   const patch = { id: 'patch-0', kind: 'patch' as const, deck: null, label: 'Patch', x: 800, y: 500, value: 1 };
   invoke.mockResolvedValue({ nodes: [...graph.nodes, patch], wires: [...graph.wires, { from: 'a-fader', output: 'audio', to: patch.id, input: 'audio', gain: 1 }] });
@@ -308,6 +360,39 @@ test('selected cable exposes both endpoints and reconnecting its target preserve
   expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
   expect((await applied()).wires).toEqual([{ ...graph.wires[0], to: 'b-fader' }]);
+});
+
+test.each(['source', 'target'] as const)('reconnecting the %s survives a graph refresh and preserves the latest gain', async end => {
+  await mount();
+  fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!, { button: 0 });
+  fireEvent.pointerDown(screen.getByRole('button', { name: `Reconnect cable ${end}` }), { button: 0, pointerId: 7 });
+  // A poll returns fresh objects and can reorder wires while the pointer is held.
+  const other = { from: 'b-fader', output: 'audio', to: 'a-eq', input: 'audio', gain: 1 };
+  act(() => routingEvents.callback?.({ payload: { ...structuredClone(graph), wires: [other, { ...graph.wires[0], gain: .35 }] } }));
+  expect(document.querySelectorAll('[data-wire]')).toHaveLength(1);
+  expect(document.querySelector('[data-wire] title')?.textContent).toContain('b-fader → a-eq');
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByRole('button', { name: `b-fader ${end === 'source' ? 'output' : 'input'} audio` }));
+  fireEvent.pointerUp(canvas(), { pointerId: 7 });
+  const next = { ...graph.wires[0], gain: .35, ...(end === 'source' ? { from: 'b-fader' } : { to: 'b-fader' }) };
+  expect(document.querySelector('[data-wire="1"] title')?.textContent).toContain(`${next.from} → ${next.to}`);
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+  expect(document.querySelector('[data-wire="1"] title')?.textContent).toContain('a-eq → a-fader');
+  expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
+  expect((await applied()).wires).toEqual([other, next]);
+});
+
+test('reconnecting does not replace another cable when a refresh removes the original', async () => {
+  await mount();
+  fireEvent.pointerDown(document.querySelector('[data-wire="0"]')!, { button: 0 });
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Reconnect cable target' }), { button: 0, pointerId: 7 });
+  const other = { from: 'b-fader', output: 'audio', to: 'a-eq', input: 'audio', gain: 1 };
+  act(() => routingEvents.callback?.({ payload: { ...structuredClone(graph), wires: [other] } }));
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByRole('button', { name: 'b-fader input audio' }));
+  fireEvent.pointerUp(canvas(), { pointerId: 7 });
+  expect(document.querySelector('[data-wire="0"] title')?.textContent).toContain('b-fader → a-eq');
+  expect(screen.queryByTestId('wire-preview')).toBeNull();
+  expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test('source endpoint reconnects to a different output pin without creating an extra cable', async () => {
@@ -588,7 +673,7 @@ test('pinning a processor exposes live controls on Decks while Routing is hidden
   fireEvent.pointerDown(field, {button:0,pointerId:20,clientY:700});
   fireEvent.pointerMove(field, {pointerId:20,clientY:70});
   fireEvent.pointerUp(field, {pointerId:20});
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters', {parameters:{nodes:[{id:'fx-existing',value:10}],wires:[]}}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters', {parameters:{nodes:[{id:'fx-existing',value:10,disabled:false,bypass:false}],wires:[]}}));
   expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
   localStorage.clear();
 });
@@ -603,7 +688,7 @@ test('pinned headphone cue uses toolbar styling and shows its live toggled state
   expect(toggle.getAttribute('aria-pressed')).toBe('false');
   fireEvent.click(toggle);
   await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:cue.id,value:1}],wires:[]}}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:cue.id,value:1,disabled:false,bypass:false}],wires:[]}}));
   const {readFileSync} = await vi.importActual<{readFileSync(path:string,encoding:'utf8'):string}>('node:fs');
   const style = document.createElement('style'); style.textContent = readFileSync('frontend/style.css','utf8'); document.head.append(style);
   try {
@@ -631,6 +716,28 @@ test('Selector grows lettered inputs and pinned buttons switch the live selectio
   view.rerender(<><Routing active={false} /><Patches /></>);
   expect(screen.queryByRole('button',{name:'C'})).toBeNull();
   fireEvent.click(await screen.findByRole('button',{name:'B'}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'select',value:1}],wires:[]}}));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_routing_parameters',{parameters:{nodes:[{id:'select',value:1,disabled:false,bypass:false}],wires:[]}}));
   localStorage.clear();
+});
+
+test('node body and unfocused name drag, while controls remain interactive', async () => {
+  await mount(withGain);
+  const node=document.querySelector<HTMLElement>('[data-node-id="fx-existing"]')!;
+  for (const target of [node.querySelector('.routing-node-details') ?? node,node.querySelector('input.routing-node-name-input')!]) {
+    const before={x:parseFloat(node.style.left),y:parseFloat(node.style.top)};
+    fireEvent.pointerDown(target,{button:0,pointerId:21,clientX:400,clientY:400});
+    fireEvent.pointerMove(canvas(),{pointerId:21,clientX:480,clientY:480});
+    fireEvent.pointerUp(canvas(),{pointerId:21,clientX:480,clientY:480});
+    expect(node.style.left).toBe(`${before.x+100}px`);
+    expect(node.style.top).toBe(`${before.y+100}px`);
+  }
+  const before=node.style.left;
+  fireEvent.pointerDown(node.querySelector('button')!,{button:0,pointerId:22,clientX:400,clientY:400});
+  fireEvent.pointerMove(canvas(),{pointerId:22,clientX:480,clientY:480});
+  fireEvent.pointerUp(canvas(),{pointerId:22,clientX:480,clientY:480});
+  expect(node.style.left).toBe(before);
+  const name=node.querySelector<HTMLInputElement>('input.routing-node-name-input')!;
+  fireEvent.pointerDown(name,{button:0,pointerId:23,clientX:400,clientY:400});
+  fireEvent.pointerUp(canvas(),{pointerId:23,clientX:400,clientY:400});
+  expect(document.activeElement).toBe(name);
 });

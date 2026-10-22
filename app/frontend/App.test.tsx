@@ -3,15 +3,43 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PinnedSource } from './pinnedComponents';
 import { App, Library, duration } from './App';
-const { invoke, audioInvoke, routingInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn(), routingInvoke:vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'patterns_select_deck' ? routingInvoke(command, ...args) ?? Promise.resolve() : command === 'vst_catalog' ? Promise.resolve({scanning:false,plugins:[],errors:[]}) : command === 'vst_paths' ? Promise.resolve([]) : command === 'midi_mapping_poll' ? Promise.resolve({ devices: [], messages: [] }) : command === 'get_routing_graph' ? routingInvoke(command, ...args) : command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_instruments' ? Promise.resolve([]) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
-beforeEach(() => { routingInvoke.mockResolvedValue({nodes:[],wires:[]}); audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
-afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); routingInvoke.mockReset(); });
+const { invoke, audioInvoke, routingInvoke, midiInvoke } = vi.hoisted(() => ({ invoke: vi.fn(), audioInvoke: vi.fn(), routingInvoke:vi.fn(), midiInvoke:vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (command: string, ...args: unknown[]) => command === 'patterns_select_deck' ? routingInvoke(command, ...args) ?? Promise.resolve() : command === 'vst_catalog' ? Promise.resolve({scanning:false,plugins:[],errors:[]}) : command === 'vst_paths' ? Promise.resolve([]) : command === 'midi_mapping_poll' ? midiInvoke() : command === 'get_routing_graph' ? routingInvoke(command, ...args) : command === 'get_rolling_waveforms' ? Promise.resolve({ sources: [], output_frame: 0, peak_frames: 240, generation: 1 }) : command === 'get_audio_devices' ? Promise.resolve({ devices: [], default_device: null, routes: { master: null, cue: null } }) : command === 'get_instruments' ? Promise.resolve([]) : command === 'get_tags' ? Promise.resolve([]) : command === 'patches_state' ? Promise.resolve([]) : command === 'teia_library' ? Promise.resolve({ files: [] }) : command === 'get_path_settings' ? Promise.resolve({ selected: { music: '/fixed/music', patches: '/fixed/patches' }, active: { music: '/fixed/music', patches: '/fixed/patches' }, restartRequired: false }) : command === 'get_audio_levels' ? Promise.resolve({ running: true, decks: [0, 0], master: [0, 0] }) : ['get_audio_state', 'load_track', 'deck_control'].includes(command) ? audioInvoke(command, ...args) : invoke(command, ...args) }));
+const artworkRenders = vi.hoisted(() => vi.fn());
+vi.mock('./artwork', async importOriginal => {
+  const actual = await importOriginal<typeof import('./artwork')>();
+  return { ...actual, TrackArtwork: (props: Parameters<typeof actual.TrackArtwork>[0]) => {
+    artworkRenders(props.trackId);
+    return <actual.TrackArtwork {...props} />;
+  } };
+});
+beforeEach(() => { midiInvoke.mockResolvedValue({ devices: [], messages: [] }); routingInvoke.mockResolvedValue({nodes:[],wires:[]}); audioInvoke.mockResolvedValue({ running: true, error: null, telemetry: {}, decks: [0, 1].map(deck => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 })) }); });
+afterEach(() => { cleanup(); vi.useRealTimers(); invoke.mockReset(); audioInvoke.mockReset(); routingInvoke.mockReset(); midiInvoke.mockReset(); });
 const library: Library = { schema_version: 2, revision: 1, instance_id: 'test', music_bin: '/fixed/music', tracks: [{
   id: 'one', filename: 'Artist - Filename.wav', title: 'Artist - Filename', artist: 'Unknown artist',
   duration_seconds: 125.4, size_bytes: 100, modified_ns: '123', status: 'ready', error: null,
   source_hash: 'hash', analysis: { state: 'not_analysed', result: null, error: null },
 }] };
+test('library header loads the selected track on either deck and hides load controls when expanded', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  const loadA = screen.getByRole('button', { name: 'Load selected track on deck A' });
+  const loadB = screen.getByRole('button', { name: 'Load selected track on deck B' });
+  expect(loadA.textContent).toBe('< A');
+  expect(loadB.textContent).toBe('> B');
+  expect(Array.from(document.querySelector('.library-toolbar-actions')!.children).slice(0, 2)).toEqual([loadA, loadB]);
+  expect(loadA.getAttribute('data-midi-target')).toBe('ui:library:load-a');
+  expect(loadB.getAttribute('data-midi-target')).toBe('ui:library:load-b');
+  await waitFor(() => expect((loadA as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(loadA);
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 0, trackId: 'one', preserveLock: true, resetMixer: true }));
+  fireEvent.click(loadB);
+  await waitFor(() => expect(audioInvoke).toHaveBeenCalledWith('load_track', { deck: 1, trackId: 'one', preserveLock: true, resetMixer: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Expand music library' }));
+  expect(screen.queryByRole('button', { name: 'Load selected track on deck A' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Load selected track on deck B' })).toBeNull();
+});
 test('workspace visibility can be hidden, restored and retained across launches', async () => {
   invoke.mockResolvedValue(library);
   const areas = [['routing', 'routing tab'], ['patterns', 'patterns tab'], ['instruments', 'instruments tab']] as const;
@@ -539,6 +567,59 @@ test('actions header groups rows by availability', async () => {
   expect(rowTitles()).toEqual(['Unavailable', 'Ready one', 'Ready two']);
   fireEvent.click(header);
   expect(rowTitles()).toEqual(['Ready one', 'Ready two', 'Unavailable']);
+});
+test('library table learns an endless encoder and navigates visible sorted tracks without loading', async () => {
+  const tracks = ['Alpha', 'Beta', 'Gamma'].map(title => ({ ...library.tracks[0], id: title, title }));
+  invoke.mockResolvedValue({ ...library, tracks });
+  localStorage.setItem('vira.midi-enabled.v1', '[42]');
+  localStorage.removeItem('vira.midi-bindings.v1');
+  const devices = [{ id: 42, name: 'Controller' }];
+  midiInvoke.mockResolvedValue({ devices, messages: [] });
+  const scrollIntoView = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+  try {
+    render(<App />);
+    await screen.findByText('Gamma');
+    const table = document.querySelector('.collection-table')!;
+    const selected = (title: string) => expect(screen.getByText(title).closest('tr')?.getAttribute('aria-selected')).toBe('true');
+    async function turn(...values: number[]) {
+      const calls = midiInvoke.mock.calls.length;
+      midiInvoke.mockResolvedValueOnce({ devices, messages: values.map(value => ({ device: 42, channel: 1, type: 'cc', cc: 7, value })) });
+      await waitFor(() => expect(midiInvoke.mock.calls.length).toBeGreaterThan(calls));
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'MIDI map' }));
+    fireEvent.click(screen.getByText('Beta'));
+    expect(screen.getByText('Library track selection')).toBeTruthy();
+    await turn(1);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('vira.midi-bindings.v1')!)[0]).toMatchObject({ target: 'library:selection', mode: 'relative-twos', cc: 7 }));
+    selected('Alpha');
+    fireEvent.click(screen.getByRole('button', { name: 'MIDI map' }));
+    await turn(1);
+    await waitFor(() => selected('Beta'));
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+    expect(table.getAttribute('data-keyboard-navigation')).toBe('true');
+    await turn(1, 1);
+    await waitFor(() => selected('Gamma'));
+    await turn(127, 127, 127);
+    await waitFor(() => selected('Alpha'));
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Title' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by Title' }));
+    await turn(127);
+    await waitFor(() => selected('Beta'));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Gamma' } });
+    await waitFor(() => selected('Gamma'));
+    await turn(127, 127);
+    await waitFor(() => selected('Gamma'));
+    expect(table.querySelectorAll('tbody tr[aria-selected="true"]')).toHaveLength(1);
+    expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'no match' } });
+    await turn(1);
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(0);
+  } finally {
+    localStorage.removeItem('vira.midi-enabled.v1');
+    localStorage.removeItem('vira.midi-bindings.v1');
+    delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  }
 });
 test('library selection follows arrows, scrolls into view and follows filtered results', async () => {
   const tracks = ['Alpha', 'Beta', 'Gamma'].map((title, index) => ({
@@ -1889,4 +1970,21 @@ test('Cmd Z and Cmd Shift Z undo and redo the active deck grid only on Decks and
   await act(async () => { fireEvent.click(undo); });
   expect(redo.disabled).toBe(false);
   expect(invoke.mock.calls.filter(([command]) => command === 'apply_timing')).toHaveLength(0);
+});
+
+test('position-only polling reuses library rows while search still updates them', async () => {
+  invoke.mockResolvedValue(library);
+  render(<App />);
+  await screen.findByText('Unknown artist');
+  // Let initial selection/tag/transport effects settle before measuring a poll.
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 250)); });
+  artworkRenders.mockClear();
+  const before = audioInvoke.mock.calls.filter(([command]) => command === 'get_audio_state').length;
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 250)); });
+  expect(audioInvoke.mock.calls.filter(([command]) => command === 'get_audio_state').length).toBeGreaterThan(before);
+  expect(artworkRenders.mock.calls.filter(([id]) => id === 'one')).toHaveLength(0);
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: 'no match' } });
+  expect(screen.queryByText('Unknown artist')).toBeNull();
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search music library' }), { target: { value: '' } });
+  expect(screen.getByText('Unknown artist')).toBeTruthy();
 });

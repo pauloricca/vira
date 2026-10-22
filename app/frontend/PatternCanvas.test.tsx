@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { Patches } from './Patches';
 import { Patterns } from './Patterns';
 import { patchPortPoint } from './Patching';
+import { nativeHistory } from './historyMenu.testSupport';
 import { connectMusical, newPattern, normaliseBank, type Bank } from './patternModel';
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
@@ -16,13 +17,68 @@ beforeEach(() => {
   vi.stubGlobal('PointerEvent', TestPointer);
   vi.stubGlobal('DragEvent', class extends MouseEvent {dataTransfer: DataTransfer; constructor(type:string,init:DragEventInit) {super(type,init); this.dataTransfer=init.dataTransfer!;}});
   HTMLElement.prototype.setPointerCapture = vi.fn(); HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
-  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ left: 80, top: 100, width: 1440, height: 880, right: 1520, bottom: 980, x: 80, y: 100, toJSON: () => ({}) });
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function(this:HTMLElement) {
+    const left = 80 + Number(this.dataset.originX ?? 0)*.8, top = 100 + Number(this.dataset.originY ?? 0)*.8;
+    const width = this.classList.contains('routing-canvas') ? parseFloat(this.style.width)*.8 : 1440;
+    return {left,top,width,height:880,right:left+width,bottom:top+880,x:left,y:top,toJSON:()=>({})};
+  });
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => null) });
 });
 afterEach(() => { cleanup(); invoke.mockReset(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function mount() { render(<Patterns active />); await screen.findByLabelText('Expand Melody'); }
 const canvas = () => document.querySelector('.musical-canvas')!;
 async function saved() { await waitFor(() => expect(invoke).toHaveBeenCalledWith('patterns_save', expect.anything())); }
+test('native Edit menu undo and redo use the same musical history as the buttons', async () => {
+  await mount();
+  fireEvent.pointerDown(document.querySelector('[data-musical-node="pattern-p"]')!, {button:0});
+  fireEvent.keyDown(window, {key:'Delete'});
+  await waitFor(() => expect(bank.graph!.nodes.some(n => n.pattern === 'p')).toBe(false));
+  screen.getByRole('button', {name:'Undo'}).focus();
+  await nativeHistory();
+  await waitFor(() => expect(bank.graph!.nodes.some(n => n.pattern === 'p')).toBe(true));
+  await nativeHistory(true);
+  await waitFor(() => expect(bank.graph!.nodes.some(n => n.pattern === 'p')).toBe(false));
+});
+test('adds a catalog instrument from Patterns, preserves audio routing and sends it MIDI', async () => {
+  const descriptor = {path:'/Plugins/Synth.vst3',uid:'synth',name:'Synth',instrument:true,effect:false,midi_input:true,inputs:[],outputs:[{id:'out-0',label:'Main',channels:2}]};
+  let routing = {nodes:[{id:'output',kind:'output',deck:null,label:'Speakers',x:0,y:0,value:1}],wires:[]};
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((cmd,args) => {
+    if (cmd === 'vst_catalog') return Promise.resolve({scanning:false,plugins:[descriptor,{...descriptor,name:'Audio effect',uid:'effect',instrument:false,effect:true,midi_input:false}],errors:[]});
+    if (cmd === 'get_routing_graph') return Promise.resolve(structuredClone(routing));
+    if (cmd === 'set_routing_graph') {routing = structuredClone(args.graph); return Promise.resolve();}
+    return original(cmd,args);
+  });
+  await mount();
+  expect(screen.queryByRole('button',{name:'Audio effect · VST3'})).toBeNull();
+  fireEvent.doubleClick(await screen.findByRole('button',{name:'Synth · VST3'}));
+  await waitFor(() => expect(bank.graph!.nodes.some(n => n.destination?.kind === 'vst')).toBe(true));
+  const target = bank.graph!.nodes.find(n => n.destination?.kind === 'vst')!;
+  const id = target.destination?.kind === 'vst' ? target.destination.id : '';
+  expect(invoke).toHaveBeenCalledWith('vst_prepare',{id,descriptor});
+  expect(routing.nodes).toHaveLength(2);
+  expect(routing.nodes[0].id).toBe('output');
+  expect(routing.nodes[1]).toMatchObject({id,kind:'vst',vst:descriptor});
+  fireEvent.pointerDown(screen.getByLabelText('pattern-p output midi'),{button:0,pointerId:1});
+  vi.mocked(document.elementFromPoint).mockReturnValue(screen.getByLabelText(`${target.id} input midi`));
+  fireEvent.pointerUp(canvas(),{pointerId:1});
+  await waitFor(() => expect(bank.graph!.wires.some(w => w.from === 'pattern-p' && w.to === target.id)).toBe(true));
+  fireEvent.doubleClick(screen.getByRole('button',{name:'Synth'}));
+  await saved();
+  expect(bank.graph!.nodes.filter(n => n.destination?.kind === 'vst')).toHaveLength(1);
+  expect(invoke.mock.calls.filter(([cmd]) => cmd === 'vst_prepare')).toHaveLength(1);
+});
+
+test('does not save a MIDI destination when plugin preparation fails', async () => {
+  const descriptor = {path:'/Plugins/Broken.vst3',uid:'broken',name:'Broken synth',instrument:true,midi_input:true,inputs:[],outputs:[]};
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation((cmd,args) => cmd === 'vst_catalog' ? Promise.resolve({scanning:false,plugins:[descriptor],errors:[]}) : cmd === 'get_routing_graph' ? Promise.resolve({nodes:[],wires:[]}) : cmd === 'vst_prepare' ? Promise.reject('Plugin could not load') : original(cmd,args));
+  await mount();
+  fireEvent.doubleClick(await screen.findByRole('button',{name:'Broken synth · VST3'}));
+  expect((await screen.findByRole('alert')).textContent).toContain('Plugin could not load');
+  expect(invoke).not.toHaveBeenCalledWith('set_routing_graph',expect.anything());
+  expect(bank.graph!.nodes.some(n => n.destination?.kind === 'vst')).toBe(false);
+});
 test('adds several patterns to an occupied device input in either drag direction', async () => {
   for (const id of ['q', 'r']) {
     bank.patterns.push({...newPattern(), id, name:`Pattern ${id}`});
@@ -442,4 +498,26 @@ test('Selected deck can be added again and follows selection independently of ac
   expect(linkedHarmony(bank,'p',keys,'root',{},0,1)?.harmony).toEqual(keys[1]);
   expect(linkedHarmony(bank,'p',keys,'scale',{},1,0)?.harmony).toEqual(keys[0]);
   expect(() => connectMusical(graph,{id:'feedback',from:'pattern-p',to:'deck-0',kind:'midi'})).toThrow(/cannot drive/);
+});
+
+test('node body and unfocused name drag, while controls remain interactive', async () => {
+  await mount();
+  const node=document.querySelector<HTMLElement>('[data-musical-node="pattern-p"]')!;
+  for (const target of [node.querySelector('.routing-node-details') ?? node,node.querySelector('input.routing-node-name-input')!]) {
+    const before={x:parseFloat(node.style.left),y:parseFloat(node.style.top)};
+    fireEvent.pointerDown(target,{button:0,pointerId:21,clientX:400,clientY:400});
+    fireEvent.pointerMove(canvas(),{pointerId:21,clientX:480,clientY:480});
+    fireEvent.pointerUp(canvas(),{pointerId:21,clientX:480,clientY:480});
+    expect(node.style.left).toBe(`${before.x+100}px`);
+    expect(node.style.top).toBe(`${before.y+100}px`);
+  }
+  const before=node.style.left;
+  fireEvent.pointerDown(node.querySelector('button')!,{button:0,pointerId:22,clientX:400,clientY:400});
+  fireEvent.pointerMove(canvas(),{pointerId:22,clientX:480,clientY:480});
+  fireEvent.pointerUp(canvas(),{pointerId:22,clientX:480,clientY:480});
+  expect(node.style.left).toBe(before);
+  const name=node.querySelector<HTMLInputElement>('input.routing-node-name-input')!;
+  fireEvent.pointerDown(name,{button:0,pointerId:23,clientX:400,clientY:400});
+  fireEvent.pointerUp(canvas(),{pointerId:23,clientX:400,clientY:400});
+  expect(document.activeElement).toBe(name);
 });

@@ -3,8 +3,8 @@ use std::{collections::HashSet, time::Duration};
 mod active_deck;
 pub mod audio_benchmark;
 mod audio_devices;
-pub mod vst;
 mod plugin_host;
+pub mod vst;
 #[cfg(target_os = "macos")]
 mod vst_window;
 #[cfg(target_os = "macos")]
@@ -16,6 +16,8 @@ mod cue_output;
 mod deck_notes;
 pub mod decks;
 mod dsp;
+#[cfg(target_os = "macos")]
+mod history_menu;
 mod instrument_output;
 mod instruments;
 #[cfg(target_os = "macos")]
@@ -532,7 +534,9 @@ pub fn run() {
         let prepare_graph = graph.clone();
         crate::vst_window::ui(app, move |_| {
             for node in &prepare_graph.nodes {
-                let Some(descriptor) = &node.vst else { continue };
+                let Some(descriptor) = &node.vst else {
+                    continue;
+                };
                 if crate::vst::instance(&node.id).is_none() {
                     if let Err(e) = crate::vst::prepare(&node.id, descriptor) {
                         crate::vst::report_error(format!("{} remains offline: {e:#}", node.label));
@@ -540,7 +544,8 @@ pub fn run() {
                 }
             }
             crate::vst::snapshot(&prepare_graph)
-        }).await?;
+        })
+        .await?;
         let engine = state.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
             engine
@@ -802,6 +807,71 @@ pub fn run() {
             .map_err(|e| e.to_string())?
     }
     #[tauri::command]
+    async fn reveal_track_in_finder(
+        window: tauri::WebviewWindow,
+        track_id: String,
+    ) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            if !valid_id(&track_id) {
+                return Err("Invalid library track ID".into());
+            }
+            let library = library_state()?;
+            let track = library
+                .tracks
+                .iter()
+                .find(|track| track.id == track_id)
+                .ok_or("The selected track is no longer in the library")?;
+            let root = if track.collection.is_empty() {
+                &library.music_bin
+            } else {
+                &track.collection
+            };
+            let path = std::path::Path::new(root).join(&track.filename);
+            if !path.is_absolute() || !path.is_file() {
+                return Err("The selected track file is unavailable".into());
+            }
+            let output = std::process::Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(&path)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
+    async fn open_settings_folder(
+        window: tauri::WebviewWindow,
+        path: String,
+    ) -> Result<(), String> {
+        if window.label() != "main" {
+            return Err("Main-window command".into());
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            let folder = std::path::Path::new(&path);
+            if !folder.is_absolute() || !folder.is_dir() {
+                return Err("The selected folder is unavailable".into());
+            }
+            let output = std::process::Command::new("/usr/bin/open")
+                .args(["-a", "Finder", &path])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    #[tauri::command]
     async fn remove_music_folder(
         window: tauri::WebviewWindow,
         path: String,
@@ -890,10 +960,14 @@ pub fn run() {
     vst_window::restore();
     std::thread::spawn(vst::scan);
     tauri::Builder::default()
+        .menu(history_menu::menu)
+        .on_menu_event(history_menu::handle)
         .manage(runtime::EngineHandle::new())
         .invoke_handler(tauri::generate_handler![
             vst_window::vst_catalog,
             vst_window::vst_paths,
+            vst_window::vst_default_paths,
+            vst_window::vst_choose_folder,
             vst_window::vst_save_paths,
             vst_window::vst_rescan,
             vst_window::vst_prepare,
@@ -913,6 +987,8 @@ pub fn run() {
             update_tag,
             update_tag_tracks,
             get_path_settings,
+            open_settings_folder,
+            reveal_track_in_finder,
             remove_music_folder,
             choose_library_folder,
             open_library,

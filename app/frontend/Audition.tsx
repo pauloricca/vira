@@ -69,7 +69,7 @@ export function useAudition(audio: AudioState, tracks: Track[] = [], overlap = 8
     return () => { cancelled = true; };
   }, [generation, index, playAll, overlap, decksPlaying, output]);
   const activeSelection = selection && { ...selection, track: playlist.current[index] ?? selection.track };
-  return { selection: activeSelection, error, state, play, control, output, changeOutput, playAll, togglePlayAll: () => setPlayAll(value => !value) };
+  return { selection: activeSelection, error, dismissError: () => setError(null), state, play, control, output, changeOutput, playAll, togglePlayAll: () => setPlayAll(value => !value) };
 }
 
 export function AuditionControls({ audition }: { audition: ReturnType<typeof useAudition> }) {

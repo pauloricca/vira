@@ -177,6 +177,8 @@ mod tests {
             y: 0.,
             value: 440.,
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,

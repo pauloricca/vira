@@ -23,6 +23,7 @@ pub enum Kind {
     Compressor,
     Oscillator,
     RingModulation,
+    WetDry,
     Selector,
     Patch,
     Vst,
@@ -40,6 +41,10 @@ pub struct Node {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_label: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub bypass: bool,
     pub x: f32,
     pub y: f32,
     pub value: f32,
@@ -70,6 +75,7 @@ impl Node {
             Kind::Crossfader | Kind::Cue => &["A", "B"],
             Kind::Compressor => &["audio", "sidechain"],
             Kind::RingModulation => &["audio", "carrier"],
+            Kind::WetDry => &["dry", "wet"],
             _ => &["audio"],
         };
         ports.to_vec()
@@ -104,6 +110,10 @@ pub struct Graph {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeValue {
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub bypass: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq: Option<[f32; 3]>,
     pub id: String,
@@ -134,6 +144,9 @@ impl Graph {
                     Kind::Gain
                         | Kind::Selector
                         | Kind::Compressor
+                        | Kind::Vst
+                        | Kind::RingModulation
+                        | Kind::WetDry
                         | Kind::Oscillator
                         | Kind::Trim
                         | Kind::Eq
@@ -144,6 +157,8 @@ impl Graph {
                 "Node has no editable parameter"
             );
             node.value = parameter.value;
+            node.disabled = parameter.disabled;
+            node.bypass = parameter.bypass;
             if parameter.eq.is_some() {
                 node.eq = parameter.eq;
             }
@@ -190,6 +205,8 @@ impl Default for Graph {
             for (i, (name, kind)) in stages.iter().enumerate() {
                 nodes.push(Node {
                     custom_label: None,
+                    disabled: false,
+                    bypass: false,
                     vst: None,
                     patch_inputs: None,
                     eq: None,
@@ -240,6 +257,8 @@ impl Default for Graph {
         ] {
             nodes.push(Node {
                 custom_label: None,
+                disabled: false,
+                bypass: false,
                 vst: None,
                 patch_inputs: None,
                 eq: None,
@@ -283,6 +302,7 @@ impl Link {
 }
 struct Step {
     index: usize,
+    silent: bool,
     node: Node,
     links: Vec<Link>,
     dsp: MixerDsp,
@@ -534,6 +554,7 @@ impl Graph {
                                 | Kind::Compressor
                                 | Kind::Oscillator
                                 | Kind::RingModulation
+                                | Kind::WetDry
                                 | Kind::Selector
                                 | Kind::Vst
                                 | Kind::Patch
@@ -569,6 +590,7 @@ impl Graph {
                             && n.value >= 0.
                             && n.value.fract() == 0.
                             && (n.value as usize) < n.inputs().len(),
+                    Kind::WetDry => (0. ..=1.).contains(&n.value),
                     Kind::Gain => n.value >= 0.,
                     Kind::Compressor => (0.01..=1.).contains(&n.value),
                     Kind::Oscillator => (20. ..=2000.).contains(&n.value),
@@ -656,14 +678,40 @@ impl Graph {
             order.len() == self.nodes.len(),
             "Feedback loops are not supported; this connection creates a cycle"
         );
-        let conventional = self.nodes.iter().filter(|n| n.kind != Kind::Input).count()
+        // A source-less mixer chain can never contribute audio. Keep its nodes
+        // editable and meterable without running each stage at the sample rate.
+        // Plugins/patches remain sources: they can generate sound or have tails.
+        let mut silent = vec![false; self.nodes.len()];
+        for &i in &order {
+            silent[i] = !matches!(
+                self.nodes[i].kind,
+                Kind::Player | Kind::Input | Kind::Oscillator | Kind::Patch | Kind::Vst
+            ) && links[i].iter().all(|l| silent[l.source]);
+        }
+        let conventional = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, n)| n.kind != Kind::Input && !silent[*i])
+            .count()
             == default.nodes.len()
-            && self.wires.len() == default.wires.len()
+            && default.nodes.iter().all(|n| {
+                self.nodes
+                    .iter()
+                    .any(|actual| actual.id == n.id && actual.kind == n.kind)
+            })
+            && self
+                .wires
+                .iter()
+                .filter(|w| !silent[index(&w.from).unwrap()])
+                .count()
+                == default.wires.len()
             && default.wires.iter().all(|w| self.wires.contains(w));
         let steps = order
             .into_iter()
             .map(|i| Step {
                 index: i,
+                silent: silent[i],
                 node: self.nodes[i].clone(),
                 external_detector: links[i].iter().any(|l| l.port == 1),
                 links: std::mem::take(&mut links[i]),
@@ -758,6 +806,7 @@ impl Plan {
         }
 
         for step in &mut self.steps {
+            if step.silent { continue; }
             if let Some(old) = previous
                 .steps
                 .iter_mut()
@@ -790,6 +839,9 @@ impl Plan {
     ) -> ([[f32; 2]; 2], [[f32; 2]; 2]) {
         let mut outputs = [[[0.; 2]; 2]; NODE_LIMIT + 1];
         for step in &mut self.steps {
+            if step.silent {
+                continue;
+            }
             let mut input = [[0.; 2]; 32];
             for link in &step.links {
                 for c in 0..2 {
@@ -930,6 +982,8 @@ mod tests {
                 y: 0.,
                 value: 1.,
                 custom_label: None,
+                disabled: false,
+                bypass: false,
                 vst: None,
                 patch_inputs: None,
                 eq: None,
@@ -998,6 +1052,8 @@ mod tests {
             y: 0.,
             value: 1.,
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1011,6 +1067,8 @@ mod tests {
             y: 0.,
             value: 0.5,
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1067,6 +1125,8 @@ mod tests {
                 y: 650.,
                 value: 1.,
                 custom_label: None,
+                disabled: false,
+                bypass: false,
                 vst: None,
                 patch_inputs: None,
                 eq: None,
@@ -1107,6 +1167,8 @@ mod tests {
         let mut g = Graph::default();
         g.nodes.push(Node {
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1153,6 +1215,8 @@ mod tests {
         let mut graph = Graph::default();
         graph.nodes.push(Node {
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1180,6 +1244,8 @@ mod tests {
         // An unused processor forces the general schedule without changing its signal chain.
         graph.nodes.push(Node {
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1223,6 +1289,8 @@ mod tests {
         graph.wires.clear();
         graph.nodes.push(Node {
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1366,6 +1434,12 @@ impl Step {
         cross: [f32; 2],
         cue: [f32; 2],
     ) -> [f32; 2] {
+        if self.node.bypass {
+            return input[0];
+        }
+        if self.node.disabled {
+            return [0.; 2];
+        }
         let d = self.node.deck.unwrap_or(0);
         match self.node.kind {
             Kind::Player => players[d],
@@ -1420,6 +1494,9 @@ impl Step {
             Kind::Cue => std::array::from_fn(|c| 0.45 * (input[0][c] + input[1][c])),
             Kind::Output | Kind::Patch | Kind::Vst | Kind::Selector => input[0],
             Kind::Gain => input[0].map(|v| v * self.node.value),
+            Kind::WetDry => std::array::from_fn(|c| {
+                input[0][c] * (1. - self.node.value) + input[1][c] * self.node.value
+            }),
             Kind::Compressor => {
                 let detector = if self.external_detector {
                     input[1]
@@ -1460,6 +1537,8 @@ impl Graph {
         self.nodes.push(Node {
             eq: None,
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: Some(Vec::new()),
             id: id.clone(),
@@ -1530,8 +1609,11 @@ impl Plan {
         let interval = crate::rolling::peak_frames();
         for index in self.history.indices() {
             let output = self.history.output(index);
+            let silent = self.steps.iter().any(|s| s.index == index && s.silent);
             for (i, frame) in block.iter().enumerate() {
-                let sample = if self.conventional && self.faders.contains(&index) {
+                let sample = if silent {
+                    [0.; 2]
+                } else if self.conventional && self.faders.contains(&index) {
                     frame.deck_samples[if index == self.faders[0] { 0 } else { 1 }]
                 } else if self.conventional {
                     std::array::from_fn(|c| {
@@ -1639,6 +1721,9 @@ impl Plan {
         let patch = &mut self.patch_frames;
         let routed_inputs = &mut self.routed_inputs;
         for step in &mut self.steps {
+            if step.silent {
+                continue;
+            }
             let mut captured = [0.; PRODUCER_FRAMES * 2];
             if let Some(source) = &step.capture {
                 source.render(&mut captured);
@@ -1693,7 +1778,7 @@ impl Plan {
                     };
                 }
             }
-            if step.node.kind == Kind::Vst {
+            if step.node.kind == Kind::Vst && !step.node.disabled && !step.node.bypass {
                 outputs[step.index].fill([[0.; 2]; 32]);
                 let mut offline = true;
                 if let Some(instance) = &step.vst {
@@ -1732,6 +1817,32 @@ impl Plan {
                     );
                     for i in 0..PRODUCER_FRAMES {
                         outputs[step.index][i][0] = patch[i].samples;
+                    }
+                }
+            }
+            if step.node.disabled || step.node.bypass {
+                for i in 0..PRODUCER_FRAMES {
+                    for port in 0..if step.node.kind == Kind::Vst {
+                        step.node.vst.as_ref().map_or(0, |v| v.outputs.len())
+                    } else {
+                        2
+                    } {
+                        outputs[step.index][i][port] = if step.node.bypass {
+                            if step.node.kind == Kind::Vst {
+                                let bus = port.min(
+                                    step.node
+                                        .vst
+                                        .as_ref()
+                                        .map_or(0, |v| v.inputs.len())
+                                        .saturating_sub(1),
+                                );
+                                [routed_inputs[bus][0][i], routed_inputs[bus][1][i]]
+                            } else {
+                                outputs[step.index][i][1]
+                            }
+                        } else {
+                            [0.; 2]
+                        };
                     }
                 }
             }
@@ -1913,6 +2024,8 @@ mod rolling_tests {
             y: 0.,
             value: 440.,
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1950,6 +2063,101 @@ mod rolling_tests {
 mod parameter_tests {
     use super::*;
     #[test]
+    fn wet_dry_blends_stereo_inputs_and_validates_live_parameters() {
+        let mut graph = Graph::default();
+        let mut node = graph.nodes[0].clone();
+        node.id = "test-wet-dry".into();
+        node.label = "Wet/Dry".into();
+        node.kind = Kind::WetDry;
+        node.deck = None;
+        node.value = 0.5;
+        assert_eq!(node.inputs(), vec!["dry", "wet"]);
+        assert_eq!(node.outputs(), vec!["audio"]);
+        graph.nodes.push(node);
+        for (value, expected) in [
+            (0., [0.2, 0.6]),
+            (0.25, [0.35, 0.35]),
+            (0.5, [0.5, 0.1]),
+            (1., [0.8, -0.4]),
+        ] {
+            let updated = graph
+                .clone()
+                .with_parameters(Parameters {
+                    nodes: vec![NodeValue {
+                        id: "test-wet-dry".into(),
+                        value,
+                        disabled: false,
+                        bypass: false,
+                        eq: None,
+                    }],
+                    wires: vec![],
+                })
+                .unwrap();
+            let mut plan = updated.compile().unwrap();
+            let step = plan
+                .steps
+                .iter_mut()
+                .find(|s| s.node.kind == Kind::WetDry)
+                .unwrap();
+            let mut input = [[0.; 2]; 32];
+            input[0] = [0.2, 0.6];
+            input[1] = [0.8, -0.4];
+            let mut run = |disabled, bypass| {
+                step.node.disabled = disabled;
+                step.node.bypass = bypass;
+                step.process(
+                    input,
+                    [[0.; 2]; 2],
+                    [Settings::default(); 2],
+                    [0.; 2],
+                    [0.; 2],
+                    [0.; 2],
+                )
+            };
+            let actual = run(false, false);
+            for c in 0..2 {
+                assert!((actual[c] - expected[c]).abs() < 1e-6);
+            }
+            assert_eq!(run(true, false), [0.; 2]);
+            assert_eq!(run(false, true), input[0]);
+        }
+        for value in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+            graph.nodes.last_mut().unwrap().value = value;
+            assert!(graph.compile().is_err());
+        }
+    }
+
+    #[test]
+    fn effects_switch_between_processed_silent_and_passthrough() {
+        let graph = Graph::default();
+        let mut plan = graph.compile().unwrap();
+        let step = plan
+            .steps
+            .iter_mut()
+            .find(|s| s.node.kind == Kind::Fader)
+            .unwrap();
+        step.node.deck = None;
+        step.node.value = 0.25;
+        let mut input = [[0.; 2]; 32];
+        input[0] = [0.8, 0.4];
+        let mut run = |disabled, bypass| {
+            step.node.disabled = disabled;
+            step.node.bypass = bypass;
+            step.process(
+                input,
+                [[0.; 2]; 2],
+                [Settings::default(); 2],
+                [0.; 2],
+                [0.; 2],
+                [0.; 2],
+            )
+        };
+        assert_eq!(run(true, false), [0.; 2]);
+        assert_eq!(run(true, true), input[0]);
+        assert_eq!(run(false, true), input[0]);
+        assert_ne!(run(false, false), input[0]);
+    }
+    #[test]
     fn values_patch_existing_identity_without_changing_topology_or_layout() {
         let mut graph = Graph::default();
         graph.nodes.push(Node {
@@ -1958,6 +2166,8 @@ mod parameter_tests {
             deck: None,
             label: "Gain".into(),
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,
@@ -1971,6 +2181,8 @@ mod parameter_tests {
         let updated = graph
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    disabled: false,
+                    bypass: false,
                     eq: None,
                     id: "test-gain".into(),
                     value: 3.,
@@ -1989,6 +2201,8 @@ mod parameter_tests {
             .clone()
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    disabled: false,
+                    bypass: false,
                     eq: None,
                     id: "draft-node".into(),
                     value: 2.
@@ -1999,6 +2213,8 @@ mod parameter_tests {
         let invalid = original
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    disabled: false,
+                    bypass: false,
                     eq: None,
                     id: "test-gain".into(),
                     value: -1.,
@@ -2079,11 +2295,15 @@ mod mixer_line_tests {
             .with_parameters(Parameters {
                 nodes: vec![
                     NodeValue {
+                        disabled: false,
+                        bypass: false,
                         id: "line-2-fader".into(),
                         value: 1.,
                         eq: None,
                     },
                     NodeValue {
+                        disabled: false,
+                        bypass: false,
                         id: "line-2-cue-switch".into(),
                         value: 0.,
                         eq: None,
@@ -2118,12 +2338,74 @@ mod mixer_line_tests {
         assert!(!sources.iter().any(|s| s["id"] == "line-2-trim"));
     }
     #[test]
+    fn disconnected_mixer_line_keeps_fast_path_and_silent_meter_until_connected() {
+        let line = extra_line();
+        let mut graph = Graph::default();
+        graph.nodes.extend(
+            line.nodes
+                .into_iter()
+                .filter(|n| n.id.starts_with("line-2-")),
+        );
+        graph.wires.extend(
+            line.wires
+                .into_iter()
+                .filter(|w| w.from.starts_with("line-2-") && w.to.starts_with("line-2-")),
+        );
+        let mut plan = graph.compile().unwrap();
+        assert!(
+            plan.conventional,
+            "empty mixer lines must not disable the deck fast path"
+        );
+        assert!(plan
+            .steps
+            .iter()
+            .filter(|s| s.node.id.starts_with("line-2-"))
+            .all(|s| s.silent));
+        let mut block = [crate::decks::Frame::default(); crate::decks::PRODUCER_FRAMES];
+        for (i, frame) in block.iter_mut().enumerate() {
+            frame.output_frame =
+                crate::rolling::peak_frames() - crate::decks::PRODUCER_FRAMES as u64 + i as u64;
+            frame.deck_samples = [[0.5; 2]; 2];
+            frame.routing_cross = [1.; 2];
+        }
+        plan.capture_waveforms(&block);
+        let meter =
+            plan.history
+                .snapshot(&["line-2-fader".into()], 0, crate::rolling::peak_frames());
+        let peaks = meter["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "line-2-fader")
+            .unwrap()["peaks"]
+            .as_array()
+            .unwrap();
+        assert!(!peaks.is_empty());
+        assert!(peaks.iter().all(|p| p[1] == 0.));
+        graph.wires.push(Wire {
+            from: "a-player".into(),
+            to: "line-2-trim".into(),
+            input: "audio".into(),
+            output: "audio".into(),
+            gain: 1.,
+        });
+        let plan = graph.compile().unwrap();
+        assert!(!plan.conventional);
+        assert!(plan
+            .steps
+            .iter()
+            .filter(|s| s.node.id.starts_with("line-2-"))
+            .all(|s| !s.silent));
+    }
+    #[test]
     fn channel_eq_parameters_validate_each_band_and_preserve_topology() {
         let graph = extra_line();
         let changed = graph
             .clone()
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    disabled: false,
+                    bypass: false,
                     id: "line-2-eq".into(),
                     value: 0.,
                     eq: Some([0., 0.6, 0.8]),
@@ -2136,6 +2418,8 @@ mod mixer_line_tests {
         let bad = graph
             .with_parameters(Parameters {
                 nodes: vec![NodeValue {
+                    disabled: false,
+                    bypass: false,
                     id: "line-2-eq".into(),
                     value: 0.,
                     eq: Some([0.5, f32::NAN, 0.5]),
@@ -2265,6 +2549,8 @@ mod selector_tests {
             deck: None,
             label: "Selector".into(),
             custom_label: None,
+            disabled: false,
+            bypass: false,
             x: 0.,
             y: 0.,
             value: 0.,

@@ -25,18 +25,27 @@ function scroll(options:WheelEventInit) {
 }
 async function tick() { await act(async () => { await vi.advanceTimersByTimeAsync(20); }); }
 
-test('rolling waveform accepts both trackpad axes, batches displacement, and avoids diagonal double movement', async () => {
+test('rolling waveform uses only horizontal displacement and leaves vertical scrolling untouched', async () => {
   render(<Harness />);
   expect(scroll({deltaX:10,deltaY:2}).defaultPrevented).toBe(true);
-  scroll({deltaY:-4});
+  expect(scroll({deltaY:-4}).defaultPrevented).toBe(false);
+  scroll({deltaX:-4,deltaY:20});
   expect(control).not.toHaveBeenCalled();
   await tick();
   expect(control).toHaveBeenCalledTimes(1);
   expect(control.mock.calls[0].slice(0,2)).toEqual([0,'jog']);
   expect(control.mock.calls[0][2]).toBeCloseTo(.03);
   expect(interact).toHaveBeenCalledWith(0);
-  scroll({deltaY:2,deltaMode:1}); await tick();
+  scroll({deltaX:2,deltaMode:1}); await tick();
   expect(control).toHaveBeenLastCalledWith(0,'jog',.16);
+});
+
+test('vertical scrolling does not jog or select a deck', async () => {
+  render(<Harness />);
+  expect(scroll({deltaY:40}).defaultPrevented).toBe(false);
+  await tick();
+  expect(control).not.toHaveBeenCalled();
+  expect(interact).not.toHaveBeenCalled();
 });
 
 test('playing and stopped sensitivity persist independently of MIDI and apply immediately', async () => {

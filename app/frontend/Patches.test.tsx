@@ -70,7 +70,7 @@ test('edit, toggle and parameter changes target the correct instance and generat
   invoke.mockImplementation((command: string, args?: { value: number; action: string }) => Promise.resolve(command === 'teia_library' ? { files: ['Gain.json'] } : command === 'patches_state' ? [{ slot: 2, state: loaded }] : command === 'patches_control' ? { ...loaded, record: { ...loaded.record, bypass: args?.action === 'bypass' }, parameters: { 'vira-factory-stereo-gain': args?.value } } : undefined));
   render(<Patches />);
   const toggle = await screen.findByRole('switch');
-  fireEvent.doubleClick(screen.getByRole('listitem', { name: 'Gain' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Gain' }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('teia_open_editor', { slot: 2 }));
   fireEvent.click(toggle);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith('patches_control', { slot: 2, action: 'bypass', parameter: null, value: 1, generation: '7' }));

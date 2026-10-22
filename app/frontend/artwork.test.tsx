@@ -26,6 +26,7 @@ test('requests artwork only near the viewport and waits for every deck load', as
   expect(invoke).not.toHaveBeenCalled();
   await act(async () => finishB());
   await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+  cleanup();
   expect(disconnect).toHaveBeenCalled();
 });
 
@@ -44,4 +45,21 @@ test('bounds concurrent cover requests and drains the queue after failures', asy
   }
   expect(peak).toBe(4);
   expect(active).toBe(0);
+});
+
+test('releases offscreen image references and restores a cached cover on return', async () => {
+  let intersect: IntersectionObserverCallback;
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+    observe() {} disconnect() {}
+  });
+  invoke.mockResolvedValue('data:image/png;base64,cover');
+  const { container } = render(<TrackArtwork trackId="offscreen" className="cover" />);
+  await act(async () => { intersect!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
+  await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
+  await act(async () => { intersect!([{ isIntersecting: false } as IntersectionObserverEntry], {} as IntersectionObserver); });
+  expect(container.querySelector('img')).toBeNull();
+  await act(async () => { intersect!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); });
+  expect(container.querySelector('img')).not.toBeNull();
+  expect(invoke).toHaveBeenCalledTimes(1);
 });

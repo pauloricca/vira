@@ -14,7 +14,6 @@ export function PluginControls({id,name,compact=false}:{id:string;name:string;co
   return <div className="plugin-parameters" onDoubleClick={e=>e.stopPropagation()}>
     {!compact && <><label>Find parameter <input aria-label={`${name} find parameter`} value={search} onChange={e=>setSearch(e.target.value)} /></label><p>Choose controls to include when this node is pinned. Each control supports MIDI mapping.</p></>}
     {error && <small role="status">{error}</small>}
-    {compact && !visible.length && <small>Select this node to choose pinned parameters.</small>}
     {visible.slice(0,100).map(p=><div key={p.id} className="plugin-parameter-row">
       {!compact && <label><input type="checkbox" aria-label={`Pin ${p.name}`} checked={chosen.includes(p.id)} onChange={e=>pick(p.id,e.target.checked)} />Pin</label>}
       <ParameterKnob midiId={`plugin:${id}:${p.id}`} label={p.name} ariaLabel={`${name} ${p.name}`} value={p.value} min={p.min} max={p.max} defaultValue={p.default} step={p.steps>0?(p.max-p.min)/p.steps:undefined} disabled={p.readonly} formatValue={value=>value===p.value?`${p.text} ${p.unit}`:String(value)} onChange={value=>{setParameters(old=>old.map(q=>q.id===p.id?{...q,value,text:String(value)}:q));void invoke('vst_set_parameter',{id,parameter:p.id,value}).catch(e=>setError(String(e)));}} />

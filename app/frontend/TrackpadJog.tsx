@@ -38,7 +38,7 @@ export function useTrackpadJog(element: RefObject<HTMLCanvasElement | null>, sta
       // Chromium pinch uses Ctrl+wheel; WebKit sends native gesture events.
       if (event.ctrlKey) { movement = 0; return; }
       if (event.metaKey || event.altKey || pinching || !available()) return;
-      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      const delta = event.deltaX;
       const pixels = delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? Math.max(1, node!.clientWidth || 800) : 1);
       if (!Number.isFinite(pixels) || pixels === 0) return;
       event.preventDefault();
@@ -65,5 +65,5 @@ export function useTrackpadJog(element: RefObject<HTMLCanvasElement | null>, sta
 
 export function TrackpadJogSettings() {
   const [values, setValues] = useState(() => ({playing:sensitivity('playing'), stopped:sensitivity('stopped')}));
-  return <SettingsCard className="settings-card"><h3>Waveform trackpad</h3><p className="settings-hint">Scroll or slide two fingers over a deck’s rolling waveform to move through the audio. Horizontal and vertical scrolling use the same smoothing as MIDI wheels. Works in Edit grid mode too, without changing the grid. Playing decks must be unlocked. Pinch still changes waveform zoom.</p>{(['playing','stopped'] as const).map(mode => <div className="settings-row" key={mode}><strong>{mode === 'playing' ? 'Playing movement' : 'Stopped movement'}</strong><label><input type="number" aria-label={`Waveform trackpad ${mode} movement`} min="0.1" max="100" step="0.1" value={values[mode]} onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= .1 && value <= 100) { localStorage.setItem(`vira.trackpad-jog-${mode}-ms`, String(value)); setValues(old => ({...old,[mode]:value})); } }} /> ms / scroll pixel</label></div>)}</SettingsCard>;
+  return <SettingsCard className="settings-card"><h3>Waveform trackpad</h3><p className="settings-hint">Scroll horizontally or slide two fingers sideways over a deck’s rolling waveform to move through the audio, using the same smoothing as MIDI wheels. Vertical scrolling does not move the waveform. Works in Edit grid mode too, without changing the grid. Playing decks must be unlocked. Pinch still changes waveform zoom.</p>{(['playing','stopped'] as const).map(mode => <div className="settings-row" key={mode}><strong>{mode === 'playing' ? 'Playing movement' : 'Stopped movement'}</strong><label><input type="number" aria-label={`Waveform trackpad ${mode} movement`} min="0.1" max="100" step="0.1" value={values[mode]} onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && value >= .1 && value <= 100) { localStorage.setItem(`vira.trackpad-jog-${mode}-ms`, String(value)); setValues(old => ({...old,[mode]:value})); } }} /> ms / scroll pixel</label></div>)}</SettingsCard>;
 }

@@ -131,6 +131,11 @@ fn endpoints(output: bool) -> Vec<Endpoint> {
 }
 pub struct Router {
     core: Core,
+    path_bank: Option<std::sync::Arc<Bank>>,
+    paths: Vec<(
+        crate::pattern_routing::Wire,
+        Vec<crate::pattern_routing::Transformation>,
+    )>,
     inputs: HashMap<i32, Input>,
     available: Vec<Endpoint>,
     outputs: Vec<Endpoint>,
@@ -145,6 +150,8 @@ impl Router {
     pub fn new() -> Self {
         Self {
             core: Core::default(),
+            path_bank: None,
+            paths: Vec::new(),
             inputs: HashMap::new(),
             available: vec![],
             outputs: vec![],
@@ -209,7 +216,7 @@ impl Router {
     }
     pub fn tick(
         &mut self,
-        bank: &Bank,
+        bank: &std::sync::Arc<Bank>,
         sink: &mut impl Sink,
         ns: u64,
         active: usize,
@@ -234,6 +241,21 @@ impl Router {
             self.last = Instant::now();
             self.device_generation = generation;
         }
+        // Banks are immutable snapshots. Expand the routing DAG only when its
+        // snapshot changes, rather than allocating paths on every 1 ms MIDI tick.
+        // Source availability and destination generations still resolve below.
+        if !self
+            .path_bank
+            .as_ref()
+            .is_some_and(|old| std::sync::Arc::ptr_eq(old, bank))
+        {
+            self.paths = bank
+                .graph
+                .as_ref()
+                .map(crate::pattern_routing::signal_paths)
+                .unwrap_or_default();
+            self.path_bank = Some(bank.clone());
+        }
         let monitored: std::collections::HashSet<_> = bank
             .graph
             .as_ref()
@@ -244,10 +266,7 @@ impl Router {
             .collect();
         let mut routes = Vec::new();
         if let Some(graph) = &bank.graph {
-            for (index, (w, transformations)) in crate::pattern_routing::signal_paths(graph)
-                .iter()
-                .enumerate()
-            {
+            for (index, (w, transformations)) in self.paths.iter().enumerate() {
                 let Some(from) = graph.nodes.iter().find(|n| {
                     n.id == w.from
                         && (n.kind == "instrument"

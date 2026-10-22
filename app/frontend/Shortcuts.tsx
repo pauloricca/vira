@@ -39,7 +39,7 @@ const shortcutCategories = [
   { title: 'Track timing & analysis', shortcuts: [
     ['Cmd + Z / Cmd + Shift + Z', 'Undo / redo the active deck’s grid changes, including draft drags, bar shifts, BPM and reference beats; each drag is one step', 'Decks page; outside text fields and key dropdowns; active loaded deck with history; no loading, pending launch, save or preview; Edit grid: stopped; otherwise stopped or the only playing deck'],
     ['Play / Pause during Edit grid', 'Listen with the unsaved draft grid, then pause to continue adjusting; the draft and pinned beat stay in place', 'Loaded track; Edit grid enabled; moving, scaling and pinning are disabled during playback'],
-    ['Two-finger scroll / slide over rolling waveform', 'Smoothly nudge playback or audition stopped movement with horizontal or vertical trackpad scrolling. Set separate playing and stopped movement in Settings → Waveform trackpad; works in Edit grid mode without changing the grid; pinch still zooms', 'Loaded deck; audio running; MIDI map mode off; not saving the grid; playing deck unlocked'],
+    ['Horizontal two-finger scroll / slide over rolling waveform', 'Smoothly nudge playback or audition stopped movement with horizontal trackpad scrolling. Vertical scrolling does not move the waveform. Set separate playing and stopped movement in Settings → Waveform trackpad; works in Edit grid mode without changing the grid; pinch still zooms', 'Loaded deck; audio running; MIDI map mode off; not saving the grid; playing deck unlocked'],
     ['MIDI wheel on rolling waveform', 'Smoothly nudge playback or audition stopped movement; map the waveform in MIDI map mode and choose the wheel encoding. Set playing and stopped movement in Settings', 'Loaded deck; audio running; Edit grid off; playing deck unlocked'],
     ['Drag the rolling waveform', 'Move the entire grid; with a pinned beat, drag away from the pin to scale around it (30–300 BPM)', 'Stopped track; Edit grid enabled; hand cursor over unpinned beat marks; with a pin, resize cursor away from it and unavailable cursor over the fixed pin'],
     ['Command-click a beat mark', 'Pin any beat as the scaling centre (green); click another beat to move the pin, or the same beat to unpin', 'Stopped track; Edit grid enabled; Save grid commits changes, Cancel discards them'],
@@ -69,7 +69,7 @@ const shortcutCategories = [
     ['Canvas button', 'Restore the pattern patching canvas', 'Expanded pattern editor'],
     ['Drag empty canvas', 'Box-select multiple nodes; drag a selected node header to move the selection together on the grid', 'Patterns canvas'],
     ['Delete / Backspace', 'Remove selected nodes and their cables, or disconnect selected cable', 'Patterns canvas; outside text fields and selectors; pattern definitions stay in the palette'],
-    ['Cmd + Z / Cmd + Shift + Z', 'Undo / redo musical routing edits', 'Patterns canvas; outside text fields and selectors'],
+    ['Cmd + Z / Cmd + Shift + Z', 'Same as Undo / Redo buttons (also available in the macOS Edit menu): undo / redo musical routing edits', 'Patterns canvas; outside text/number fields and selectors; no node addition in progress; text fields use their own history'],
     ['Escape', 'Cancel cable, node or selection-box drag and clear canvas selection', 'Patterns canvas; outside text fields and selectors'],
   ] },
   { title: 'Audio routing', shortcuts: [
@@ -77,8 +77,8 @@ const shortcutCategories = [
     ['Enter / Escape', 'Finish / cancel node renaming; clicking elsewhere also finishes. Apply routing publishes the name to waveforms', 'Routing page; node name text field is focused; no Apply in progress'],
     ['Drag empty canvas', 'Box-select nodes and whole mixer lines; drag a selected header to move the selection together on the grid', 'Routing page; no Apply in progress'],
     ['Delete / Backspace', 'Remove selected added nodes or mixer lines and their cables, or disconnect selected cable; default Routing nodes are protected; session patches stay in Decks', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
-    ['Cmd + Z', 'Undo the last routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
-    ['Cmd + Shift + Z', 'Redo the last undone routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress'],
+    ['Cmd + Z', 'Same as Undo button / Edit → Undo: undo the last routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress; text fields use their own history'],
+    ['Cmd + Shift + Z', 'Same as Redo button / Edit → Redo: redo the last undone routing edit', 'Routing page; outside text/number fields and selectors; no Apply in progress; text fields use their own history'],
     ['Escape', 'Cancel cable, node or selection-box drag and clear node selection', 'Routing page; outside text/number fields and selectors'],
   ] },
   { title: 'Teia editor', shortcuts: [

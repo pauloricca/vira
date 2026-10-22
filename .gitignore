@@ -1,5 +1,6 @@
 # Local music library
 /music/
+/backups/
 
 # macOS and editor files
 .DS_Store

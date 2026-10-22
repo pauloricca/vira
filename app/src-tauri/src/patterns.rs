@@ -871,6 +871,7 @@ mod mac {
             controllers: HashMap::new(),
         };
         let mut live = crate::midi_live::Router::new();
+        let halted_bank = Arc::new(Bank::default());
         let mut live_running = true;
         let mut previous_roots = HashMap::new();
         let mut previous = Arc::new(Bank::default());
@@ -971,7 +972,7 @@ mod mac {
             } else {
                 // UI controller permissions remain useful while audio routing is halted.
                 live.tick(
-                    &Bank::default(),
+                    &halted_bank,
                     &mut ports,
                     now,
                     active,
@@ -1187,8 +1188,8 @@ mod mac {
                 }
                 for p in routes {
                     let id = p.id.clone();
-                    let at = launch_boundary(&bank, &p, beat, bpm);
                     if play {
+                        let at = launch_boundary(&bank, &p, beat, bpm);
                         if !ready || !is_available(&p, &available) {
                             s.error=Some("Start audio and select an available MIDI destination before launching.".into());
                             continue;
@@ -1200,15 +1201,10 @@ mod mac {
                             cursor: at - 1e-8,
                             ..Voice::default()
                         });
-                    } else if let Some(v) = s.voices.get_mut(&id) {
-                        if v.stop.is_some() {
-                            continue;
-                        }
-                        if v.start.is_some_and(|start| start >= at) {
-                            v.stop = v.start;
-                        } else {
-                            v.stop = Some(at)
-                        }
+                    } else if let Some(mut v) = s.voices.remove(&id) {
+                        // Stops also cancel pending launches and already queued
+                        // internal events, independently of launch quantisation.
+                        ports.release(&p, &mut v, now + 6_000_000);
                     }
                 }
             }
@@ -1495,7 +1491,7 @@ mod tests {
         assert_eq!(p, restored);
     }
     #[test]
-    fn all_destinations_launch_and_stop_at_one_common_boundary() {
+    fn all_destinations_launch_at_one_common_boundary() {
         let mut p = pattern();
         p.owner = Some("owner".into());
         p.quantum = 4;

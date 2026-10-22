@@ -87,6 +87,8 @@ fn run_mode(seconds: u64, report: &Path, timing: bool, routing: bool) -> Result<
         let mut graph = Graph::default();
         graph.nodes.push(Node {
             custom_label: None,
+            disabled: false,
+            bypass: false,
             vst: None,
             patch_inputs: None,
             eq: None,

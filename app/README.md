@@ -103,6 +103,15 @@ wait until all pending deck loads finish. In-flight work finishes its current st
 an analysis process already running uses a lower CPU priority. Background work
 resumes after success or failure, and abandoned service reservations expire.
 
+Library filtering, ordering and row rendering are reused across position-only
+transport updates. Row actions still read current deck state and preferences.
+Cover data URLs use a 16 MiB / 512-entry LRU cache, and covers outside the viewport
+margin release their image references. Visible images may add to that cache budget.
+Smart bass profiles persist in the app support directory's `cache/bass-profiles/`,
+keyed by prepared artifact, verified PCM hash, sample rate and analysis version.
+Missing or invalid profiles are rebuilt on the loading thread; cache write failures
+do not prevent playback. This cache does not avoid PCM transfer or integrity checks.
+
 The workspace uses
 an independent master BPM in the header, unset until the first deck plays. Buttons A → and B → drift it toward the selected track's original BPM, regardless of tempo lock.
 Settings → Automatic transitions → **BPM shift** controls how far master tempo
@@ -904,7 +913,11 @@ arrange the canvas. Zoom / Fit shows the whole graph; scroll to reach its full a
 Built-in processors initially include Gain, a 4:1 Compressor with a named
 sidechain input and separate processed/dry outputs, a sine instrument with
 sine/cosine outputs (20–2,000 Hz at 0.1 amplitude), and a Ring modulator with
-separate audio/carrier inputs and processed/dry outputs. Compressor threshold is
+separate audio/carrier inputs and processed/dry outputs. Wet/Dry blends named
+`dry` (first) and `wet` (second) stereo inputs into one audio output: **Wet mix** runs from 0
+(totally dry) to 1 (totally wet), defaults to 0.5, and uses
+`wet × mix + dry × (1 − mix)`. Bypass passes the dry input through.
+Compressor threshold is
 linear amplitude (0.01–1); its detector follows its own audio when no sidechain
 wire exists. A connected silent sidechain remains a silent external detector.
 The node/port schema supports multiple named stereo audio inputs and outputs;
@@ -1040,8 +1053,9 @@ master beat anchor; webview polling only displays the playhead. Events use exact
 CoreMIDI host timestamps and a 5 ms scheduling horizon, plus the configured early
 advance. Active note ownership is counted across patterns sharing a channel/pitch.
 Loop ends release notes before retriggering them. Clock alignment defaults to
-Master beat / bar, with launch and stop quantised to the selected boundary.
-Tempo only launches and stops immediately (allowing the destination's scheduling
+Master beat / bar, with launch quantised to the selected boundary.
+Stops immediately cancel pending launches and release running patterns in either
+mode. Tempo only launches immediately (allowing the destination's scheduling
 advance), keeps tempo with the master, and preserves its local loop phase across
 master phase jumps. In either mode loops repeat at their own step length, without
 resetting at bar boundaries. Changing alignment applies to subsequent transport
@@ -1117,7 +1131,7 @@ pitch ownership counts. Teia events carry a route epoch: disconnecting invalidat
 queued note-ons before they reach the DSP, and the render boundary releases only
 that route's sounding notes. Another pattern sharing the same channel/pitch is
 kept sounding. Teia scheduling has a 40 ms horizon to precede the audio producer's
-bounded queue; quantised stops retain timestamped note-offs until the stop boundary.
+bounded queue; stopping invalidates queued events and releases the route's notes.
 
 
 Patterns root note and scale use separate canvas ports. Note cables are lime,
@@ -1217,6 +1231,14 @@ message type and CC/note number. Note Off and zero-velocity Note On never learn.
 The extra footer edits the range, inversion and behavior, relearns or removes a
 mapping, and lists saved mappings. Turn mapping mode off to perform with the
 controller. MIDI routing input selection is independent of mapping permissions.
+
+To browse tracks with an endless encoder, click anywhere in the library table in
+**MIDI map** and turn the encoder to learn **Library track selection**. Choose the
+wheel encoding in the mapping editor (default: two’s complement, 1 / 127), and use
+**Invert** if its direction is reversed. Turning it moves the single selection
+through the current filtered and sorted table, scrolls the selected row into view,
+and stops at the first or last track, just like Up/Down. Encoder movement selects
+tracks without loading them; map the library’s **< A** / **> B** buttons to load.
 
 Controller behaviour in Settings defaults to **Grab**: absolute CC knobs and sliders
 wait until their position meets or crosses the current value before taking over.

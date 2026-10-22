@@ -28,7 +28,7 @@ export function PinButton({ id, name, text = false, disabled = false }: { id: st
   </button>;
 }
 
-type Source = { name: string; controls: ReactNode };
+type Source = { name: string; controls: ReactNode; edit?: () => void };
 const sources = new Map<string, Map<symbol, Source>>();
 const listeners = new Set<() => void>();
 let version = 0;
@@ -39,13 +39,13 @@ export function usePinnedSources() {
 }
 // Publish the same controls and edit callbacks used by the canvas. Sources stay
 // mounted when their workspace is hidden, including after restoring saved pins.
-export function PinnedSource({ id, name, children, controls = children, show = true }: { id: string; name: string; children: ReactNode; controls?: ReactNode; show?: boolean }) {
+export function PinnedSource({ id, name, children, controls = children, show = true, edit }: { id: string; name: string; children: ReactNode; controls?: ReactNode; show?: boolean; edit?: () => void }) {
   useEffect(() => {
     const owner = Symbol();
     const owners = sources.get(id) ?? new Map<symbol, Source>();
-    owners.set(owner, { name, controls }); sources.set(id, owners); changed();
+    owners.set(owner, { name, controls, edit }); sources.set(id, owners); changed();
     return () => { owners.delete(owner); if (!owners.size) sources.delete(id); changed(); };
-  }, [id, name, controls]);
+  }, [id, name, controls, edit]);
   return show ? children : null;
 }
 export const instrumentPin = (id: string) => `instrument:${id.replace(/^instrument-/, '')}`;

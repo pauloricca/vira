@@ -405,6 +405,11 @@ fn isolated_probe(path: &Path) -> Result<Vec<Descriptor>> {
 pub fn scan() {
     scan_with_retry(false);
 }
+pub fn default_paths() -> Vec<PathBuf> {
+    let mut paths = truce_rack_vst3::default_vst3_paths();
+    paths.extend(truce_rack_clap::default_clap_paths());
+    paths
+}
 pub fn scan_with_retry(retry: bool) {
     let Ok(_scan) = SCAN.try_lock() else { return };
     let mut cache: ScanCache = std::fs::read(cache_path())
@@ -427,9 +432,7 @@ pub fn scan_with_retry(retry: bool) {
     let mut result = Catalog::default();
     let mut found = HashSet::new();
     let mut seen = HashSet::new();
-    let mut defaults = truce_rack_vst3::default_vst3_paths();
-    defaults.extend(truce_rack_clap::default_clap_paths());
-    for root in defaults {
+    for root in default_paths() {
         if root.exists() {
             bundles(&root, &mut found, &mut seen, &mut result.errors)
         }

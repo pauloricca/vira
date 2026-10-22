@@ -95,11 +95,10 @@ export function Patches() {
     const row = rows.get(id)!;
     return <div key={id} role="listitem" aria-label={row.name} className={`patch-row${dragging === id ? ' patch-dragging' : ''}${target?.id === id ? target.after ? ' drop-after' : ' drop-before' : ''}`} draggable title="Drag to reorder"
       onPointerDownCapture={e => { allowed.current = !isControl(e.target); }}
-      onDoubleClick={e => { if (!isControl(e.target)) row.edit?.(); }}
       onDragStart={e => { if (!allowed.current || isControl(e.target)) { e.preventDefault(); return; } dragged.current = id; setDragging(id); e.dataTransfer.setData('application/x-vira-pinned-component',id); e.dataTransfer.effectAllowed = 'move'; }}
       onDragOver={e => { if (!dragged.current || dragged.current === id) return; e.preventDefault(); e.dataTransfer.dropEffect = 'move'; const rect = e.currentTarget.getBoundingClientRect(); setTarget({id,after:e.clientY >= rect.top+rect.height/2}); }}
       onDrop={e => { const source = dragged.current; if (!source || source === id) return; e.preventDefault(); const next = pins.filter(value => value !== source), rect = e.currentTarget.getBoundingClientRect(); next.splice(next.indexOf(id)+(e.clientY >= rect.top+rect.height/2 ? 1 : 0),0,source); savePins(next); finish(); }} onDragEnd={finish}>
-      <strong className="patch-name">{row.name}</strong>{row.controls}
+      {row.edit ? <button className="patch-name patch-title" title={`Open ${row.name} editor`} onClick={row.edit}>{row.name}</button> : <strong className="patch-name">{row.name}</strong>}{row.controls}
     </div>;
   })}</div>{(error || pollError) && <p role="alert" className="error">{error || pollError}</p>}</section>;
 }

@@ -6,12 +6,71 @@ fn step() -> usize {
     crate::sample_rate::get() / 20
 } // // 50 ms buckets; stereo power avoids phase cancellation.
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct BassProfile {
     frames: usize,
     prefix: Vec<[f64; 2]>, // cumulative mean bass / full-band power
 }
 impl BassProfile {
+    /// Version covers bucket spacing, filters and power calculation, independent of grid edits.
+    pub fn cached(
+        directory: &std::path::Path,
+        artifact: &str,
+        pcm_hash: &str,
+        left: &[f32],
+        right: &[f32],
+        current: impl Fn() -> bool,
+    ) -> Result<Self> {
+        ensure!(current(), "Load superseded during bass lookahead");
+        ensure!(
+            left.len() == right.len(),
+            "Bass profile requires matching stereo channels"
+        );
+        let rate = crate::sample_rate::get();
+        let path = directory.join(format!("{artifact}-{pcm_hash}-{rate}-v1.json"));
+        // Ignore corrupt/old cache files and bound reads before deserializing.
+        let max_bytes = (left.len().div_ceil(step()) + 1) as u64 * 64 + 1024;
+        if std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= max_bytes) {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(profile) = serde_json::from_slice::<Self>(&bytes) {
+                    if profile.frames == left.len()
+                        && profile.prefix.len() == left.len().div_ceil(step()) + 1
+                        && profile.prefix.first() == Some(&[0., 0.])
+                        && profile
+                            .prefix
+                            .iter()
+                            .flatten()
+                            .all(|v| v.is_finite() && *v >= 0.)
+                        && profile
+                            .prefix
+                            .windows(2)
+                            .all(|p| p[1][0] >= p[0][0] && p[1][1] >= p[0][1])
+                    {
+                        ensure!(current(), "Load superseded during bass lookahead");
+                        return Ok(profile);
+                    }
+                }
+            }
+        }
+        let profile = Self::analyze(left, right, &current)?;
+        ensure!(current(), "Load superseded during bass lookahead");
+        // Persistence is best effort: an unwritable cache must never prevent playback.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let temporary = path.with_extension(format!(
+            "{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        if std::fs::create_dir_all(directory).is_ok() {
+            if let Ok(bytes) = serde_json::to_vec(&profile) {
+                if std::fs::write(&temporary, bytes).is_ok() {
+                    let _ = std::fs::rename(&temporary, &path);
+                }
+                let _ = std::fs::remove_file(&temporary);
+            }
+        }
+        Ok(profile)
+    }
     pub fn analyze(left: &[f32], right: &[f32], current: impl Fn() -> bool) -> Result<Self> {
         ensure!(
             left.len() == right.len(),
@@ -112,6 +171,58 @@ impl BassProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn persistent_profile_reuses_valid_data_and_recovers_from_corruption() {
+        let directory =
+            std::env::temp_dir().join(format!("vira-bass-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let samples = vec![0.1; step() * 3];
+        let fresh = BassProfile::cached(&directory, "artifact", "pcm", &samples, &samples, || true)
+            .unwrap();
+        let path = std::fs::read_dir(&directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        // A cache hit must not run the PCM analysis loop (which checks once per bucket).
+        let calls = std::cell::Cell::new(0);
+        let cached = BassProfile::cached(&directory, "artifact", "pcm", &samples, &samples, || {
+            calls.set(calls.get() + 1);
+            true
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(fresh.prefix, cached.prefix);
+        std::fs::write(&path, b"invalid json").unwrap();
+        let recovered =
+            BassProfile::cached(&directory, "artifact", "pcm", &samples, &samples, || true)
+                .unwrap();
+        assert_eq!(fresh.prefix, recovered.prefix);
+        std::fs::write(&path, br#"{"frames":1,"prefix":[[0,0]]}"#).unwrap();
+        let recovered =
+            BassProfile::cached(&directory, "artifact", "pcm", &samples, &samples, || true)
+                .unwrap();
+        assert_eq!(fresh.prefix, recovered.prefix);
+        assert!(
+            BassProfile::cached(&directory, "artifact", "pcm", &samples, &samples, || false)
+                .is_err()
+        );
+        let silence = vec![0.; samples.len()];
+        let changed = BassProfile::cached(
+            &directory,
+            "artifact",
+            "new-pcm",
+            &silence,
+            &silence,
+            || true,
+        )
+        .unwrap();
+        assert_ne!(fresh.prefix, changed.prefix);
+        // A path occupied by a file is an unwritable cache, not a playback failure.
+        assert!(BassProfile::cached(&path, "artifact", "pcm", &samples, &samples, || true).is_ok());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     fn profile(bass: impl Fn(f64) -> f64, right_only: bool) -> BassProfile {
         let mut left = Vec::new();
         let mut right = Vec::new();

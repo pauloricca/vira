@@ -13,7 +13,7 @@ import { FolderSettings } from './FolderSettings';
 import { CollectionSelector } from './CollectionSelector';
 import { TrackActions } from './Dropdown';
 import { useTempoDrag } from './tempoDrag';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RenderProbe } from './RenderProbe';
 import { LevelMeter, useMeterFeed } from './LevelMeter';
@@ -244,6 +244,7 @@ function Workspace() {
     if (!decks.audio.decks[deck].playing) autopilot.prioritize(trackId);
     return decks.load(deck, trackId, preserveLock, resetMixer);
   };
+  const canLoadSelectedTrack = (deck: number) => selectedTrack?.status === 'ready' && decks.audio.running && canLoadDeck(decks.audio.decks[deck]) && !decks.audio.decks[deck].loading && !decks.loading[deck];
   const [masterEntry, setMasterEntry] = useState('');
   useEffect(() => setMasterEntry(decks.audio.master_bpm == null ? '' : String(decks.audio.master_bpm)), [decks.audio.master_bpm]);
   useEffect(() => { if (decks.audio.running) void decks.control(0, 'drift_rate', driftRate); }, [decks.audio.running]);
@@ -318,16 +319,19 @@ function Workspace() {
     return () => { active = false; };
   }, []);
   const libraryLoading = busy || !!library?.scan_pending;
-  const collections = library?.collections ?? (library ? [library.music_bin] : []);
-  const availableSelection = (selectedCollections ?? collections.slice(0, 1)).filter(path => collections.includes(path));
-  const activeCollections = availableSelection.length || (selectedCollections?.length === 0) ? availableSelection : collections.slice(0, 1);
+  const collections = useMemo(() => library?.collections ?? (library ? [library.music_bin] : []), [library]);
+  const activeCollections = useMemo(() => {
+    const available = (selectedCollections ?? collections.slice(0, 1)).filter(path => collections.includes(path));
+    return available.length || selectedCollections?.length === 0 ? available : collections.slice(0, 1);
+  }, [selectedCollections, collections]);
   const activeCollection = activeCollections[0] ?? '';
   const collectionOrderKey = activeCollections.length === 1 ? activeCollection : JSON.stringify([...activeCollections].sort());
-  const collectionTracks = (library?.tracks.filter(track => activeCollections.includes(track.collection ?? library.music_bin)) ?? []).slice().sort((a, b) => {
+  const collectionTracks = useMemo(() => {
     const order = reorderPreview ?? trackOrder[collectionOrderKey] ?? [];
-    const rank = (id: string) => { const index = order.indexOf(id); return index < 0 ? order.length : index; };
-    return rank(a.id) - rank(b.id);
-  });
+    const ranks = new Map(order.map((id, index) => [id, index]));
+    return (library?.tracks.filter(track => activeCollections.includes(track.collection ?? library.music_bin)) ?? [])
+      .sort((a, b) => (ranks.get(a.id) ?? order.length) - (ranks.get(b.id) ?? order.length));
+  }, [library, activeCollections, reorderPreview, trackOrder, collectionOrderKey]);
   function moveTrack(id: string, target: string, after = false, preview = false) {
     if (id === target) return;
     const ids = collectionTracks.map(track => track.id).filter(candidate => candidate !== id);
@@ -426,25 +430,32 @@ function Workspace() {
     if (target) void loadTrack(target.deck, track.id);
   }
   const soundingKeys = decks.audio.decks.map(deck => shiftedKey(metadataKey(library?.tracks.find(track => track.id === deck.track?.track_id)), deck.pitch_semitones ?? 0));
-  const deckKeys = soundingKeys.map(key => camelotKey(key));
+  const deckKeys = useMemo(() => soundingKeys.map(key => camelotKey(key)), [soundingKeys[0], soundingKeys[1]]);
   const patternDeckKeys = JSON.stringify(soundingKeys.map(keyHarmony));
   useEffect(() => { if (patternsVisited || mappedPatterns) void invoke('patterns_deck_keys', { keys: JSON.parse(patternDeckKeys) }).catch(() => undefined); }, [patternsVisited, mappedPatterns, patternDeckKeys]);
-  const tableTracks = collectionTracks.filter(track => tagging || !tags.selected.length || tags.tags.some(tag => tags.selected.includes(tag.name) && tag.tracks.includes(track.id)));
-  const orderedTracks = tableTracks
+  const trackTags = useMemo(() => {
+    const result = new Map<string, string[]>();
+    for (const tag of tags.tags) for (const id of tag.tracks) {
+      const names = result.get(id) ?? []; names.push(tag.name); result.set(id, names);
+    }
+    return result;
+  }, [tags.tags]);
+  const tableTracks = useMemo(() => collectionTracks.filter(track => tagging || !tags.selected.length || trackTags.get(track.id)?.some(name => tags.selected.includes(name))), [collectionTracks, tagging, tags.selected, trackTags]);
+  const orderedTracks = useMemo(() => tableTracks
     .map((track, originalIndex) => ({ track, originalIndex }))
     .sort((left, right) => sort && !(sortMode && libraryExpanded)
       ? compareSortValues(sortValue(left.track, sort.column, left.originalIndex, deckKeys, sessionPlayed, nextTracks), sortValue(right.track, sort.column, right.originalIndex, deckKeys, sessionPlayed, nextTracks), sort.direction) || left.originalIndex - right.originalIndex
       : left.originalIndex - right.originalIndex)
-    .map(({ track }) => track);
+    .map(({ track }) => track), [tableTracks, sort, sortMode, libraryExpanded, deckKeys, sessionPlayed, nextTracks]);
   const autopilot = useAutopilot({
     audio: decks.audio, loading: decks.loading, tracks: orderedTracks, allTracks: library?.tracks ?? [], tags: tags.tags,
     next: nextTracks, setNext: setNextTracks, played: sessionPlayed,
     startSession: () => setSessionPlayed(previous => previous ?? new Set(playingTrackIds.filter((id): id is string => id !== null))),
     load: (deck, id) => decks.load(deck, id, preserveLock, resetMixer), control: decks.control,
   });
-  const visibleTracks = orderedTracks.filter(track => `${track.title} ${track.artist} ${track.filename}`.toLowerCase().includes(search.toLowerCase()));
-  const audition = useAudition(decks.audio, visibleTracks.filter(track => track.status === 'ready'), autoBars);
-  const originalTrackNumbers = new Map(collectionTracks.map((track, index) => [track.id, index + 1]));
+  const visibleTracks = useMemo(() => { const query = search.toLowerCase(); return orderedTracks.filter(track => `${track.title} ${track.artist} ${track.filename}`.toLowerCase().includes(query)); }, [orderedTracks, search]);
+  const audition = useAudition(decks.audio, useMemo(() => visibleTracks.filter(track => track.status === 'ready'), [visibleTracks]), autoBars);
+  const originalTrackNumbers = useMemo(() => new Map(collectionTracks.map((track, index) => [track.id, index + 1])), [collectionTracks]);
   function changeSort(column: SortColumn) {
     if (sortMode && libraryExpanded) return;
     setSort(previous => ({ column, direction: previous?.column === column
@@ -513,6 +524,15 @@ function Workspace() {
       selectionAnchor.current = id;
     }
     setSelectedTrackId(id);
+  }
+  function moveLibrarySelection(delta: number, event = { metaKey: false, ctrlKey: false, shiftKey: false }) {
+    if (!visibleTracks.length || !delta) return;
+    const current = visibleTracks.findIndex(track => track.id === selectedTrackId);
+    const next = current < 0 ? 0 : Math.max(0, Math.min(visibleTracks.length - 1, current + Math.trunc(delta)));
+    const id = visibleTracks[next].id;
+    setLibraryKeyboardNavigation(true);
+    selectTrack(id, event);
+    trackRows.current.get(id)?.scrollIntoView?.({ block: 'nearest' });
   }
   useEffect(() => {
     if (view !== 'decks') return;
@@ -637,12 +657,7 @@ function Workspace() {
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         if (!tracks.length) return;
         event.preventDefault();
-        setLibraryKeyboardNavigation(true);
-        const current = tracks.findIndex(track => track.id === selectedTrackId);
-        const next = current < 0 ? 0 : Math.max(0, Math.min(tracks.length - 1, current + (event.key === 'ArrowUp' ? -1 : 1)));
-        const id = tracks[next].id;
-        selectTrack(id, event);
-        trackRows.current.get(id)?.scrollIntoView?.({ block: 'nearest' });
+        moveLibrarySelection(event.key === 'ArrowUp' ? -1 : 1, event);
         return;
       }
       if (event.key.length === 1 && !/\s/u.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey && !isTextInput(event.target)) {
@@ -671,9 +686,55 @@ function Workspace() {
   useJogTargets(decks.audio, decks.control);
   const midi = useMidiMarkers();
   useMidiTargets([
+    {id:'library:selection',label:'Library track selection',kind:'relative',defaultMode:'relative-twos',disabled:!visibleTracks.length,apply:moveLibrarySelection},
     {id:'master:tempo',label:'Master BPM',kind:'number',min:15,max:600,step:.01,read:() => decks.audio.master_bpm ?? 120,apply:value => { void decks.control(0,'master_tempo',value); }},
     ...(['master', 'cue'] as const).map(output => ({ id: `output:${output}:volume`, label: `${output === 'master' ? 'Master' : 'Cue'} volume`, kind: 'number' as const, min: 0, max: 1, step: .01, read: () => decks.audio[`${output}_volume`] ?? 1, apply: (value: number) => { void decks.control(0, `${output}_volume`, value); } })),
   ]);
+  async function revealTrack(track: Track) {
+    setRowErrors(previous => ({ ...previous, [track.id]: '' }));
+    try { await invoke('reveal_track_in_finder', { trackId: track.id }); }
+    catch (error) { setRowErrors(previous => ({ ...previous, [track.id]: String(error) })); }
+  }
+  const rowActions = useRef({ loadOnAvailableDeck, loadTrack, analyse, approve, selectTrack, moveTrack, audition, revealTrack });
+  rowActions.current = { loadOnAvailableDeck, loadTrack, analyse, approve, selectTrack, moveTrack, audition, revealTrack };
+  // Only discrete library-facing deck changes invalidate rows; positions and meters do not.
+  const rowDeckState = JSON.stringify(decks.audio.decks.map(deck => [deck.track?.track_id, canLoadDeck(deck), !!deck.grid_edit]));
+  const auditionRowState = JSON.stringify([audition.selection?.track.id, audition.selection?.generation, !!audition.state, audition.state?.playing, audition.output]);
+  const libraryRows = useMemo(() => visibleTracks?.map(track => {
+        const auditionActive = audition.selection?.track.id === track.id && (audition.selection.generation === null || !audition.state || audition.state.playing);
+        const originalNumber = originalTrackNumbers.get(track.id) ?? 1;
+        const onDeckA = decks.audio.decks[0].track?.track_id === track.id;
+        const onDeckB = decks.audio.decks[1].track?.track_id === track.id;
+        const trackKey = camelotKey(metadataKey(track));
+        const trackBpm = track.timing_bpm ?? track.analysis.result?.grid?.bpm;
+        return <tr key={track.id} ref={element => { if (element) trackRows.current.set(track.id, element); else trackRows.current.delete(track.id); }} className={[nextTracks.includes(track.id) ? 'next-track' : '', sessionPlayed?.has(track.id) ? 'played-track' : '', selectedTrackIds.has(track.id) ? 'selected-track' : '', reorderPreview && reorderId.current === track.id ? 'track-dragging' : ''].filter(Boolean).join(' ') || undefined} aria-selected={selectedTrackIds.has(track.id)} draggable={sortMode && libraryExpanded || track.status === 'ready'} onDragOver={event => {
+          if (!sortMode || !libraryExpanded || !reorderId.current) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          const from = collectionTracks.findIndex(candidate => candidate.id === reorderId.current);
+          const to = collectionTracks.findIndex(candidate => candidate.id === track.id);
+          const rect = event.currentTarget.getBoundingClientRect();
+          const after = event.clientY > rect.top + rect.height / 2;
+          if (from < to && after || from > to && !after) rowActions.current.moveTrack(reorderId.current, track.id, after, true);
+        }} onDrop={event => { if (sortMode && libraryExpanded) { event.preventDefault(); if (reorderPreview) { const next = { ...trackOrder, [collectionOrderKey]: reorderPreview }; setTrackOrder(next); localStorage.setItem('vira.track-order', JSON.stringify(next)); } else if (reorderId.current) rowActions.current.moveTrack(reorderId.current, track.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2); reorderId.current = null; setReorderPreview(null); } }} onDragEnd={() => { reorderId.current = null; setReorderPreview(null); }} onClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) rowActions.current.selectTrack(track.id, event); }} onDoubleClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) rowActions.current.loadOnAvailableDeck(track); }} onDragStart={event => { const ids = selectedTrackIds.has(track.id) ? visibleTracks.filter(candidate => selectedTrackIds.has(candidate.id)).map(candidate => candidate.id) : [track.id]; if (!selectedTrackIds.has(track.id)) rowActions.current.selectTrack(track.id, { metaKey: false, ctrlKey: false, shiftKey: false }); event.dataTransfer.setData(TRACKS_MIME, JSON.stringify(ids)); event.dataTransfer.setData(TRACK_MIME, track.id); if (sortMode && libraryExpanded) { reorderId.current = track.id; setReorderPreview(collectionTracks.map(candidate => candidate.id)); event.dataTransfer.setData('text/plain', track.id); event.dataTransfer.effectAllowed = 'copyMove'; return; } event.dataTransfer.effectAllowed = 'copy'; }}>
+        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><button className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones in Settings'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? rowActions.current.audition.control('stop') : void rowActions.current.audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</button></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
+        <td><span className="collection-cell-text title" title={track.filename}>{track.title}</span>{trackTags.has(track.id) && <span className="track-tag-summary" title={trackTags.get(track.id)?.join(', ')}>{trackTags.get(track.id)?.join(' · ')}</span>}</td>
+        <td><span className="collection-cell-text" title={track.artist}>{track.artist}</span></td>
+        <td className="numeric">{trackBpm == null ? '—' : Math.round(trackBpm)}</td><td><span className="collection-cell-text" title={metadataKey(track) ?? ''}>{trackKey ? `${trackKey.number}${trackKey.letter} / ${trackKey.label}` : metadataKey(track) || '—'}</span></td>
+        <CompatibilityCell trackKey={trackKey} deckKey={deckKeys[0]} deck="A" /><CompatibilityCell trackKey={trackKey} deckKey={deckKeys[1]} deck="B" /><td className="numeric">{duration(track.duration_seconds)}</td>
+        {nextTracks.length > 0 && <td className="next-cell numeric">{nextTracks.includes(track.id) ? nextTracks.indexOf(track.id) + 1 : '—'}</td>}
+        {sessionActive && <td className="played-cell">{sessionPlayed.has(track.id) ? 'Yes' : 'No'}</td>}
+        <td><span className={`status ${track.status} ${track.analysis.state}`}>{track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable'}</span>
+          {(track.error || (track.analysis.state !== 'stale' && track.analysis.error)) && <small className="row-error">{track.error || track.analysis.error}</small>}
+          {rowErrors[track.id] && <small className="row-error" role="alert">{rowErrors[track.id]}</small>}</td>
+        <td><TrackActions title={track.title}><div className="row-action-buttons"><button onClick={() => setEditingMetadata(track)}>Edit metadata</button><button onClick={() => void rowActions.current.revealTrack(track)}>Reveal in Finder</button><button onClick={() => void rowActions.current.analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
+          {track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : ['queued', 'analysing'].includes(track.analysis.state) ? labels[track.analysis.state] : 'Reanalyse'}
+        </button><button onClick={() => void rowActions.current.analyse(track, true)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`Analyse key ${track.title}`}>Analyse key</button>{trackBpm != null && track.analysis.state !== 'approved' && <button onClick={() => void rowActions.current.approve(track.id)} disabled={hasUnsavedGrid(track.id) || busy || track.status !== 'ready' || pending.has(track.id) || approving.has(track.id) || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state)} aria-label={`Approve ${track.title}`}>{approving.has(track.id) ? 'Approving…' : 'Approve'}</button>}<div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[0])} aria-label={`Load ${track.title} on deck A`} onClick={() => void rowActions.current.loadTrack(0, track.id)}>Load A</button>
+          <button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[1])} aria-label={`Load ${track.title} on deck B`} onClick={() => void rowActions.current.loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></TrackActions></td>
+      </tr>}), [visibleTracks, originalTrackNumbers, nextTracks, sessionPlayed, selectedTrackIds,
+    reorderPreview, sortMode, libraryExpanded, collectionTracks, trackOrder, collectionOrderKey,
+    trackTags, deckKeys, rowErrors, busy, pending, approving, rowDeckState, auditionRowState,
+    decks.audio.running, decks.audio.routing?.cue_running, tags.tags, tags.selected, tags.loading, tags.pending, tags.error]);
   return <main className={view === 'decks' && libraryExpanded ? 'library-expanded' : undefined} onFocusCapture={event => { if (!isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }} onClickCapture={event => { if (event.target instanceof HTMLElement && !isTextInput(event.target) && !isKeySelector(event.target)) event.target.blur(); }}>
     <header className="app-header"><h1><img className="app-wordmark" src="/vira-wordmark.svg" alt="VIRA" /></h1>
       <nav aria-label="Workspace"><MidiButton midiId="workspace:decks" className={view === 'decks' ? 'active' : undefined} aria-current={view === 'decks' ? 'page' : undefined} onClick={() => setView('decks')}>DECKS</MidiButton>{workspaceVisibility.routing && <MidiButton midiId="workspace:routing" className={view === 'routing' ? 'active' : undefined} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => { setRoutingVisited(true); setView('routing'); }}>ROUTING</MidiButton>}{workspaceVisibility.patterns && <MidiButton midiId="workspace:patterns" className={view === 'patterns' ? 'active' : undefined} aria-current={view === 'patterns' ? 'page' : undefined} onClick={() => { setPatternsVisited(true); setView('patterns'); }}>PATTERNS</MidiButton>}{workspaceVisibility.instruments && <MidiButton midiId="workspace:instruments" className={view === 'instruments' ? 'active' : undefined} aria-current={view === 'instruments' ? 'page' : undefined} onClick={() => setView('instruments')}>INSTRUMENTS</MidiButton>}<MidiButton midiId="workspace:settings" className={view === 'settings' ? 'active' : undefined} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => { setView('settings'); }}>SETTINGS</MidiButton><MidiButton midiId="workspace:shortcuts" className={view === 'shortcuts' ? 'active' : undefined} aria-current={view === 'shortcuts' ? 'page' : undefined} onClick={() => { setView('shortcuts'); }}>SHORTCUTS</MidiButton></nav>
@@ -712,48 +773,17 @@ function Workspace() {
     {(decks.audio.error || decks.pollError) && <p className="error" role="alert">{decks.audio.error || decks.pollError}</p>}
     <div className="lower-panels"><section className="library" aria-label="Music library" aria-busy={libraryLoading}>
       <div className="toolbar"><div className="library-heading"><h2>Music library</h2><AuditionControls audition={audition} />{libraryLoading && <span className="library-loading-indicator" role="status">{busy ? 'Loading library…' : 'Verifying files…'}</span>}
-      </div><div className="library-toolbar-actions"><MidiButton midiId="library:play-next" className="library-next" aria-pressed={selectedIsNext} disabled={selectedTrack?.status !== 'ready'} title={selectedIsNext ? 'Remove selected track from planned order (⌘N)' : 'Add selected track to planned order (⌘N)'} onClick={togglePlayNext}>{selectedIsNext ? 'Cancel Play Next' : 'Play Next'}</MidiButton><MidiButton midiId="library:autopilot" className={`library-autopilot${autopilot.enabled ? ' auto-engaged' : ''}`} aria-pressed={autopilot.enabled} onClick={autopilot.toggle} title="Choose unplayed tracks and prepare automatic transitions">Autopilot</MidiButton>{sessionActive ? <MidiButton midiId="session:toggle" onClick={endSession}>End Session</MidiButton> : <MidiButton midiId="session:toggle" onClick={() => setSessionPlayed(new Set(playingTrackIds.filter((id): id is string => id !== null)))} title="Track songs played on either deck">Start Session</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={tagging} onClick={() => setTagMode(value => !value)}>Tag tracks</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={sortMode} onClick={() => { setSortMode(value => !value); setSort({ column: 'number', direction: 'ascending' }); }}>Sort</MidiButton>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <><MidiButton className="library-sort" aria-pressed={audition.playAll} onClick={audition.togglePlayAll}>Play All</MidiButton></>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <CollectionSelector collections={['cue', 'master']} value={audition.output} select={value => audition.changeOutput(value as 'cue' | 'master')} label="Audition output" menuLabel="Audition outputs" optionLabel={value => value === 'master' ? 'Play on Master' : 'Play on Cue'} />}<MidiButton onClick={() => void analyseAll()} disabled={busy || !!error || !!pollError || queueingAll || unanalysedTracks.length === 0}>{queueingAll ? 'Queueing…' : 'Analyse all'}</MidiButton><MidiButton midiId="library:refresh" onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</MidiButton><MidiButton midiId="library:expanded" className="library-expand" aria-label={libraryExpanded ? 'Restore library size' : 'Expand music library'} title={libraryExpanded ? 'Restore library size' : 'Expand music library'} aria-pressed={libraryExpanded} onClick={() => setLibraryExpanded(expanded => !expanded)}>
+      </div><div className="library-toolbar-actions">{!libraryExpanded && ([0, 1] as const).map(deck => <MidiButton key={deck} midiId={`library:load-${deck === 0 ? 'a' : 'b'}`} aria-label={`Load selected track on deck ${deck === 0 ? 'A' : 'B'}`} title={`Load selected track on deck ${deck === 0 ? 'A (⌘←)' : 'B (⌘→)'}`} disabled={!canLoadSelectedTrack(deck)} onClick={() => { if (canLoadSelectedTrack(deck) && selectedTrack) void loadTrack(deck, selectedTrack.id); }}>{deck === 0 ? '< A' : '> B'}</MidiButton>)}<MidiButton midiId="library:play-next" className="library-next" aria-pressed={selectedIsNext} disabled={selectedTrack?.status !== 'ready'} title={selectedIsNext ? 'Remove selected track from planned order (⌘N)' : 'Add selected track to planned order (⌘N)'} onClick={togglePlayNext}>{selectedIsNext ? 'Cancel Play Next' : 'Play Next'}</MidiButton><MidiButton midiId="library:autopilot" className={`library-autopilot${autopilot.enabled ? ' auto-engaged' : ''}`} aria-pressed={autopilot.enabled} onClick={autopilot.toggle} title="Choose unplayed tracks and prepare automatic transitions">Autopilot</MidiButton>{sessionActive ? <MidiButton midiId="session:toggle" onClick={endSession}>End Session</MidiButton> : <MidiButton midiId="session:toggle" onClick={() => setSessionPlayed(new Set(playingTrackIds.filter((id): id is string => id !== null)))} title="Track songs played on either deck">Start Session</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={tagging} onClick={() => setTagMode(value => !value)}>Tag tracks</MidiButton>}{libraryExpanded && <MidiButton className="library-sort" aria-pressed={sortMode} onClick={() => { setSortMode(value => !value); setSort({ column: 'number', direction: 'ascending' }); }}>Sort</MidiButton>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <><MidiButton className="library-sort" aria-pressed={audition.playAll} onClick={audition.togglePlayAll}>Play All</MidiButton></>}{libraryExpanded && !decks.audio.decks.some(deck => deck.playing) && <CollectionSelector collections={['cue', 'master']} value={audition.output} select={value => audition.changeOutput(value as 'cue' | 'master')} label="Audition output" menuLabel="Audition outputs" optionLabel={value => value === 'master' ? 'Play on Master' : 'Play on Cue'} />}<MidiButton onClick={() => void analyseAll()} disabled={busy || !!error || !!pollError || queueingAll || unanalysedTracks.length === 0}>{queueingAll ? 'Queueing…' : 'Analyse all'}</MidiButton><MidiButton midiId="library:refresh" onClick={() => void refresh()} disabled={busy}>{busy ? 'Scanning…' : 'Refresh'}</MidiButton><MidiButton midiId="library:expanded" className="library-expand" aria-label={libraryExpanded ? 'Restore library size' : 'Expand music library'} title={libraryExpanded ? 'Restore library size' : 'Expand music library'} aria-pressed={libraryExpanded} onClick={() => setLibraryExpanded(expanded => !expanded)}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={libraryExpanded ? 'M3 9h6V3m6 0v6h6M3 15h6v6m6 0v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6'} /></svg>
       </MidiButton></div></div>
-      {audition.error && <p className="error" role="alert">{audition.error}</p>}
+      {audition.error && <div className="error audition-notice" role="alert"><span>{audition.error}</span><button type="button" aria-label="Dismiss audition notice" title="Dismiss notice" onClick={audition.dismissError}>×</button></div>}
       <div className="library-filters"><CollectionSelector loading={!library && busy} collections={collections} value={activeCollection} values={activeCollections} select={path => selectCollections([path])} selectMany={selectCollections} /><label className="library-search"><span aria-hidden="true">⌕</span><MidiInput ref={searchInput} type="search" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} aria-label="Search music library" placeholder="Search tracks, artists…" value={search} onChange={event => setSearch(event.target.value)} /></label></div>
       {(error || pollError) && <div className="error" role="alert"><strong>Library unavailable</strong><p>{error || pollError}</p>
         {library && <p>The table shows the last successful scan; it may be out of date.</p>}</div>}
-      <div className="library-content"><TagsSidebar state={tags} tracks={collectionTracks} tagging={tagging} selectedIds={visibleTracks.filter(track => selectedTrackIds.has(track.id)).map(track => track.id)} /><div className="library-track-list"><div className="table-wrap"><table data-keyboard-navigation={libraryKeyboardNavigation || undefined} className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" />{nextTracks.length > 0 && <col className="next-col" />}{sessionActive && <col className="played-col" />}<col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
+      <div className="library-content"><TagsSidebar state={tags} tracks={collectionTracks} tagging={tagging} selectedIds={visibleTracks.filter(track => selectedTrackIds.has(track.id)).map(track => track.id)} /><div className="library-track-list"><div className="table-wrap" {...midi("library:selection")}><table data-keyboard-navigation={libraryKeyboardNavigation || undefined} className={`collection-table${sortMode && libraryExpanded ? ' reorder-mode' : ''}`}><colgroup><col className="number-col" /><col className="audition-col" /><col className="cover-col" /><col className="title-col" /><col className="artist-col" /><col className="bpm-col" /><col className="key-col" /><col className="compat-col" /><col className="compat-col" /><col className="length-col" />{nextTracks.length > 0 && <col className="next-col" />}{sessionActive && <col className="played-col" />}<col className="analysis-col" /><col className="action-col" /></colgroup><thead><tr>
         {([['number', '#'], ['cover', 'Cover'], ['title', 'Title'], ['artist', 'Artist'], ['bpm', 'BPM*'], ['key', 'Key*'], ['aComp', 'A comp'], ['bComp', 'B comp'], ['length', 'Length'], ['next', 'Next'], ['played', 'Played'], ['analysis', 'Analysis'], ['actions', 'Actions']] as const).map(([column, label]) => ((!sessionActive && column === 'played') || (nextTracks.length === 0 && column === 'next') ? null :
           <Fragment key={column}><th scope="col" aria-sort={sort?.column === column ? sort.direction : 'none'}><button className="sort-header" disabled={sortMode && libraryExpanded} onClick={() => changeSort(column)} aria-label={`Sort by ${label.replace('*', '')}`} title={`Sort by ${label.replace('*', '')}`}>{column === 'cover' ? '▣' : column === 'actions' ? '•••' : label}<span className="sort-indicator" aria-hidden="true">{sort?.column === column ? sort.direction === 'ascending' ? '▲' : '▼' : '↕'}</span></button></th>{column === 'number' && <th scope="col" aria-label="Audition through cue headphones"><span aria-hidden="true">▶</span></th>}</Fragment>))}
-      </tr></thead><tbody>{visibleTracks?.map(track => {
-        const auditionActive = audition.selection?.track.id === track.id && (audition.selection.generation === null || !audition.state || audition.state.playing);
-        const originalNumber = originalTrackNumbers.get(track.id) ?? 1;
-        const onDeckA = decks.audio.decks[0].track?.track_id === track.id;
-        const onDeckB = decks.audio.decks[1].track?.track_id === track.id;
-        const trackKey = camelotKey(metadataKey(track));
-        const trackBpm = track.timing_bpm ?? track.analysis.result?.grid?.bpm;
-        return <tr key={track.id} ref={element => { if (element) trackRows.current.set(track.id, element); else trackRows.current.delete(track.id); }} className={[nextTracks.includes(track.id) ? 'next-track' : '', sessionPlayed?.has(track.id) ? 'played-track' : '', selectedTrackIds.has(track.id) ? 'selected-track' : '', reorderPreview && reorderId.current === track.id ? 'track-dragging' : ''].filter(Boolean).join(' ') || undefined} aria-selected={selectedTrackIds.has(track.id)} draggable={sortMode && libraryExpanded || track.status === 'ready'} onDragOver={event => {
-          if (!sortMode || !libraryExpanded || !reorderId.current) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
-          const from = collectionTracks.findIndex(candidate => candidate.id === reorderId.current);
-          const to = collectionTracks.findIndex(candidate => candidate.id === track.id);
-          const rect = event.currentTarget.getBoundingClientRect();
-          const after = event.clientY > rect.top + rect.height / 2;
-          if (from < to && after || from > to && !after) moveTrack(reorderId.current, track.id, after, true);
-        }} onDrop={event => { if (sortMode && libraryExpanded) { event.preventDefault(); if (reorderPreview) { const next = { ...trackOrder, [collectionOrderKey]: reorderPreview }; setTrackOrder(next); localStorage.setItem('vira.track-order', JSON.stringify(next)); } else if (reorderId.current) moveTrack(reorderId.current, track.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.getBoundingClientRect().height / 2); reorderId.current = null; setReorderPreview(null); } }} onDragEnd={() => { reorderId.current = null; setReorderPreview(null); }} onClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) selectTrack(track.id, event); }} onDoubleClick={event => { if (!(event.target instanceof Element && event.target.closest('.row-actions, .audition-cell'))) loadOnAvailableDeck(track); }} onDragStart={event => { const ids = selectedTrackIds.has(track.id) ? visibleTracks.filter(candidate => selectedTrackIds.has(candidate.id)).map(candidate => candidate.id) : [track.id]; if (!selectedTrackIds.has(track.id)) selectTrack(track.id, { metaKey: false, ctrlKey: false, shiftKey: false }); event.dataTransfer.setData(TRACKS_MIME, JSON.stringify(ids)); event.dataTransfer.setData(TRACK_MIME, track.id); if (sortMode && libraryExpanded) { reorderId.current = track.id; setReorderPreview(collectionTracks.map(candidate => candidate.id)); event.dataTransfer.setData('text/plain', track.id); event.dataTransfer.effectAllowed = 'copyMove'; return; } event.dataTransfer.effectAllowed = 'copy'; }}>
-        <td className="row-number numeric"><span className={`track-index${onDeckA ? ' on-deck-a' : ''}${onDeckB ? ' on-deck-b' : ''}`}>{originalNumber}</span></td><td className="audition-cell"><button className={`audition-play${audition.selection?.track.id === track.id ? ' active' : ''}`} aria-label={auditionActive ? `Stop auditioning ${track.title}` : `Audition ${track.title} through ${audition.output === 'master' ? 'master output' : 'cue headphones'}`} title={auditionActive ? 'Stop audition' : audition.output === 'master' ? 'Audition through master output' : decks.audio.routing?.cue_running ? 'Audition through cue headphones' : 'Select Cue headphones in Settings'} disabled={track.status !== 'ready' || !decks.audio.running} onClick={() => auditionActive ? audition.control('stop') : void audition.play(track)} onDoubleClick={event => event.stopPropagation()}>{auditionActive ? <StopIcon /> : <PlayIcon />}</button></td><td><TrackArtwork trackId={track.id} available={!!track.artwork_available} className={`collection-cover cover-${(originalNumber - 1) % 6}`} /></td>
-        <td><span className="collection-cell-text title" title={track.filename}>{track.title}</span>{tags.tags.some(tag => tag.tracks.includes(track.id)) && <span className="track-tag-summary" title={tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(', ')}>{tags.tags.filter(tag => tag.tracks.includes(track.id)).map(tag => tag.name).join(' · ')}</span>}</td>
-        <td><span className="collection-cell-text" title={track.artist}>{track.artist}</span></td>
-        <td className="numeric">{trackBpm == null ? '—' : Math.round(trackBpm)}</td><td><span className="collection-cell-text" title={metadataKey(track) ?? ''}>{trackKey ? `${trackKey.number}${trackKey.letter} / ${trackKey.label}` : metadataKey(track) || '—'}</span></td>
-        <CompatibilityCell trackKey={trackKey} deckKey={deckKeys[0]} deck="A" /><CompatibilityCell trackKey={trackKey} deckKey={deckKeys[1]} deck="B" /><td className="numeric">{duration(track.duration_seconds)}</td>
-        {nextTracks.length > 0 && <td className="next-cell numeric">{nextTracks.includes(track.id) ? nextTracks.indexOf(track.id) + 1 : '—'}</td>}
-        {sessionActive && <td className="played-cell">{sessionPlayed.has(track.id) ? 'Yes' : 'No'}</td>}
-        <td><span className={`status ${track.status} ${track.analysis.state}`}>{track.status === 'ready' ? labels[track.analysis.state] : track.status === 'unsupported' ? 'Unsupported' : 'Unreadable'}</span>
-          {(track.error || (track.analysis.state !== 'stale' && track.analysis.error)) && <small className="row-error">{track.error || track.analysis.error}</small>}
-          {rowErrors[track.id] && <small className="row-error" role="alert">{rowErrors[track.id]}</small>}</td>
-        <td><TrackActions title={track.title}><div className="row-action-buttons"><button onClick={() => setEditingMetadata(track)}>Edit metadata</button><button onClick={() => void analyse(track)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`${track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : 'Reanalyse'} ${track.title}`}>
-          {track.analysis.state === 'failed' ? 'Retry' : track.analysis.state === 'not_analysed' ? 'Analyse' : ['queued', 'analysing'].includes(track.analysis.state) ? labels[track.analysis.state] : 'Reanalyse'}
-        </button><button onClick={() => void analyse(track, true)} disabled={busy || track.status !== 'ready' || pending.has(track.id) || ['queued', 'analysing'].includes(track.analysis.state)} aria-label={`Analyse key ${track.title}`}>Analyse key</button>{trackBpm != null && track.analysis.state !== 'approved' && <button onClick={() => void approve(track.id)} disabled={hasUnsavedGrid(track.id) || busy || track.status !== 'ready' || pending.has(track.id) || approving.has(track.id) || !['analysed', 'needs_review', 'stale'].includes(track.analysis.state)} aria-label={`Approve ${track.title}`}>{approving.has(track.id) ? 'Approving…' : 'Approve'}</button>}<div className="row-loads"><button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[0])} aria-label={`Load ${track.title} on deck A`} onClick={() => void loadTrack(0, track.id)}>Load A</button>
-          <button disabled={track.status !== 'ready' || !decks.audio.running || !canLoadDeck(decks.audio.decks[1])} aria-label={`Load ${track.title} on deck B`} onClick={() => void loadTrack(1, track.id)}>Load B</button></div><TrackTags state={tags} track={track} /></div></TrackActions></td>
-      </tr>})}</tbody></table></div>
+      </tr></thead><tbody>{libraryRows}</tbody></table></div>
       {!libraryLoading && !error && !pollError && library && collectionTracks.length === 0 && <p className="empty">{!activeCollections.length && collections.length ? 'Select a category to see its tracks.' : collections.length ? 'No files in this collection. Add MP3, PCM WAV or Ogg files, then Refresh.' : 'Add a music folder in Settings to load a collection.'}</p>}
       {!libraryLoading && library && collectionTracks.length > 0 && visibleTracks?.length === 0 && <p className="empty">No tracks match your search or selected tags.</p>}
       </div></div>
@@ -762,11 +792,11 @@ function Workspace() {
     </section><Patches /></div>
     </div>{view === 'instruments' && <Instruments />}{view === 'shortcuts' && <Shortcuts />}<section hidden={view !== 'settings'} className="settings-page" aria-label="Settings"><div className="settings-inner"><div className="settings-heading"><div><h2>Settings</h2><p>Workspace controls and system status</p></div><SettingsSearch label="Search settings" value={settingsQuery} onChange={setSettingsQuery} /></div><SettingsSearchContext.Provider value={settingsQuery}><div className="settings-grid">
       <Audio audio={decks.audio} active={view === 'settings'} />
-      <VstSettings active={view === 'settings'} />
       <FolderSettings onMusicChange={async folders => {
         setSelectedCollections(current => { const remaining = (current ?? []).filter(path => folders.includes(path)); return remaining.length ? remaining : folders.slice(0, 1); });
         await refresh();
       }} />
+      <VstSettings active={view === 'settings'} />
       <SettingsCard className="settings-card"><h3>Workspace</h3><p className="settings-hint">Choose which panels and tabs to show. Hiding them preserves their state and audio.</p>{workspaceAreas.map(([area, label]) => <label className="settings-row" key={area}><strong>Show {label}</strong><MidiInput type="checkbox" aria-label={`Show ${label}`} checked={workspaceVisibility[area]} onChange={event => {
         const visible = event.target.checked;
         setWorkspaceVisibility(previous => ({ ...previous, [area]: visible }));

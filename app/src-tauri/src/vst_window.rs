@@ -46,9 +46,29 @@ pub fn vst_catalog(window: tauri::WebviewWindow) -> Result<vst::Catalog, String>
     Ok(vst::catalog())
 }
 #[tauri::command]
+pub fn vst_default_paths(window: tauri::WebviewWindow) -> Result<Vec<PathBuf>, String> {
+    main(&window)?;
+    Ok(vst::default_paths())
+}
+#[tauri::command]
 pub fn vst_paths(window: tauri::WebviewWindow) -> Result<Vec<PathBuf>, String> {
     main(&window)?;
     Ok(vst::paths())
+}
+#[tauri::command]
+pub async fn vst_choose_folder(window: tauri::WebviewWindow) -> Result<Option<PathBuf>, String> {
+    main(&window)?;
+    tauri::async_runtime::spawn_blocking(|| {
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", "on run argv\ntry\nreturn POSIX path of (choose folder with prompt (item 1 of argv))\non error number -128\nreturn \"\"\nend try\nend run", "Choose VIRA's VSTs folder"])
+            .output().map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        let path = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        let path = path.trim_end_matches('\n');
+        Ok(if path.is_empty() { None } else { Some(PathBuf::from(path)) })
+    }).await.map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub fn vst_save_paths(window: tauri::WebviewWindow, paths: Vec<PathBuf>) -> Result<(), String> {
