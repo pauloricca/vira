@@ -21,8 +21,8 @@ import { PeakMeter } from './meter';
 import { KeySelector } from './KeySelector';
 
 export const TRACK_MIME = 'application/x-vira-track-id';
-export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; start_seconds?: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
-type FineWaveform = Pick<Prepared, 'artifact_id' | 'fine_peak_frames' | 'fine_peaks' | 'fine_features'>;
+export type Prepared = { track_id: string; artifact_id: string; title: string; artist: string; filename: string; duration_seconds: number; progressive?: boolean; loaded_frames?: number; waveform_revision?: number; start_seconds?: number; frames: number; peak_frames: number; peaks: [number, number][]; fine_peak_frames?: number; fine_peaks?: [number, number][]; features?: [number, number][]; fine_features?: [number, number][] };
+type FineWaveform = Pick<Prepared, 'artifact_id' | 'fine_peak_frames' | 'fine_peaks' | 'fine_features' | 'waveform_revision'>;
 export type DeckState = { deck: number; loading: boolean; error: string | null; track: Prepared | null; position_seconds: number; playing: boolean; cue_seconds?: number; hot_cue_seconds?: (number | null)[]; cue_preview?: boolean; headphone_cue?: boolean; launch_pending?: boolean; loop_in_seconds?: number | null; loop_out_seconds?: number | null; loop_length_beats?: number | null; loop_release_pending?: boolean; slip_enabled?: boolean; gain: number; trim_db?: number; eq?: [number, number, number]; filter?: number; generation: number; requested_generation: number; received_at?: number; sampled_at?: number; position_epoch?: number; track_unchanged?: boolean; grid_can_undo?: boolean; grid_can_redo?: boolean; grid_edit?: Grid | null; grid_saving?: boolean; grid_previewing?: boolean; grid_pin?: number; grid?: Grid | null; reference_beats?: number[]; target_bpm?: number; pitch_semitones?: number; speed?: number; synced?: boolean; click_gain?: number; reposition_seconds?: number; timing_error?: string | null };
 export type AudioState = { master_volume?: number; cue_volume?: number; auto_fast?: boolean; auto_transition?: TransitionPlan | null; auto_mode?: [number, number]; audition?: { error?: string | null; index?: number; generation: number; position_seconds: number; playing: boolean }; routing?: { master: string | null; cue: string | null; master_channels?: [number, number]; cue_channels?: [number, number]; cue_sample_rate?: number | null; cue_running: boolean; cue_error: string | null }; crossfader?: number; crossfader_enabled?: boolean; master_bpm?: number | null; drift_rate?: number; sync_quantum?: number; drift_target?: number | null; output_frame?: number; decks: DeckState[]; running: boolean; error: string | null; telemetry: { sample_rate?: number; callback?: { starved_frames: number; device_errors: number; actual_callback_frames_min: number; actual_callback_frames_max: number }; realtime_policy_verified?: boolean; live_source_pcm_bytes?: number; resources?: { process_cpu_seconds?: number } } };
 const empty = (deck: number): DeckState => ({ deck, loading: false, error: null, track: null, position_seconds: 0, playing: false, gain: .8, generation: 0, requested_generation: 0 });
@@ -84,40 +84,41 @@ export function useDecks() {
     referenceLoads.current[state.deck] = { key, promise };
     return promise;
   }
+  const waveformKey = (track: Prepared) => `${track.artifact_id}:${track.waveform_revision ?? 0}`;
   const fineCache = useRef(new Map<string, FineWaveform>());
   const finePending = useRef(new Set<string>());
   useEffect(() => {
-    const active = new Set(audio.decks.map(d => d.track?.artifact_id).filter(Boolean));
+    const active = new Set(audio.decks.map(d => d.track ? waveformKey(d.track) : null).filter(Boolean));
     for (const key of fineCache.current.keys()) if (!active.has(key)) fineCache.current.delete(key);
     for (const d of audio.decks) {
       const track = d.track;
       if (track) void loadReferences(d);
-      if (!track || !track.peaks.length || fineCache.current.has(track.artifact_id) || finePending.current.has(track.artifact_id)) continue;
-      finePending.current.add(track.artifact_id);
+      if (!track || !track.peaks.length || fineCache.current.has(waveformKey(track)) || finePending.current.has(waveformKey(track))) continue;
+      finePending.current.add(waveformKey(track));
       void invoke<FineWaveform>('timing_waveform', { deck: d.deck, generation: d.generation }).then(value => {
-        if (value?.artifact_id !== track.artifact_id || !value.fine_peaks?.length) return;
-        if (!currentAudio.current.decks.some(deck => deck.track?.artifact_id === value.artifact_id)) return;
-        fineCache.current.set(value.artifact_id, value);
-        setAudio(previous => ({ ...previous, decks: previous.decks.map(deck => deck.track?.artifact_id === value.artifact_id ? { ...deck, track: { ...deck.track, fine_features: value.fine_features, fine_peaks: value.fine_peaks, fine_peak_frames: value.fine_peak_frames } } : deck) }));
+        if (value?.artifact_id !== track.artifact_id || (value.waveform_revision ?? 0) !== (track.waveform_revision ?? 0) || !value.fine_peaks?.length) return;
+        if (!currentAudio.current.decks.some(deck => deck.track && waveformKey(deck.track) === waveformKey(track))) return;
+        fineCache.current.set(waveformKey(track), value);
+        setAudio(previous => ({ ...previous, decks: previous.decks.map(deck => deck.track && waveformKey(deck.track) === waveformKey(track) ? { ...deck, track: { ...deck.track, fine_features: value.fine_features, fine_peaks: value.fine_peaks, fine_peak_frames: value.fine_peak_frames } } : deck) }));
       }).catch(e => {
         if (currentAudio.current.decks[d.deck].generation === d.generation) setErrors(previous => previous.map((v, i) => i === d.deck ? `Close-up waveform: ${String(e)}. Reload to retry.` : v));
       })
-        .finally(() => finePending.current.delete(track.artifact_id));
+        .finally(() => finePending.current.delete(waveformKey(track)));
     }
-  }, [audio.decks.map(d => `${d.track?.artifact_id}:${d.generation}:${d.track?.peaks.length}`).join('|')]);
+  }, [audio.decks.map(d => `${d.track?.artifact_id}:${d.generation}:${d.track?.peaks.length}:${d.track?.waveform_revision ?? 0}`).join('|')]);
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
         const sent = performance.now();
-        const value = await invoke<AudioState>('get_audio_state', {knownGenerations: currentAudio.current.decks.map(d=>d.track && !d.track.peaks.length ? 0 : d.generation)});
+        const value = await invoke<AudioState>('get_audio_state', {knownGenerations: currentAudio.current.decks.map(d=>d.track && (d.track.progressive || !d.track.peaks.length) ? 0 : d.generation)});
         const received = performance.now();
         if (!value || !Array.isArray(value.decks) || value.decks.length !== 2) throw new Error('Invalid native audio state. Restart VIRA.');
         if (!cancelled) { setAudio({ ...value, auto_transition: value.auto_transition ? { ...value.auto_transition, sampled_at: (sent + received) / 2 } : null, decks: value.decks.map(d => {
           const previous = currentAudio.current.decks[d.deck];
           const track = d.track_unchanged && previous.generation === d.generation ? previous.track : d.track;
-          const cached = track && fineCache.current.get(track.artifact_id);
+          const cached = track && fineCache.current.get(waveformKey(track));
           const stableTrack = cached && track && !track.fine_peaks?.length ? { ...track, fine_features: cached.fine_features, fine_peaks: cached.fine_peaks, fine_peak_frames: cached.fine_peak_frames } : track;
           const stored = references.current[d.deck];
           if (stored.generation !== d.generation) { stored.generation = d.generation; stored.beats = []; stored.grid = null; stored.loaded = false; }
@@ -570,9 +571,9 @@ export function Deck({ visible = true, state, running, loading, loadingTitle, er
     </div>
     {approvalError && <p role="alert" className="row-error">{approvalError}</p>}
     {state.loop_release_pending && <p role="status">Loop release queued · waiting for locked deck start boundary</p>}
-    {!!state.reposition_seconds && <p>Last master alignment: {state.reposition_seconds > 0 ? '+' : ''}{state.reposition_seconds.toFixed(3)} s</p>}
     {state.timing_error && <p role="alert" className="row-error">{state.timing_error}</p>}
     {preparing && <p className="deck-load-status" role="status">Loading {loadingTitle ?? 'track'}</p>}
+    {!preparing && state.track?.progressive && <p className="deck-load-status" role="status">Loading audio and waveform… {Math.floor((state.track.loaded_frames ?? 0) / (state.track.frames / state.track.duration_seconds))}s / {Math.ceil(state.track.duration_seconds)}s · ready to play</p>}
     {(error || state.error) && <p className="row-error" role="alert">{error || state.error}</p>}
   </article>;
 }
@@ -638,13 +639,20 @@ function ChannelFader({ state, running, control, meter }: { state: DeckState; ru
   const gainLabel = gain > 0 ? `${(20 * Math.log10(gain)).toFixed(1)} dB` : '−∞ dB';
   const inputAt = useRef(-Infinity);
   const generation = useRef(state.generation);
+  const enabled = running && (!!state.track || state.deck >= 2);
+  const moveGain = (value: number) => {
+    if (!enabled) return;
+    inputAt.current = performance.now();
+    setGain(value);
+    void control(state.deck, 'gain', value);
+  };
   useEffect(() => {
     if (generation.current !== state.generation || performance.now() - inputAt.current > 500) setGain(state.gain);
     generation.current = state.generation;
   }, [state]);
   return <div className={`mixer-channel deck-${state.deck}`} style={{'--deck-color':lineColours[state.deck]} as CSSProperties} aria-label={`Deck ${name} mixer controls`}>
     <div className="mixer-eq" aria-label={`Gain, EQ and filter deck ${name}`}>{(['GN', 'HI', 'MD', 'LO', 'FL'] as const).map(label => <MixerDial key={label} label={label} state={state} running={running} control={control} />)}</div>
-    <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={(!state.track && state.deck < 2) || !running} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel}`} onChange={event => { const value = Number(event.target.value); inputAt.current = performance.now(); setGain(value); void control(state.deck, 'gain', value); }} /></div></div>
+    <div className="mixer-fader-group"><div className="metered-fader"><LevelMeter meter={meter} label={`Deck ${name} level`} /><MidiInput className="vertical-fader" orientation="vertical" type="range" min="0" max="1" step=".01" value={gain} disabled={!enabled} aria-label={`Volume deck ${name}`} aria-valuetext={gainLabel} title={`Volume · ${gainLabel} · double-click to reset to 80%`} onChange={event => moveGain(Number(event.target.value))} onDoubleClick={() => moveGain(.8)} /></div></div>
     <MidiButton className={`mixer-headphones${state.headphone_cue ? ' active' : ''}`} disabled={!running} aria-pressed={!!state.headphone_cue} aria-label={`Headphone cue deck ${name}`} title="Send this deck to cue headphones before the channel fader" onClick={() => void control(state.deck, 'headphone_cue', state.headphone_cue ? 0 : 1)}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 13v-2a8 8 0 0 1 16 0v2M4 13h3v7H5a2 2 0 0 1-2-2v-3a2 2 0 0 0-1-2Zm16 0h-3v7h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-1-2Z" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg></MidiButton>
   </div>;
 }

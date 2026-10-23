@@ -1230,6 +1230,27 @@ test('the audition column follows the index and its button never loads a deck', 
   expect(screen.getByRole('group', { name: 'Library audition' })).toBeTruthy();
   expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
 });
+test('the adjacent fast audition column starts at one minute and stops independently', async () => {
+  invoke.mockImplementation((command: string) => Promise.resolve(command === 'audition_track' ? 12 : library));
+  render(<App />);
+  const start = await screen.findByRole('button', { name: 'Audition Artist - Filename through cue headphones' });
+  const minute = screen.getByRole('button', { name: 'Audition Artist - Filename from 1:00 through cue headphones' });
+  await waitFor(() => expect((minute as HTMLButtonElement).disabled).toBe(false));
+  expect(minute.closest('td')?.previousElementSibling).toBe(start.closest('td'));
+  expect(minute.querySelector('svg path')?.getAttribute('d')).toContain('ZM');
+  fireEvent.click(minute);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('audition_track', { trackId: 'one', output: 'cue', startSeconds: 60 }));
+  const stop = await screen.findByRole('button', { name: 'Stop auditioning Artist - Filename from 1:00' });
+  fireEvent.click(stop);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('audition_control', expect.objectContaining({ action: 'stop' })));
+  expect(audioInvoke.mock.calls.some(([command]) => command === 'load_track')).toBe(false);
+});
+test('one-minute auditions are disabled for tracks with no audio after one minute', async () => {
+  invoke.mockResolvedValue({ ...library, tracks: [{ ...library.tracks[0], duration_seconds: 60 }] });
+  render(<App />);
+  const minute = await screen.findByRole('button', { name: 'Audition Artist - Filename from 1:00 through cue headphones' });
+  expect((minute as HTMLButtonElement).disabled).toBe(true);
+});
 
 test('collection dropdown filters search and analysis while preserving the loaded deck', async () => {
   const first = { ...library.tracks[0], collection: '/fixed/music' };

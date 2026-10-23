@@ -445,6 +445,7 @@ mod tests {
         engine.metadata.lock().unwrap()[0].waveform = Some((
             7,
             Waveform {
+                waveform_revision: 0,
                 artifact_id: "artifact".into(),
                 fine_peak_frames: 240,
                 fine_peaks: vec![[0.2, 0.1]],
@@ -523,6 +524,7 @@ struct Metadata {
 
 #[derive(Clone, Serialize)]
 pub struct Waveform {
+    waveform_revision: u64,
     artifact_id: String,
     fine_peak_frames: usize,
     fine_peaks: Vec<[f32; 2]>,
@@ -1025,12 +1027,27 @@ impl EngineHandle {
         Ok(None)
     }
     pub fn load_audition(&self, generation: u64, track_id: &str, master: bool) -> Result<u64> {
+        self.load_audition_at(generation, track_id, master, 0.)
+    }
+    pub fn load_audition_at(
+        &self,
+        generation: u64,
+        track_id: &str,
+        master: bool,
+        seconds: f64,
+    ) -> Result<u64> {
+        ensure!(
+            seconds.is_finite() && seconds >= 0.,
+            "Invalid audition start position"
+        );
         let current = self.audition_request.clone();
-        let stream = crate::audition_stream::Stream::open(track_id.to_owned(), move || {
-            *current.lock().unwrap() == generation
-        })?;
+        let stream =
+            crate::audition_stream::Stream::open_at(track_id.to_owned(), seconds, move || {
+                *current.lock().unwrap() == generation
+            })?;
         let status = stream.status.clone();
         let mut voice = Box::new(crate::decks::Audition::streaming(stream, generation));
+        voice.position = (seconds * crate::sample_rate::get() as f64).round() as usize;
         voice.master = master;
         let request = self.audition_request.lock().unwrap();
         ensure!(*request == generation, "Audition cancelled");
@@ -1146,6 +1163,42 @@ impl EngineHandle {
         }
         outcome
     }
+    pub fn load_progressive(
+        self: &Arc<Self>,
+        deck: usize,
+        generation: u64,
+        track_id: &str,
+        preserve_lock: bool,
+        reset_mixer: bool,
+    ) -> Result<()> {
+        let engine = self.clone();
+        let track = track_id.to_owned();
+        let (ready, receive) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name(format!("deck-{deck}-load"))
+            .spawn(move || {
+                let outcome = engine.prepare_progressive(
+                    deck,
+                    generation,
+                    &track,
+                    preserve_lock,
+                    reset_mixer,
+                    Some(&ready),
+                );
+                if let Err(error) = outcome {
+                    if engine.shared.requested[deck].load(Acquire) == generation {
+                        let mut metadata = engine.metadata.lock().unwrap();
+                        metadata[deck].loading = false;
+                        metadata[deck].error = Some(format!("{error:#}"));
+                    }
+                    let _ = ready.send(Err(format!("{error:#}")));
+                }
+            })?;
+        receive
+            .recv()
+            .map_err(|_| anyhow::anyhow!("Deck loader stopped"))?
+            .map_err(anyhow::Error::msg)
+    }
     fn prepare_and_install(
         &self,
         deck: usize,
@@ -1154,112 +1207,127 @@ impl EngineHandle {
         preserve_lock: bool,
         reset_mixer: bool,
     ) -> Result<()> {
+        self.prepare_progressive(deck, generation, track_id, preserve_lock, reset_mixer, None)
+    }
+    fn publish_waveform(&self, deck: usize, generation: u64, prepared: &Prepared) {
+        let mut record = prepared.clone();
+        let waveform = Waveform {
+            artifact_id: record.artifact_id.clone(),
+            fine_peak_frames: record.fine_peak_frames,
+            fine_peaks: std::mem::take(&mut record.fine_peaks),
+            fine_features: std::mem::take(&mut record.fine_features),
+            waveform_revision: record.waveform_revision,
+        };
+        let mut metadata = self.metadata.lock().unwrap();
+        if self.shared.requested[deck].load(Acquire) != generation {
+            return;
+        }
+        metadata[deck].waveform = Some((generation, waveform));
+        metadata[deck].records.insert(generation, record);
+    }
+    fn prepare_progressive(
+        &self,
+        deck: usize,
+        generation: u64,
+        track_id: &str,
+        preserve_lock: bool,
+        reset_mixer: bool,
+        ready: Option<&std::sync::mpsc::SyncSender<std::result::Result<(), String>>>,
+    ) -> Result<()> {
         let _priority = source::LoadPriority::begin()?;
+        let current = || self.shared.requested[deck].load(Acquire) == generation;
+        ensure!(current(), "Load superseded by a newer selection");
+        let descriptor = crate::service_response("/v1/deck/open", Some(json!({"track_id":track_id,"deck":deck,"generation":generation,"sample_rate":crate::sample_rate::get()})), true).map_err(anyhow::Error::msg)?.json::<Value>()?;
+        let mut prepared: Prepared = serde_json::from_value(descriptor.clone())?;
         ensure!(
-            self.shared.requested[deck].load(Acquire) == generation,
-            "Load superseded by a newer selection"
+            prepared.track_id == track_id
+                && prepared.frames > 0
+                && prepared.frames <= crate::sample_rate::get() * 14400
+                && prepared.duration_seconds.is_finite(),
+            "Invalid progressive deck descriptor"
         );
-        // Install decoded audio before the more expensive waveform work. The same
-        // voice remains installed when that metadata arrives, even during playback.
-        let mut prepared = source::prepare_playback(track_id, deck, generation)?;
-        ensure!(
-            self.shared.requested[deck].load(Acquire) == generation,
-            "Load superseded by a newer selection"
-        );
-        let source = {
-            let _download = self.download.lock().unwrap();
-            ensure!(
-                self.shared.requested[deck].load(Acquire) == generation,
-                "Load superseded by a newer selection"
-            );
-            let cached = {
-                let mut cache = self.sources.lock().unwrap();
-                cache.retain(|_, value| value.strong_count() > 0);
-                cache.get(&prepared.artifact_id).and_then(Weak::upgrade)
-            };
-            if let Some(source) = cached {
-                source
+        let audio = Arc::new(Source {
+            progressive: Some(crate::progressive::Audio::new(prepared.frames)),
+            left: Vec::new(),
+            right: Vec::new(),
+            bass_profile: Default::default(),
+        });
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(None)
+            .build()?;
+        let response = client.post(format!("{}/v1/deck/stream", crate::SERVICE_URL)).json(&json!({"track_id":track_id,"sample_rate":crate::sample_rate::get(),"position_seconds":0})).send()?.error_for_status()?;
+        let mut installed = false;
+        let decoded = crate::progressive::decode(response, current, |chunk| {
+            ensure!(current(), "Load superseded by a newer selection");
+            let offset = audio.loaded();
+            prepared.append_waveform(offset, &chunk);
+            audio.progressive.as_ref().unwrap().publish(chunk)?;
+            if !installed {
+                let mut voice = Box::new(Voice::new(audio.clone(), generation));
+                if !descriptor["grid"].is_null() {
+                    let grid: crate::timing::Grid =
+                        serde_json::from_value(descriptor["grid"].clone())?;
+                    voice.apply_grid(grid.validate(prepared.duration_seconds)?);
+                    voice.set_start(grid.downbeat_seconds);
+                    prepared.start_seconds = voice.seconds();
+                }
+                if descriptor["identity_pending"] != true {
+                    voice.cue_identity = Some(Arc::from(prepared.source_hash.as_str()));
+                    voice.restore_hot_cues(crate::track_meta::hot_cues(&prepared.source_hash)?);
+                    let mut mixer = voice.mixer.settings;
+                    mixer.trim = crate::track_meta::gain(&prepared.source_hash)?;
+                    voice.mixer.set(mixer);
+                }
+                self.publish_waveform(deck, generation, &prepared);
+                self.send(Command::Install {
+                    deck,
+                    generation,
+                    voice,
+                    preserve_lock,
+                    reset_mixer,
+                })?;
+                self.metadata.lock().unwrap()[deck].loading = false;
+                installed = true;
+                if let Some(ready) = ready {
+                    let _ = ready.send(Ok(()));
+                }
             } else {
-                let source = prepared
-                    .download(|| self.shared.requested[deck].load(Acquire) == generation)?;
-                self.sources
-                    .lock()
-                    .unwrap()
-                    .insert(prepared.artifact_id.clone(), Arc::downgrade(&source));
-                source
+                self.publish_waveform(deck, generation, &prepared);
             }
-        };
-        let mut voice = Box::new(Voice::new(source, generation));
-        let mut mixer = voice.mixer.settings;
-        mixer.trim = crate::track_meta::gain(&prepared.source_hash)?;
-        voice.mixer.set(mixer);
-        let timing =
-            crate::service_response("/v1/timing/get", Some(json!({"track_id":track_id})), true)
-                .map_err(anyhow::Error::msg)?
-                .json::<Value>()?;
-        // Changed content never inherits old assertions or the fitted phase.
-        let value = if timing["state"] == "stale" {
-            &Value::Null
-        } else if !timing["grid"].is_null() {
-            &timing["grid"]
-        } else {
-            &timing["suggestion"]
-        };
-        if !value.is_null() {
-            let grid: crate::timing::Grid = serde_json::from_value(value.clone())?;
-            voice.apply_grid(grid.validate(prepared.duration_seconds)?);
-            // The first beat is playable zero. Keep source coordinates for timing
-            // edits and waveforms, but never play or seek into the leading gap.
-            voice.set_start(grid.downbeat_seconds);
-            prepared.start_seconds = voice.seconds();
-        }
+            Ok(())
+        });
+        audio.progressive.as_ref().unwrap().finish();
+        let pcm_hash = decoded?;
         ensure!(
-            self.shared.requested[deck].load(Acquire) == generation,
-            "Load superseded by a newer selection"
+            installed && current(),
+            "Track did not contain playable audio, or load was replaced"
         );
-        voice.cue_identity = Some(Arc::from(prepared.source_hash.as_str()));
-        voice.restore_hot_cues(crate::track_meta::hot_cues(&prepared.source_hash)?);
-        // Records are compact peaks/metadata, never PCM. Keep the previous audible
-        // record while an installation travels through the output queue.
-        {
-            let mut meta = self.metadata.lock().unwrap();
-            let waveform = Waveform {
-                artifact_id: prepared.artifact_id.clone(),
-                fine_peak_frames: prepared.fine_peak_frames,
-                fine_peaks: std::mem::take(&mut prepared.fine_peaks),
-                fine_features: std::mem::take(&mut prepared.fine_features),
-            };
-            meta[deck].waveform = Some((generation, waveform));
-            meta[deck].records.insert(generation, prepared);
-        }
-        self.send(Command::Install {
-            deck,
-            generation,
-            voice,
-            preserve_lock,
-            reset_mixer,
-        })?;
+        let profile = crate::smart::BassProfile::analyze_source(&audio, current)?;
+        let _ = audio.progressive.as_ref().unwrap().bass.set(profile);
         let mut complete = source::prepare_track(track_id, Some((deck, generation)))?;
         ensure!(
+            complete.pcm_hash == pcm_hash && complete.frames == audio.loaded(),
+            "Progressive PCM integrity check failed. Reload the track."
+        );
+        ensure!(
             self.shared.requested[deck].load(Acquire) == generation,
             "Load superseded by a newer selection"
         );
-        let mut meta = self.metadata.lock().unwrap();
-        let start_seconds = meta[deck]
-            .records
-            .get(&generation)
-            .map_or(0., |p| p.start_seconds);
-        complete.start_seconds = start_seconds;
-        meta[deck].waveform = Some((
+        complete.start_seconds = prepared.start_seconds;
+        complete.loaded_frames = audio.loaded();
+        complete.waveform_revision = prepared.waveform_revision + 1;
+        self.sources
+            .lock()
+            .unwrap()
+            .insert(complete.artifact_id.clone(), Arc::downgrade(&audio));
+        self.send(Command::SourceIdentity(
+            deck,
             generation,
-            Waveform {
-                artifact_id: complete.artifact_id.clone(),
-                fine_peak_frames: complete.fine_peak_frames,
-                fine_peaks: std::mem::take(&mut complete.fine_peaks),
-                fine_features: std::mem::take(&mut complete.fine_features),
-            },
-        ));
-        meta[deck].records.insert(generation, complete);
+            Arc::from(complete.source_hash.as_str()),
+        ))?;
+        self.publish_waveform(deck, generation, &complete);
         Ok(())
     }
     pub fn control(&self, deck: usize, action: &str, value: Option<f64>) -> Result<()> {
@@ -1751,12 +1819,12 @@ impl EngineHandle {
                     deck: d,
                     loading: metadata[d].loading,
                     error: metadata[d].error.clone(),
-                    track: if known.is_some_and(|g| g[d] == generations[d]) {
+                    track: if known.is_some_and(|g| g[d] == generations[d]) && !metadata[d].records.get(&generations[d]).is_some_and(|p| p.progressive) {
                         None
                     } else {
                         metadata[d].records.get(&generations[d]).cloned()
                     },
-                    track_unchanged: known.is_some_and(|g| g[d] == generations[d]),
+                    track_unchanged: known.is_some_and(|g| g[d] == generations[d]) && !metadata[d].records.get(&generations[d]).is_some_and(|p| p.progressive),
                     position_epoch: snapshot.position_epochs[d],
                     position_seconds: positions[d] as f64 / crate::sample_rate::get() as f64,
                     playing: playing[d] && self.shared.running.load(Acquire),

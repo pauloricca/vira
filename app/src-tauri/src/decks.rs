@@ -121,14 +121,28 @@ impl ScrubMotion {
 
 /// Four-point Catmull-Rom reconstruction, with repeated edge samples.
 /// Used by scrubbing and the vinyl stop; no allocation or filter setup.
+fn source_scrub_sample(source: &Source, channel: usize, position: f64, start: usize) -> f32 {
+    scrub_interpolate(source.len(), position, start, |index| {
+        source.sample(channel, index)
+    })
+}
+#[cfg(test)]
 fn scrub_sample(channel: &[f32], position: f64, start: usize) -> f32 {
-    let end = channel.len() - 1;
+    scrub_interpolate(channel.len(), position, start, |index| channel[index])
+}
+fn scrub_interpolate(
+    length: usize,
+    position: f64,
+    start: usize,
+    sample: impl Fn(usize) -> f32,
+) -> f32 {
+    let end = length - 1;
     let index = (position.floor() as usize).clamp(start, end);
     let t = (position - index as f64) as f32;
-    let a = channel[index.saturating_sub(1).max(start)];
-    let b = channel[index];
-    let c = channel[(index + 1).min(end)];
-    let d = channel[(index + 2).min(end)];
+    let a = sample(index.saturating_sub(1).max(start));
+    let b = sample(index);
+    let c = sample((index + 1).min(end));
+    let d = sample((index + 2).min(end));
     b + 0.5 * t * (c - a + t * (2. * a - 5. * b + 4. * c - d + t * (3. * (b - c) + d - a)))
 }
 
@@ -680,14 +694,23 @@ impl Voice {
     }
     fn next_mode<const ROUTED: bool>(&mut self) -> Result<[f32; 2]> {
         self.pre_fader = [0.; 2];
+        if self.source.len() == 0 || self.start >= self.source.len() {
+            self.playing = false;
+            return Ok([0.; 2]);
+        }
         if let Some((mut position, speed, remaining, rewind)) = self.vinyl_tail {
             let length = crate::sample_rate::get() * 300 / 1000;
             let progress = remaining as f64 / length as f64;
             // Resampling drops pitch with speed, like a platter braking. Bypass
             // the pitch-preserving stretcher and fade the final 30 ms to silence.
             let gain = (progress * 10.).min(1.) as f32;
-            let mut sample = [&self.source.left, &self.source.right]
-                .map(|channel| scrub_sample(channel, position, self.start) * gain);
+            if position as usize >= self.source.loaded() && self.source.loaded() < self.source.len()
+            {
+                return Ok([0.; 2]);
+            }
+            let mut sample = [0, 1].map(|channel| {
+                source_scrub_sample(&self.source, channel, position, self.start) * gain
+            });
             // Blend away from the stretcher output over the first 5 ms.
             let blend =
                 ((length - remaining) as f32 / crate::sample_rate::fine_frames() as f32).min(1.);
@@ -735,8 +758,12 @@ impl Voice {
             let index = position.floor() as usize;
             let next = (index + 1).min(self.source.len() - 1);
             let fraction = (position - position.floor()) as f32;
-            let sample = [&self.source.left, &self.source.right].map(|channel| {
-                (channel[index] + (channel[next] - channel[index]) * fraction) * envelope
+            if next >= self.source.loaded() && self.source.loaded() < self.source.len() {
+                return Ok([0.; 2]);
+            }
+            let sample = [0, 1].map(|channel| {
+                let a = self.source.sample(channel, index);
+                (a + (self.source.sample(channel, next) - a) * fraction) * envelope
             });
             self.output += 1;
             self.position = position.round() as usize;
@@ -763,8 +790,14 @@ impl Voice {
                 return Ok([0.; 2]);
             }
             motion.advance(self.start, self.source.len() - 1);
-            let sample = [&self.source.left, &self.source.right].map(|channel| {
-                scrub_sample(channel, motion.position, self.start) * motion.envelope
+            if motion.position as usize >= self.source.loaded()
+                && self.source.loaded() < self.source.len()
+            {
+                return Ok([0.; 2]);
+            }
+            let sample = [0, 1].map(|channel| {
+                source_scrub_sample(&self.source, channel, motion.position, self.start)
+                    * motion.envelope
             });
             self.output += 1;
             self.position = motion.position.round() as usize;
@@ -885,13 +918,17 @@ impl Voice {
                 return Ok(value.map(|v| v * if ROUTED { 1. } else { self.gain } + click));
             }
             if self.direct_playback {
-                let n = CHUNK.min(self.source.len() - self.input);
+                let n = CHUNK.min(self.source.len().saturating_sub(self.input));
                 if n == 0 {
                     self.playing = false;
                     return Ok([0.; 2]);
                 }
-                self.left[..n].copy_from_slice(&self.source.left[self.input..self.input + n]);
-                self.right[..n].copy_from_slice(&self.source.right[self.input..self.input + n]);
+                let n = self
+                    .source
+                    .copy(self.input, &mut self.left[..n], &mut self.right[..n]);
+                if n == 0 {
+                    return Ok([0.; 2]);
+                }
                 self.input += n;
                 self.read = 0;
                 self.available = n;
@@ -904,12 +941,14 @@ impl Voice {
                 self.dsp.process(&zero[..n], &zero[..n], false);
                 self.pad -= n;
             } else if self.input < self.source.len() {
-                let n = CHUNK.min(self.source.len() - self.input);
-                self.dsp.process(
-                    &self.source.left[self.input..self.input + n],
-                    &self.source.right[self.input..self.input + n],
-                    false,
-                );
+                let n = CHUNK.min(self.source.len().saturating_sub(self.input));
+                let left = self.source.channel(0, self.input);
+                let right = self.source.channel(1, self.input);
+                let n = n.min(left.len()).min(right.len());
+                if n == 0 {
+                    return Ok([0.; 2]);
+                }
+                self.dsp.process(&left[..n], &right[..n], false);
                 self.input += n;
             } else {
                 let zero = [0.; CHUNK];
@@ -980,6 +1019,7 @@ impl Audition {
             Arc::new(Source {
                 left: Vec::new(),
                 right: Vec::new(),
+                progressive: None,
                 bass_profile: Default::default(),
             }),
             generation,
@@ -1063,8 +1103,8 @@ impl Audition {
         self.overlap_beats = beats;
         self.swap_beat = if self.smart {
             next.source
-                .bass_profile
-                .drop_beat(b, incoming, beats)
+                .bass()
+                .and_then(|profile| profile.drop_beat(b, incoming, beats))
                 .unwrap_or(beats / 2.)
         } else {
             beats / 2.
@@ -1094,8 +1134,8 @@ impl Audition {
             sample
         } else {
             let sample = [
-                self.source.left[self.position],
-                self.source.right[self.position],
+                self.source.sample(0, self.position),
+                self.source.sample(1, self.position),
             ];
             self.position += 1;
             self.voice.last_sample = sample;
@@ -1205,6 +1245,7 @@ pub enum Retired {
 }
 
 pub enum Command {
+    SourceIdentity(usize, u64, Arc<str>),
     AuditionInstall(Box<Audition>),
     AuditionStop,
     AuditionQueue(u64, u64, Box<Audition>),
@@ -1531,8 +1572,8 @@ impl Decks {
             },
             swap_beat: if self.auto_smart {
                 b.source
-                    .bass_profile
-                    .drop_beat(bg, incoming, beats)
+                    .bass()
+                    .and_then(|profile| profile.drop_beat(bg, incoming, beats))
                     .unwrap_or(beats / 2.)
             } else {
                 beats / 2.
@@ -2058,6 +2099,13 @@ impl Decks {
                         if let Some(v) = &mut self.voices[d] {
                             v.timing_error = 4;
                         }
+                    }
+                }
+            }
+            Command::SourceIdentity(deck, generation, identity) => {
+                if let Some(voice) = &mut self.voices[deck] {
+                    if voice.generation == generation && voice.cue_identity.is_none() {
+                        voice.cue_identity = Some(identity);
                     }
                 }
             }
@@ -3153,6 +3201,7 @@ mod tests {
     fn original_tempo_and_key_play_source_samples_without_stretching() {
         let pcm: Vec<_> = (0..2049).map(|i| (i as f32 * 0.13).sin() * 0.2).collect();
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: pcm.clone(),
             right: pcm.iter().map(|x| -x).collect(),
@@ -3215,6 +3264,7 @@ mod tests {
             .map(|i| (i as f32 * 440. * std::f32::consts::TAU / rate as f32).sin() * 0.2)
             .collect();
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: pcm.clone(),
             right: pcm,
@@ -3982,6 +4032,7 @@ mod tests {
     fn auto_decks(from: usize, bars: u8, change_tempo: bool) -> Decks {
         let mut decks = Decks::new();
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: vec![0.1; 48000 * 40],
             right: vec![0.1; 48000 * 40],
@@ -4073,6 +4124,7 @@ mod tests {
     #[test]
     fn thirty_two_bar_overlap_is_supported_by_decks_and_library_play_all() {
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: vec![0.; 48000 * 130],
             right: vec![0.; 48000 * 130],
@@ -4391,6 +4443,7 @@ mod tests {
                 for style in [0, 1, 2] {
                     let mut decks = auto_decks(from, 8, false);
                     let source = Arc::new(Source {
+                        progressive: None,
                         bass_profile: Default::default(),
                         left: vec![0.; 48000 * 130],
                         right: vec![0.; 48000 * 130],
@@ -4994,6 +5047,7 @@ mod tests {
         Arc::new(Source {
             left: samples.clone(),
             right: samples,
+            progressive: None,
             bass_profile,
         })
     }
@@ -5146,6 +5200,7 @@ mod tests {
                 for kind in 0..4 {
                     let mut decks = auto_decks(from, 8, false);
                     let source = Arc::new(Source {
+                        progressive: None,
                         bass_profile: Default::default(),
                         left: vec![0.; 48000 * 130],
                         right: vec![0.; 48000 * 130],
@@ -5691,6 +5746,7 @@ mod tests {
             .map(|i| ((i as f32 * 440. * std::f32::consts::TAU) / 48000.).sin() * 0.2)
             .collect();
         Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             right: left.iter().map(|v| v * 0.5).collect(),
             left,
@@ -5904,6 +5960,7 @@ mod tests {
         let audio = Arc::new(Source {
             left: vec![0.; 480000],
             right: vec![0.; 480000],
+            progressive: None,
             bass_profile: Default::default(),
         });
         for (locked, quantum, position, expected) in [
@@ -6450,6 +6507,7 @@ mod tests {
             let mut decks = Decks::new();
             decks.command(Command::VinylStop(false), [0, 0]);
             let source = Arc::new(Source {
+                progressive: None,
                 bass_profile: Default::default(),
                 left: vec![0.1; 48000 * 5],
                 right: vec![0.1; 48000 * 5],
@@ -6503,6 +6561,7 @@ mod tests {
                 for align in [false, true] {
                     let mut decks = Decks::new();
                     let source = Arc::new(Source {
+                        progressive: None,
                         bass_profile: Default::default(),
                         left: vec![0.; 48000 * 40],
                         right: vec![0.; 48000 * 40],
@@ -6535,6 +6594,7 @@ mod tests {
     fn aligned_lengths_select_the_grid_segment_containing_the_playhead() {
         let mut decks = Decks::new();
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: vec![0.; 48000 * 5],
             right: vec![0.; 48000 * 5],
@@ -6867,6 +6927,7 @@ mod timing_tests {
             .map(|i| (i as f32 * 440. * std::f32::consts::TAU / 48000.).sin() * 0.2)
             .collect();
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             right: left.clone(),
             left,
@@ -7673,6 +7734,7 @@ mod timing_tests {
             }
         }
         let source = Arc::new(Source {
+            progressive: None,
             bass_profile: Default::default(),
             left: pcm.clone(),
             right: pcm,
@@ -7825,6 +7887,7 @@ mod audition_sequence_tests {
             .collect();
         let mut voice = Box::new(Audition::new(
             Arc::new(Source {
+                progressive: None,
                 bass_profile: Default::default(),
                 left: samples.clone(),
                 right: samples,
@@ -7859,6 +7922,7 @@ mod audition_sequence_tests {
         let source = Arc::new(Source {
             left: samples.clone(),
             right: samples,
+            progressive: None,
             bass_profile,
         });
         let mut a = Audition::new(source.clone(), 7);

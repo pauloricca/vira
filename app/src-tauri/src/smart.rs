@@ -76,18 +76,35 @@ impl BassProfile {
             left.len() == right.len(),
             "Bass profile requires matching stereo channels"
         );
-        let mut prefix = Vec::with_capacity(left.len().div_ceil(step()) + 1);
+        Self::analyze_samples(left.len(), |i| [left[i], right[i]], current)
+    }
+    pub fn analyze_source(
+        source: &crate::source::Source,
+        current: impl Fn() -> bool,
+    ) -> Result<Self> {
+        Self::analyze_samples(
+            source.len(),
+            |i| [source.sample(0, i), source.sample(1, i)],
+            current,
+        )
+    }
+    fn analyze_samples(
+        frames: usize,
+        sample: impl Fn(usize) -> [f32; 2],
+        current: impl Fn() -> bool,
+    ) -> Result<Self> {
+        let mut prefix = Vec::with_capacity(frames.div_ceil(step()) + 1);
         prefix.push([0., 0.]);
         let low_a = 1. - (-std::f64::consts::TAU * 220. / crate::sample_rate::get() as f64).exp();
         let high_a = 1. - (-std::f64::consts::TAU * 35. / crate::sample_rate::get() as f64).exp();
         let mut lp = [[0.; 2]; 2];
         let mut baseline = [0.; 2];
-        for first in (0..left.len()).step_by(step()) {
+        for first in (0..frames).step_by(step()) {
             ensure!(current(), "Load superseded during bass lookahead");
-            let end = (first + step()).min(left.len());
+            let end = (first + step()).min(frames);
             let mut power = [0., 0.];
             for i in first..end {
-                for (channel, x) in [left[i] as f64, right[i] as f64].into_iter().enumerate() {
+                for (channel, x) in sample(i).map(f64::from).into_iter().enumerate() {
                     lp[channel][0] += low_a * (x - lp[channel][0]);
                     lp[channel][1] += low_a * (lp[channel][0] - lp[channel][1]);
                     baseline[channel] += high_a * (lp[channel][1] - baseline[channel]);
@@ -101,10 +118,7 @@ impl BassProfile {
                 old[band] + power[band] / (2. * (end - first) as f64)
             }));
         }
-        Ok(Self {
-            prefix,
-            frames: left.len(),
-        })
+        Ok(Self { prefix, frames })
     }
     fn at(&self, seconds: f64, band: usize) -> f64 {
         let bucket = (seconds * crate::sample_rate::get() as f64 / step() as f64)

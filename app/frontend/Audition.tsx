@@ -11,25 +11,28 @@ export function PlayIcon({ paused = false }: { paused?: boolean }) {
 export function StopIcon() {
   return <svg viewBox="0 0 20 20" width="12" height="12" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="12" height="12" /></svg>;
 }
+export function FastPlayIcon() {
+  return <svg viewBox="0 0 24 20" width="16" height="12" fill="currentColor" aria-hidden="true"><path d="M2 3.5 12 10 2 16.5ZM12 3.5 22 10 12 16.5Z" /></svg>;
+}
 
 export function useAudition(audio: AudioState, tracks: Track[] = [], overlap = 8) {
   const [playAll, setPlayAll] = useState(false);
   const playlist = useRef<Track[]>([]);
   const [output, setOutput] = useState<'cue' | 'master'>('cue');
-  const [selection, setSelection] = useState<{ track: Track; generation: number | null } | null>(null);
+  const [selection, setSelection] = useState<{ track: Track; generation: number | null; startSeconds: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const request = useRef(0);
   const commands = useRef(Promise.resolve());
   const state = selection?.generation === audio.audition?.generation ? audio.audition : undefined;
-  async function play(track: Track) {
+  async function play(track: Track, startSeconds = 0) {
     const current = ++request.current;
     const start = tracks.findIndex(candidate => candidate.id === track.id);
     playlist.current = start >= 0 ? tracks.slice(start) : [track];
-    setSelection({ track, generation: null });
+    setSelection({ track, generation: null, startSeconds });
     setError(null);
     try {
-      const generation = await invoke<number>('audition_track', { trackId: track.id, output });
-      if (current === request.current) setSelection({ track, generation });
+      const generation = await invoke<number>('audition_track', { trackId: track.id, output, ...(startSeconds ? { startSeconds } : {}) });
+      if (current === request.current) setSelection({ track, generation, startSeconds });
     } catch (e) {
       if (current === request.current) { setSelection(null); setError(String(e)); }
     }
@@ -69,7 +72,7 @@ export function useAudition(audio: AudioState, tracks: Track[] = [], overlap = 8
     return () => { cancelled = true; };
   }, [generation, index, playAll, overlap, decksPlaying, output]);
   useEffect(() => { if (state?.error) setError(state.error); }, [state?.error]);
-  const activeSelection = selection && { ...selection, track: playlist.current[index] ?? selection.track };
+  const activeSelection = selection && { ...selection, startSeconds: index === 0 ? selection.startSeconds : 0, track: playlist.current[index] ?? selection.track };
   return { selection: activeSelection, error, dismissError: () => setError(null), state, play, control, output, changeOutput, playAll, togglePlayAll: () => setPlayAll(value => !value) };
 }
 

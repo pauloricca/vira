@@ -73,23 +73,86 @@ pub struct Prepared {
     pub fine_features: Vec<[f32; 2]>,
     pub pcm_hash: String,
     pub pcm_bytes: usize,
+    #[serde(default)]
+    pub progressive: bool,
+    #[serde(default)]
+    pub loaded_frames: usize,
+    #[serde(default)]
+    pub waveform_revision: u64,
 }
 
 pub struct Source {
+    pub(crate) progressive: Option<crate::progressive::Audio>,
     pub(crate) bass_profile: crate::smart::BassProfile,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
 }
 impl Source {
     pub fn len(&self) -> usize {
-        self.left.len()
+        self.progressive
+            .as_ref()
+            .map_or(self.left.len(), |audio| audio.total())
     }
     pub fn bytes(&self) -> usize {
-        self.len() * 8
+        self.loaded() * 8
+    }
+    pub fn loaded(&self) -> usize {
+        self.progressive
+            .as_ref()
+            .map_or(self.left.len(), |audio| audio.loaded())
+    }
+    pub fn channel(&self, channel: usize, offset: usize) -> &[f32] {
+        if let Some(audio) = &self.progressive {
+            audio.slice(channel, offset)
+        } else if channel == 0 {
+            self.left.get(offset..).unwrap_or(&[])
+        } else {
+            self.right.get(offset..).unwrap_or(&[])
+        }
+    }
+    pub fn sample(&self, channel: usize, offset: usize) -> f32 {
+        self.channel(channel, offset).first().copied().unwrap_or(0.)
+    }
+    pub fn copy(&self, offset: usize, left: &mut [f32], right: &mut [f32]) -> usize {
+        let a = self.channel(0, offset);
+        let b = self.channel(1, offset);
+        let count = left.len().min(right.len()).min(a.len()).min(b.len());
+        left[..count].copy_from_slice(&a[..count]);
+        right[..count].copy_from_slice(&b[..count]);
+        count
+    }
+    pub fn bass(&self) -> Option<&crate::smart::BassProfile> {
+        self.progressive
+            .as_ref()
+            .map_or(Some(&self.bass_profile), |audio| audio.bass.get())
     }
 }
 
 impl Prepared {
+    pub fn append_waveform(&mut self, offset: usize, chunk: &crate::progressive::Chunk) {
+        self.peak_frames = self.frames.div_ceil(1024).max(1);
+        self.fine_peak_frames = crate::sample_rate::fine_frames();
+        self.peaks.resize(
+            (offset + chunk.left.len())
+                .div_ceil(self.peak_frames)
+                .max(self.frames.div_ceil(self.peak_frames)),
+            [0.; 2],
+        );
+        self.fine_peaks.resize(
+            (offset + chunk.left.len()).div_ceil(self.fine_peak_frames),
+            [0.; 2],
+        );
+        for (index, (a, b)) in chunk.left.iter().zip(&chunk.right).enumerate() {
+            for (channel, value) in [a.abs(), b.abs()].into_iter().enumerate() {
+                let bucket = (offset + index) / self.peak_frames;
+                self.peaks[bucket][channel] = self.peaks[bucket][channel].max(value);
+                let fine = (offset + index) / self.fine_peak_frames;
+                self.fine_peaks[fine][channel] = self.fine_peaks[fine][channel].max(value);
+            }
+        }
+        self.loaded_frames = offset + chunk.left.len();
+        self.waveform_revision += 1;
+    }
     pub fn validate_audio(&self, track_id: &str, hash: &str) -> Result<()> {
         ensure!(
             self.schema_version == 1
@@ -226,6 +289,7 @@ impl Prepared {
         Ok(Arc::new(Source {
             left,
             right,
+            progressive: None,
             bass_profile,
         }))
     }

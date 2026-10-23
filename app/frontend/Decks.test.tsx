@@ -14,6 +14,30 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 afterEach(() => { cleanup(); invoke.mockReset(); localStorage.removeItem('vira.deck-0-locked'); localStorage.removeItem('vira.deck-1-locked'); });
 const state: DeckState = { deck: 0, loading: false, error: null, playing: false, position_seconds: 0, gain: .8, generation: 1, requested_generation: 1,
   track: { track_id: 'a'.repeat(64), artifact_id: 'b'.repeat(64), title: 'Unanalysed song', artist: 'Test artist', filename: 'test.wav', duration_seconds: 100, frames: 4800000, peak_frames: 4800000, peaks: [[.2, .1]] } };
+test('a progressive deck remains playable while its audio and waveform grow', () => {
+  const control = vi.fn();
+  render(<Deck state={{ ...state, track: { ...state.track!, progressive: true, loaded_frames: 48000 * 30 } }} running loading={false} error={null} load={vi.fn()} control={control} />);
+  expect(screen.getByText('Loading audio and waveform… 30s / 100s · ready to play')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Play deck A' }));
+  expect(control).toHaveBeenCalledWith(0, 'play_pause');
+});
+test('progressive waveform revisions refresh close-up peaks without changing the deck generation', async () => {
+  let revision = 1;
+  invoke.mockImplementation((command: string) => {
+    const track = { ...state.track!, progressive: revision < 3, waveform_revision: revision, fine_peak_frames: 240, fine_peaks: [[revision / 10, revision / 10] as [number, number]] };
+    if (command === 'get_audio_state') return Promise.resolve({ running: true, error: null, telemetry: {}, decks: [{ ...state, track: { ...track, fine_peaks: [] } }, { ...state, deck: 1, track: null }] });
+    if (command === 'timing_waveform') return Promise.resolve(track);
+    return Promise.resolve({});
+  });
+  function Harness() { const decks = useDecks(); return <output>{decks.audio.decks[0].track?.fine_peaks?.[0]?.[0] ?? 'waiting'}</output>; }
+  render(<Harness />);
+  await screen.findByText('0.1');
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_audio_state', { knownGenerations: [0, 1] }));
+  revision = 2;
+  await screen.findByText('0.2');
+  revision = 3;
+  await screen.findByText('0.3');
+});
 test('decoded audio can play and pause while the loading message stays visible', () => {
   const control = vi.fn();
   const pending = { ...state, loading: true, track: { ...state.track!, peaks: [] } };
@@ -558,9 +582,19 @@ test('mixer changes the selected native deck gain with immediate feedback', () =
   expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('−∞ dB');
   fireEvent.change(screen.getByRole('slider', { name: 'Volume deck B' }), { target: { value: '1' } });
   expect(screen.getByRole('slider', { name: 'Volume deck B' }).getAttribute('aria-valuetext')).toBe('0.0 dB');
+  fireEvent.doubleClick(screen.getByRole('slider', { name: 'Volume deck B' }));
+  expect(control).toHaveBeenLastCalledWith(1, 'gain', .8);
+  expect((screen.getByRole('slider', { name: 'Volume deck B' }) as HTMLInputElement).value).toBe('0.8');
   expect(screen.queryByText('0.0 dB')).toBeNull();
   expect(screen.queryByLabelText('Stereo master meters')).toBeNull();
   expect((screen.getByRole('slider', { name: 'Crossfader' }) as HTMLInputElement).disabled).toBe(false);
+});
+
+test('double-clicking a disabled channel fader does not change its volume', () => {
+  const control = vi.fn().mockResolvedValue(undefined);
+  render(<Mixer audio={{ running: false, error: null, telemetry: {}, decks: [state, { ...state, deck: 1 }] }} control={control} />);
+  fireEvent.doubleClick(screen.getByRole('slider', { name: 'Volume deck B' }));
+  expect(control.mock.calls.some(([, action]) => action === 'gain')).toBe(false);
 });
 
 test('channel controls sit with their decks and centre mixer has no A, B or master heading', () => {

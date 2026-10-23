@@ -61,14 +61,22 @@ impl Stream {
         }
     }
     pub fn open(track: String, current: impl Fn() -> bool + Send + 'static) -> Result<Self> {
+        Self::open_at(track, 0., current)
+    }
+    pub fn open_at(
+        track: String,
+        seconds: f64,
+        current: impl Fn() -> bool + Send + 'static,
+    ) -> Result<Self> {
         ensure!(
             crate::valid_id(&track),
             "Audition requires a library track ID"
         );
-        Self::open_url(
+        Self::open_url_at(
             track,
             current,
             format!("{}/v1/audition/stream", crate::SERVICE_URL),
+            seconds,
         )
     }
     fn open_url(
@@ -76,11 +84,19 @@ impl Stream {
         current: impl Fn() -> bool + Send + 'static,
         url: String,
     ) -> Result<Self> {
+        Self::open_url_at(track, current, url, 0.)
+    }
+    fn open_url_at(
+        track: String,
+        current: impl Fn() -> bool + Send + 'static,
+        url: String,
+        seconds: f64,
+    ) -> Result<Self> {
         let (mut producer, consumer) = rtrb::RingBuffer::new(crate::sample_rate::get() / 2);
         let status = Arc::new(Status {
             cancelled: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
-            seek: AtomicUsize::new(0),
+            seek: AtomicUsize::new((seconds * crate::sample_rate::get() as f64).round() as usize),
             eof: AtomicU64::new(u64::MAX),
             error: Mutex::new(None),
         });
@@ -324,6 +340,20 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(stream.status.error().is_some());
+        worker.join().unwrap();
+    }
+    #[test]
+    fn audition_stream_opens_directly_at_one_minute() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/stream", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut socket, _) = server.accept().unwrap();
+            assert_eq!(request(&socket)["position_seconds"], 60.);
+            write!(socket, "HTTP/1.1 200 OK\r\nX-Vira-Duration-Seconds: 120\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", 2048 * 8).unwrap();
+            socket.write_all(&vec![0; 2048 * 8]).unwrap();
+        });
+        let mut stream = Stream::open_url_at("a".repeat(64), || true, url, 60.).unwrap();
+        assert_eq!(wait_sample(&mut stream), [0.; 2]);
         worker.join().unwrap();
     }
 }

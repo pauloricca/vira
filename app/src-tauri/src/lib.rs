@@ -5,6 +5,7 @@ mod audition_stream;
 pub mod audio_benchmark;
 mod audio_devices;
 mod plugin_host;
+mod progressive;
 pub mod vst;
 #[cfg(target_os = "macos")]
 mod vst_window;
@@ -622,6 +623,7 @@ pub fn run() {
     async fn audition_track(
         track_id: String,
         output: Option<String>,
+        start_seconds: Option<f64>,
         state: tauri::State<'_, std::sync::Arc<runtime::EngineHandle>>,
     ) -> Result<u64, String> {
         let engine = state.inner().clone();
@@ -629,7 +631,7 @@ pub fn run() {
         let generation = engine.begin_audition(master).map_err(|e| e.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
             engine
-                .load_audition(generation, &track_id, master)
+                .load_audition_at(generation, &track_id, master, start_seconds.unwrap_or(0.))
                 .map_err(|e| format!("{e:#}"))
         })
         .await
@@ -682,7 +684,7 @@ pub fn run() {
         let generation = engine.begin_load(deck).map_err(|e| e.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
             engine
-                .load(
+                .load_progressive(
                     deck,
                     generation,
                     &track_id,

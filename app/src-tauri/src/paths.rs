@@ -166,6 +166,7 @@ pub fn ensure_music_mount() -> Result<()> {
                     && v["content_cache"] == 1
                     && v["load_priority"] == 1
                     && v["audition_stream"] == 1
+                    && v["deck_stream"] == 1
                     && v["music_folders"] == serde_json::json!(folders)
             })
     };

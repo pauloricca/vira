@@ -39,6 +39,7 @@ class AuditionStreamTests(unittest.TestCase):
                 return urllib.request.urlopen(urllib.request.Request(
                     f"http://127.0.0.1:{server.server_port}/v1/audition/stream", data=json.dumps(body).encode(),
                     headers={"Content-Type": "application/json"}), timeout=5)
+            request.base_url = f"http://127.0.0.1:{server.server_port}"
             try:
                 yield request, child, path
             finally:

@@ -272,6 +272,9 @@ and elapsed/total time. Stop cancels pending preparation, releases the preview
 and hides the controls. Audition playback joins any selected deck cue in the
 headphones. The expanded library also offers **Play on Master** while both decks
 are stopped; starting a deck stops a master audition.
+The adjacent **▶▶** column starts the same streamed audition at **1:00**. It is
+disabled for tracks lasting one minute or less. Each active audition button acts
+as Stop; choosing the other start position restarts the audition there.
 
 In the expanded library, **Play All** is available while both decks are stopped.
 Enable it and choose the overlap in **Settings → Automatic transitions**
@@ -299,6 +302,14 @@ stream. Play All starts through the same stream, then prepares the current and
 next track in the background for beat-matched transitions. The upgrade preserves
 position and pause state. Up to two fully prepared Play All sources are retained
 within a 256 MiB cache; deck loading can reuse them and add waveform data on demand.
+
+Deck loading publishes decoded audio and overview/close-up waveform peaks in
+30-second chunks. The first chunk makes the deck playable; the rest continues in
+the background with a loaded-seconds indicator. Seeking, scratching or playback
+into an unloaded region holds source time until that audio arrives. Tempo changes
+and loops use the same immutable chunks without reinstalling or restarting the
+voice. Source verification, bass lookahead and waveform colouring finish in the
+background. Streamed PCM is retained for later loads, which reuse it directly.
 
 Collection rows show number, cover tile, title, artist, rounded BPM, Camelot and
 musical key (for example, 8B / Cmaj), A/B key compatibility, length and analysis

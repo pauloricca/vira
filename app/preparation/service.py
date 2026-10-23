@@ -15,11 +15,13 @@ try:
     from .prepare import Preparation
     from .priority import LoadPriority, priority_request
     from .audition import stream_audition
+    from .deck_stream import open_deck
 except ImportError:
     from jobs import LibraryJobs, ContentStore, LIBRARY_SCHEMA, atomic_json, blank, entry_id
     from prepare import Preparation
     from priority import LoadPriority, priority_request
     from audition import stream_audition
+    from deck_stream import open_deck
 
 SCHEMA_VERSION = 1
 PROBE_TIMEOUT = 15
@@ -231,7 +233,7 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                         self.respond(404, {"error": str(exc)})
                 return
             if self.path == "/health":
-                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "content_cache": 1, "load_priority": 1, "audition_stream": 1, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
+                self.respond(200, {"schema_version": LIBRARY_SCHEMA, "content_cache": 1, "load_priority": 1, "audition_stream": 1, "deck_stream": 1, "music_bin": os.environ.get("VIRA_HOST_MUSIC_DIR", str(music))})
             elif self.path == "/v1/library/state":
                 # Reading the saved rows is cheap. Waiting for a deck-load lease
                 # here can exceed the client's timeout and falsely report an outage.
@@ -240,12 +242,16 @@ def make_handler(music: Path, generated: Path, namespace="", content=None, prior
                 self.respond(404, {"error": "Unknown endpoint."})
 
         def do_POST(self):
-            if self.path == "/v1/audition/stream":
+            if self.path in ("/v1/audition/stream", "/v1/deck/stream", "/v1/deck/open"):
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
                         raise ValueError("Invalid audition stream request.")
-                    stream_audition(self, jobs, json.loads(self.rfile.read(length)))
+                    body = json.loads(self.rfile.read(length))
+                    if self.path == "/v1/deck/open":
+                        self.respond(200, open_deck(preparation, body))
+                    else:
+                        stream_audition(self, jobs, body, preparation if self.path == "/v1/deck/stream" else None)
                 except (BrokenPipeError, ConnectionResetError):
                     pass  # Stop/seek/replacement closes the old decoder connection.
                 except (ValueError, OSError) as exc:
@@ -423,7 +429,7 @@ def make_collections_handler(collections, generated):
 
         def do_GET(self):
             if self.path == "/health":
-                self.respond(200, dict(schema_version=LIBRARY_SCHEMA, content_cache=1, load_priority=1, audition_stream=1, music_folders=[host for host, _ in handlers]))
+                self.respond(200, dict(schema_version=LIBRARY_SCHEMA, content_cache=1, load_priority=1, audition_stream=1, deck_stream=1, music_folders=[host for host, _ in handlers]))
             elif self.path == "/v1/library/state":
                 self.respond(200, state())
             elif self.path.startswith("/v1/artwork/"):
@@ -464,7 +470,7 @@ def make_collections_handler(collections, generated):
                 else:
                     self.respond(200, value)
                 return
-            if self.path not in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save", "/v1/metadata/save", "/v1/audition/stream"):
+            if self.path not in ("/v1/analysis", "/v1/analysis/key", "/v1/analysis/approve", "/v1/prepare", "/v1/timing/get", "/v1/timing/save", "/v1/metadata/save", "/v1/audition/stream", "/v1/deck/open", "/v1/deck/stream"):
                 self.respond(404, {"error": "Unknown endpoint."})
                 return
             try:
